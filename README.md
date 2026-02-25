@@ -1,8 +1,12 @@
 # LocalClaw macOS Installer
 
-Native macOS installer app (SwiftUI) to set up LM Studio + OpenClaw on Apple Silicon with minimal friction.
+![LocalClaw](https://localclaw.io/images/twitter-card.png)
 
-## Why this repo exists
+Native macOS installer app (SwiftUI) to set up LM Studio + OpenClaw on Apple Silicon, fast and clean.
+
+![LocalClaw Logo](https://localclaw.io/images/crab-logo.png)
+
+## What this repo contains
 
 This repository ships **source code only**.
 No DMG or prebuilt binaries are committed here.
@@ -20,32 +24,29 @@ No DMG or prebuilt binaries are committed here.
 - Post-install health checks
 - Real-time install logs
 
-## Run locally
+## Quick start
 
 ```bash
-cd localclaw-mac-installer
 swift run
 ```
 
 ## Run tests
 
 ```bash
-cd localclaw-mac-installer
 swift test
 ```
 
-## Build release DMG (local)
+## Build a local DMG
 
 ```bash
-cd localclaw-mac-installer
 bash scripts/build-dmg.sh
 ```
 
-Build artifacts are generated in `dist/` and are ignored by git.
+Build artifacts are generated in `dist/` and ignored by git.
 
 ## Signing and notarization
 
-`build-dmg.sh` supports Apple signing/notarization through env vars:
+`build-dmg.sh` supports Apple signing and notarization through env vars:
 
 - `DEVELOPER_ID_APP`
 - `APPLE_ID`
@@ -63,7 +64,7 @@ export APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx"
 bash scripts/build-dmg.sh
 ```
 
-Without these variables, the build runs in dev mode (ad-hoc signing).
+Without these variables, build runs in dev mode (ad-hoc signing).
 
 ## License API endpoint
 
@@ -78,21 +79,31 @@ export LOCALCLAW_LICENSE_ENDPOINT="https://your-domain/api/license/activate"
 swift run
 ```
 
-## Local test server for licensing
+## Local license mock server
 
 ```bash
-cd localclaw-mac-installer
 node scripts/mock-license-server.js
 ```
 
 In another terminal:
 
 ```bash
-cd localclaw-mac-installer
 export LOCALCLAW_LICENSE_ENDPOINT="http://127.0.0.1:8787/api/license/activate"
 swift run
 ```
 
-Mock test credentials:
+Mock credentials:
 - Email: `cyril@test.local`
 - License: `LOCALCLAW-V1-TEST`
+
+## Project structure
+
+- `Sources/` SwiftUI app and installer logic
+- `Tests/` test suite
+- `scripts/` build, checks, local mock tools
+- `release-bundle/` release handoff docs and integration notes
+
+## Philosophy
+
+- GitHub repo: transparent source and DIY setup
+- Paid installer distribution: convenience, packaging, support
