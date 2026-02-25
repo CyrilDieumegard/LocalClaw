@@ -1,0 +1,33 @@
+# macOS
+.DS_Store
+
+# SwiftPM / Xcode
+/.build
+/Packages
+DerivedData/
+xcuserdata/
+.swiftpm/configuration/registries.json
+.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+
+# Local environment
+.netrc
+.env
+.env.*
+
+# Build artifacts and bundles
+/dist/
+/generated/
+/LocalClaw.app/
+*.app
+*.dmg
+*.pkg
+
+# Temporary files
+*.log
+*.tmp
+*.swp
+*.backup
+*.backup*
+
+# Optional local notes
+TODO.local.md
