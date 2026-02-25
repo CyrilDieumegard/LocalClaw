@@ -4,7 +4,9 @@
 
 Native macOS installer app (SwiftUI) to set up LM Studio + OpenClaw on Apple Silicon, fast and clean.
 
-![LocalClaw Logo](https://localclaw.io/images/crab-logo.png)
+<p align="center">
+  <img src="https://localclaw.io/images/crab-logo.png" alt="LocalClaw Logo" width="180" />
+</p>
 
 ## What this repo contains
 
