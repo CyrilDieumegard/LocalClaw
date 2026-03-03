@@ -418,6 +418,27 @@ final class CommandCenterViewModel: ObservableObject {
         ("command-r", "Command R+", "openrouter/cohere/command-r-plus")
     ]
     
+    private func ensureLMStudioAuthProfile() {
+        let authPath = NSHomeDirectory() + "/.openclaw/agents/main/agent/auth-profiles.json"
+        let authDir = (authPath as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: authDir, withIntermediateDirectories: true)
+
+        var root: [String: Any] = ["version": 1, "profiles": [:]]
+        if let data = FileManager.default.contents(atPath: authPath),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            root = json
+        }
+
+        var profiles = root["profiles"] as? [String: Any] ?? [:]
+        profiles["lmstudio"] = ["type": "api_key", "key": "lm-studio"]
+        root["profiles"] = profiles
+        if root["version"] == nil { root["version"] = 1 }
+
+        if let out = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]) {
+            try? out.write(to: URL(fileURLWithPath: authPath), options: .atomic)
+        }
+    }
+
     private func setPrimaryModel(_ modelId: String, mode: String) {
         let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
 
@@ -462,6 +483,11 @@ final class CommandCenterViewModel: ObservableObject {
         do {
             let out = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
             try out.write(to: URL(fileURLWithPath: configPath), options: .atomic)
+
+            if mode == "local" {
+                ensureLMStudioAuthProfile()
+            }
+
             addLog(.success, "Mode switched to \(mode) + model \(modelId)")
             addLog(.info, "Restarting Gateway to apply changes...")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
@@ -473,24 +499,35 @@ final class CommandCenterViewModel: ObservableObject {
     }
 
     private func detectInstalledLocalModel() -> String {
+        // 1) Prefer live LM Studio server model list
+        let (_, live) = engine.shell("curl -s http://127.0.0.1:1234/v1/models 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); m=(d.get(\"data\") or []); print((m[0].get(\"id\") if m else \"\"))' 2>/dev/null || true")
+        let liveId = live.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !liveId.isEmpty { return liveId }
+
+        // 2) Fallback to config models.providers.lmstudio.models[0].id
         let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
-        guard let data = FileManager.default.contents(atPath: configPath),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let models = json["models"] as? [String: Any],
-              let providers = models["providers"] as? [String: Any],
-              let lmstudio = providers["lmstudio"] as? [String: Any],
-              let list = lmstudio["models"] as? [[String: Any]],
-              let first = list.first,
-              let id = first["id"] as? String,
-              !id.isEmpty else {
-            return "openai"
+        if let data = FileManager.default.contents(atPath: configPath),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let models = json["models"] as? [String: Any],
+           let providers = models["providers"] as? [String: Any],
+           let lmstudio = providers["lmstudio"] as? [String: Any],
+           let list = lmstudio["models"] as? [[String: Any]],
+           let first = list.first,
+           let id = first["id"] as? String,
+           !id.isEmpty {
+            return id
         }
-        return id
+
+        // 3) Safe default for this app
+        return "qwen3-14b"
     }
 
     func switchToLocalLLM() {
         inferenceModeSelection = .local
-        let localId = detectInstalledLocalModel()
+        var localId = detectInstalledLocalModel()
+        if localId.hasPrefix("lmstudio/") {
+            localId = String(localId.dropFirst("lmstudio/".count))
+        }
         addLog(.command, "Switching to local mode (lmstudio/\(localId))...")
         setPrimaryModel("lmstudio/\(localId)", mode: "local")
     }
