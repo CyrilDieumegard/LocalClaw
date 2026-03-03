@@ -58,6 +58,8 @@ final class CommandCenterViewModel: ObservableObject {
     @Published var autoScroll: Bool = true
     @Published var selectedModel: String = "kimi"
     @Published var systemInfo: SystemInfo = SystemInfo()
+    @Published var usageSnapshot: SystemUsageSnapshot = SystemUsageSnapshot(cpuPercent: 0, memoryUsedGB: 0, memoryAvailableGB: 0, memoryTotalGB: 0, swapUsedGB: 0, swapTotalGB: 0, lmStudioMemoryMB: 0, openclawMemoryMB: 0, nodeMemoryMB: 0)
+    @Published var heavyProcesses: [ProcessUsageItem] = []
     
     private var monitoringTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
@@ -131,11 +133,13 @@ final class CommandCenterViewModel: ObservableObject {
         // Check immédiat
         checkGatewayStatus()
         refreshSystemInfo()
+        refreshResourceInfo()
         
         // Timer toutes les 5 secondes
         monitoringTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
             Task { @MainActor in
                 self.checkGatewayStatus()
+                self.refreshResourceInfo()
             }
         }
     }
@@ -173,6 +177,23 @@ final class CommandCenterViewModel: ObservableObject {
         
         systemInfo.openclawVersion = ocVersion.isEmpty ? "Not installed" : ocVersion
         systemInfo.nodeVersion = nodeVer.isEmpty ? "Not installed" : nodeVer
+    }
+
+    func refreshResourceInfo() {
+        usageSnapshot = engine.getSystemUsage()
+        heavyProcesses = engine.topProcesses(limit: 12)
+    }
+
+    func killProcess(_ pid: Int) {
+        let result = engine.killProcess(pid: pid)
+        addLog(result.state == .ok ? .success : .error, result.message)
+        refreshResourceInfo()
+    }
+
+    func emergencyCleanup() {
+        let result = engine.emergencyCleanup()
+        addLog(result.state == .ok ? .success : .error, result.message)
+        refreshResourceInfo()
     }
     
     func addLog(_ level: LogEntry.LogLevel, _ message: String) {
@@ -571,9 +592,16 @@ final class CommandCenterViewModel: ObservableObject {
 // MARK: - Advanced Command Center View
 
 struct AdvancedCommandCenterView: View {
+    enum RightTab: String, CaseIterable, Identifiable {
+        case logs = "Logs"
+        case resources = "Resources"
+        var id: String { rawValue }
+    }
+
     @StateObject private var viewModel = CommandCenterViewModel()
     @State private var leftPanelWidth: CGFloat = 320
     @State private var showSettings = false
+    @State private var rightTab: RightTab = .resources
     
     var body: some View {
         HStack(spacing: 0) {
@@ -866,15 +894,17 @@ struct AdvancedCommandCenterView: View {
     
     private var rightPanel: some View {
         VStack(spacing: 0) {
-            // Logs Toolbar
             HStack {
-                Text("LOGS")
-                    .font(AppFont.heading(10))
-                    .kerning(0.6)
-                    .foregroundStyle(UI.muted)
-                
+                Picker("View", selection: $rightTab) {
+                    ForEach(RightTab.allCases) { tab in
+                        Text(tab.rawValue).tag(tab)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 220)
+
                 Spacer()
-                
+
                 HStack(spacing: 12) {
                     Button(action: { viewModel.copyLogsToClipboard() }) {
                         Image(systemName: "doc.on.doc")
@@ -884,7 +914,7 @@ struct AdvancedCommandCenterView: View {
                     }
                     .buttonStyle(.borderless)
                     .foregroundStyle(UI.muted)
-                    
+
                     Button(action: { viewModel.clearLogs() }) {
                         Image(systemName: "trash")
                             .font(.system(size: 11))
@@ -893,10 +923,7 @@ struct AdvancedCommandCenterView: View {
                     }
                     .buttonStyle(.borderless)
                     .foregroundStyle(UI.muted)
-                    
-                    Toggle("Auto-scroll", isOn: $viewModel.autoScroll)
-                        .toggleStyle(.checkbox)
-                    
+
                     Toggle("Monitoring", isOn: Binding(
                         get: { viewModel.isMonitoring },
                         set: { newValue in
@@ -913,29 +940,121 @@ struct AdvancedCommandCenterView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(UI.cardSoft)
-            
-            // Logs List
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(viewModel.gatewayLogs) { entry in
-                            LogRow(entry: entry)
+
+            if rightTab == .logs {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            ForEach(viewModel.gatewayLogs) { entry in
+                                LogRow(entry: entry)
+                            }
+                            .id("logs-bottom")
                         }
-                        .id("logs-bottom")
+                        .padding(8)
                     }
-                    .padding(8)
-                }
-                .scrollIndicators(.hidden)
-                .background(UI.card)
-                .onChange(of: viewModel.gatewayLogs.count) { _ in
-                    if viewModel.autoScroll {
-                        withAnimation {
-                            proxy.scrollTo("logs-bottom", anchor: .bottom)
+                    .scrollIndicators(.hidden)
+                    .background(UI.card)
+                    .onChange(of: viewModel.gatewayLogs.count) { _ in
+                        if viewModel.autoScroll {
+                            withAnimation {
+                                proxy.scrollTo("logs-bottom", anchor: .bottom)
+                            }
                         }
                     }
                 }
+            } else {
+                resourcesPanel
             }
         }
+    }
+
+    private var resourcesPanel: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("RESOURCE DASHBOARD")
+                    .font(AppFont.heading(12))
+                    .kerning(0.6)
+                    .foregroundStyle(UI.accent)
+
+                resourceGaugeRow("CPU", value: String(format: "%.1f%%", viewModel.usageSnapshot.cpuPercent), ratio: viewModel.usageSnapshot.cpuPercent / 100)
+                resourceGaugeRow(
+                    "Memory",
+                    value: String(format: "%.1f / %.1f GB", viewModel.usageSnapshot.memoryUsedGB, max(0.1, viewModel.usageSnapshot.memoryTotalGB)),
+                    ratio: viewModel.usageSnapshot.memoryTotalGB > 0 ? viewModel.usageSnapshot.memoryUsedGB / viewModel.usageSnapshot.memoryTotalGB : 0
+                )
+                resourceGaugeRow(
+                    "Swap",
+                    value: String(format: "%.2f / %.2f GB", viewModel.usageSnapshot.swapUsedGB, viewModel.usageSnapshot.swapTotalGB),
+                    ratio: viewModel.usageSnapshot.swapTotalGB > 0 ? viewModel.usageSnapshot.swapUsedGB / viewModel.usageSnapshot.swapTotalGB : 0
+                )
+
+                HStack(spacing: 12) {
+                    miniStat("LM Studio", "\(viewModel.usageSnapshot.lmStudioMemoryMB) MB")
+                    miniStat("OpenClaw", "\(viewModel.usageSnapshot.openclawMemoryMB) MB")
+                    miniStat("Node", "\(viewModel.usageSnapshot.nodeMemoryMB) MB")
+                }
+
+                HStack {
+                    Text("Heavy processes")
+                        .font(AppFont.bodySemi(13))
+                        .foregroundStyle(UI.text)
+                    Spacer()
+                    Button("Emergency cleanup") { viewModel.emergencyCleanup() }
+                        .buttonStyle(CTAButton(primary: false))
+                }
+
+                ForEach(viewModel.heavyProcesses.prefix(10)) { p in
+                    HStack(spacing: 8) {
+                        Text("#\(p.pid)").font(.system(size: 11, design: .monospaced)).frame(width: 58, alignment: .leading)
+                        Text(String(format: "%.1f%%", p.cpuPercent)).font(.system(size: 11, design: .monospaced)).frame(width: 54, alignment: .leading)
+                        Text("\(p.memoryMB)MB").font(.system(size: 11, design: .monospaced)).frame(width: 70, alignment: .leading)
+                        Text(p.command).font(AppFont.body(11)).lineLimit(1)
+                        Spacer()
+                        Button("Kill") { viewModel.killProcess(p.pid) }
+                            .buttonStyle(CTAButton(primary: false))
+                    }
+                    .padding(8)
+                    .background(UI.cardSoft)
+                    .cornerRadius(8)
+                }
+            }
+            .padding(12)
+        }
+        .background(UI.card)
+    }
+
+    private func resourceGaugeRow(_ title: String, value: String, ratio: Double) -> some View {
+        let r = min(max(ratio, 0), 1)
+        let color: Color = r >= 0.85 ? .red : (r >= 0.65 ? .orange : .green)
+
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title).font(AppFont.bodySemi(12)).foregroundStyle(UI.text)
+                Spacer()
+                Text(value).font(.system(size: 11, design: .monospaced)).foregroundStyle(UI.muted)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 999).fill(Color.black.opacity(0.08))
+                    RoundedRectangle(cornerRadius: 999).fill(color).frame(width: max(3, geo.size.width * r))
+                }
+            }
+            .frame(height: 8)
+        }
+        .padding(10)
+        .background(UI.cardSoft)
+        .cornerRadius(8)
+    }
+
+    private func miniStat(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(AppFont.body(11)).foregroundStyle(UI.muted)
+            Text(value).font(.system(size: 12, design: .monospaced)).foregroundStyle(UI.text)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(UI.cardSoft)
+        .cornerRadius(8)
     }
 }
 
