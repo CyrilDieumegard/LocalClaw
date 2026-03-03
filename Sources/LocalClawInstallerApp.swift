@@ -251,6 +251,8 @@ final class InstallerViewModel: ObservableObject {
     @Published var estimatedMonthlyTokensM: Double = 2.0
     @Published var estimatedMonthlyCostUSD: Double = 0
     @Published var costAdvice: String = ""
+    @Published var modeSwitchInProgress: Bool = false
+    @Published var modeSwitchStatus: String = ""
 
     // Installation status tracking (using existing status variables)
     var statusNodeJS: String {
@@ -1197,6 +1199,9 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func applyInferenceModeSwitch() {
+        modeSwitchInProgress = true
+        modeSwitchStatus = "Applying switch..."
+
         if inferenceMode == .local {
             selectedProvider = .custom
             ensureLMStudioAuthProfileForMainAgent()
@@ -1234,7 +1239,12 @@ final class InstallerViewModel: ObservableObject {
         resetMainAgentSessions()
         _ = engine.shell("openclaw gateway restart --preserve-token 2>/dev/null || openclaw gateway restart 2>/dev/null || true")
         controlCenterLogs += "[OK] Gateway restarted after mode switch\n"
-        refreshControlCenter()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            self.refreshControlCenter()
+            self.modeSwitchInProgress = false
+            self.modeSwitchStatus = self.inferenceMode == .local ? "Switched to Local" : "Switched to Cloud"
+        }
     }
 
     func runHealthCheck() {
@@ -2138,14 +2148,22 @@ struct ContentView: View {
 
             Spacer()
 
-            Picker("", selection: $vm.inferenceMode) {
-                Text("Cloud").tag(InstallerViewModel.InferenceMode.cloud)
-                Text("Local").tag(InstallerViewModel.InferenceMode.local)
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 170)
-            .onChange(of: vm.inferenceMode) { _ in
-                vm.applyInferenceModeSwitch()
+            VStack(alignment: .trailing, spacing: 4) {
+                Picker("", selection: $vm.inferenceMode) {
+                    Text("Cloud").tag(InstallerViewModel.InferenceMode.cloud)
+                    Text("Local").tag(InstallerViewModel.InferenceMode.local)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 170)
+                .onChange(of: vm.inferenceMode) { _ in
+                    vm.applyInferenceModeSwitch()
+                }
+
+                if !vm.modeSwitchStatus.isEmpty || vm.modeSwitchInProgress {
+                    Text(vm.modeSwitchInProgress ? "Switching..." : vm.modeSwitchStatus)
+                        .font(AppFont.body(10))
+                        .foregroundStyle(vm.modeSwitchInProgress ? UI.accent : Color(NSColor.systemGreen))
+                }
             }
         }
         .padding(.horizontal, 14)
