@@ -1164,6 +1164,12 @@ final class InstallerViewModel: ObservableObject {
         return out.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
     }
 
+    private func detectSafeLocalModelId() -> String {
+        let cmd = "curl -s http://127.0.0.1:1234/v1/models 2>/dev/null | python3 -c \"import sys,json; d=json.load(sys.stdin); m=[(x.get('id') or '') for x in (d.get('data') or [])]; safe=['qwen3-14b','qwen3-8b','llama-3.3-8b-instruct']; print(next((s for s in safe if s in m), (m[0] if m else '')))\" 2>/dev/null || true"
+        let (_, out) = engine.shell(cmd)
+        return out.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+    }
+
     private func writePrimaryAndSecondaryModel(primary: String, secondary: String?) {
         let path = NSHomeDirectory() + "/.openclaw/openclaw.json"
         guard let data = FileManager.default.contents(atPath: path),
@@ -1211,6 +1217,13 @@ final class InstallerViewModel: ObservableObject {
             }
 
             if !localId.isEmpty {
+                if localId.contains("qwen3.5") || localId.contains("/qwen") {
+                    let safe = detectSafeLocalModelId()
+                    if !safe.isEmpty {
+                        localId = safe
+                        controlCenterLogs += "[WARN] Auto-fallback to safe local model: \(localId)\n"
+                    }
+                }
                 writePrimaryAndSecondaryModel(primary: "lmstudio/\(localId)", secondary: nil)
                 controlCenterLogs += "[OK] Switched to Local: lmstudio/\(localId)\n"
             } else {

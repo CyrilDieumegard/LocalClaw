@@ -499,9 +499,9 @@ final class CommandCenterViewModel: ObservableObject {
     }
 
     private func detectInstalledLocalModel() -> String {
-        // 1) Prefer live LM Studio server model list
-        let (_, live) = engine.shell("curl -s http://127.0.0.1:1234/v1/models 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); m=(d.get(\"data\") or []); print((m[0].get(\"id\") if m else \"\"))' 2>/dev/null || true")
-        let liveId = live.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 1) Prefer safe live model from LM Studio server list
+        let (_, safeLive) = engine.shell("curl -s http://127.0.0.1:1234/v1/models 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); m=[(x.get(\"id\") or \"\") for x in (d.get(\"data\") or [])]; safe=[\"qwen3-14b\",\"qwen3-8b\",\"llama-3.3-8b-instruct\"]; print(next((s for s in safe if s in m), (m[0] if m else \"\")))' 2>/dev/null || true")
+        let liveId = safeLive.trimmingCharacters(in: .whitespacesAndNewlines)
         if !liveId.isEmpty { return liveId }
 
         // 2) Fallback to config models.providers.lmstudio.models[0].id
@@ -530,6 +530,10 @@ final class CommandCenterViewModel: ObservableObject {
         }
         if localId.contains("/") {
             localId = String(localId.split(separator: "/").last ?? Substring(localId))
+        }
+        if localId.contains("qwen3.5") || localId.contains("qwen/") {
+            localId = "qwen3-14b"
+            addLog(.warning, "Auto-fallback to safe local model: \(localId)")
         }
         addLog(.command, "Switching to local mode (lmstudio/\(localId))...")
         setPrimaryModel("lmstudio/\(localId)", mode: "local")
