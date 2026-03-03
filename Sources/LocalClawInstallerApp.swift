@@ -4,7 +4,7 @@ import AppKit
 
 @MainActor
 final class InstallerViewModel: ObservableObject {
-    enum Screen { case license, home, options, install, ready, updates, controlCenter, commandCenter }
+    enum Screen { case license, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter }
     enum InstallMode: String {
         case llmOnly = "Install Local LLM only"
         case openClawOnly = "Install OpenClaw only"
@@ -211,6 +211,16 @@ final class InstallerViewModel: ObservableObject {
     @Published var downloadProgress: Double = 0
     @Published var currentDownloadFile: String = ""
     @Published var isRunning = false
+
+    // Uninstall Center
+    @Published var isUninstalling = false
+    @Published var uninstallLogs: String = ""
+    @Published var uninstallLMStudioSelected = true
+    @Published var uninstallModelsSelected = true
+    @Published var uninstallOpenClawSelected = true
+    @Published var uninstallNodeSelected = false
+    @Published var uninstallHomebrewSelected = false
+    @Published var uninstallConfigsSelected = true
 
     // Installation status tracking (using existing status variables)
     var statusNodeJS: String {
@@ -1468,6 +1478,69 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    func runSelectedUninstall() {
+        if isUninstalling { return }
+
+        let plan: [(String, Bool, [String])] = [
+            ("LM Studio", uninstallLMStudioSelected, [
+                "brew uninstall --cask lm-studio 2>/dev/null || true",
+                "rm -rf \"/Applications/LM Studio.app\"",
+                "rm -rf \"$HOME/.cache/lm-studio\""
+            ]),
+            ("Local LLM models", uninstallModelsSelected, [
+                "rm -rf \"$HOME/.lmstudio/models\"",
+                "rm -rf \"$HOME/.cache/lm-studio/models\""
+            ]),
+            ("OpenClaw", uninstallOpenClawSelected, [
+                "npm uninstall -g openclaw 2>/dev/null || true",
+                "brew uninstall openclaw 2>/dev/null || true",
+                "rm -rf \"$HOME/.openclaw\" \"$HOME/.openclaw-gateway\" \"$HOME/.cache/openclaw\""
+            ]),
+            ("Node.js", uninstallNodeSelected, [
+                "brew uninstall node 2>/dev/null || true",
+                "rm -f /opt/homebrew/bin/node /opt/homebrew/bin/npm /opt/homebrew/bin/npx /opt/homebrew/bin/corepack 2>/dev/null || true",
+                "rm -f /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack 2>/dev/null || true",
+                "rm -rf \"$HOME/.npm\" \"$HOME/.nvm\" \"$HOME/.node-gyp\""
+            ]),
+            ("Homebrew", uninstallHomebrewSelected, [
+                "/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)\" || true"
+            ]),
+            ("Configs and cache", uninstallConfigsSelected, [
+                "rm -rf \"$HOME/.openclaw\" \"$HOME/.openclaw-gateway\" \"$HOME/.cache/openclaw\" \"$HOME/.cache/lm-studio\"",
+                "sed -i '' '/openclaw/d' \"$HOME/.zshrc\" 2>/dev/null || true",
+                "sed -i '' '/nvm/d' \"$HOME/.zshrc\" 2>/dev/null || true"
+            ])
+        ]
+
+        uninstallLogs = ""
+        isUninstalling = true
+
+        Task.detached { [engine] in
+            for (name, selected, commands) in plan {
+                if !selected { continue }
+                await MainActor.run { self.uninstallAppend("[RUN] \(name)") }
+                for cmd in commands {
+                    let (code, output) = engine.shell(cmd)
+                    await MainActor.run {
+                        self.uninstallAppend("$ \(cmd)")
+                        if !output.isEmpty { self.uninstallAppend(output) }
+                        if code != 0 { self.uninstallAppend("[WARN] Exit code \(code) on \(name)") }
+                    }
+                }
+                await MainActor.run { self.uninstallAppend("[DONE] \(name)") }
+            }
+
+            await MainActor.run {
+                self.uninstallAppend("✅ Uninstall finished")
+                self.isUninstalling = false
+            }
+        }
+    }
+
+    private func uninstallAppend(_ line: String) {
+        uninstallLogs = uninstallLogs.isEmpty ? line : uninstallLogs + "\n" + line
+    }
+
     private func append(_ line: String) {
         logs = logs.isEmpty ? line : logs + "\n" + line
 
@@ -1619,6 +1692,7 @@ struct ProgressSteps: View {
         case .updates: return 3
         case .controlCenter: return 0
         case .commandCenter: return 0
+        case .uninstallCenter: return 0
         }
     }
 
@@ -1724,6 +1798,7 @@ struct ContentView: View {
                 case .updates: updates
                 case .controlCenter: controlCenter
                 case .commandCenter: commandCenter
+                case .uninstallCenter: uninstallCenter
                 }
                 Spacer()
             }
@@ -1833,6 +1908,9 @@ struct ContentView: View {
                     }
                     HomeTile(label: "Control Center", icon: "slider.horizontal.3", selected: false) {
                         vm.screen = .commandCenter
+                    }
+                    HomeTile(label: "Uninstall Center", icon: "trash", selected: false) {
+                        vm.screen = .uninstallCenter
                     }
                     Spacer(minLength: 0)
                 }
@@ -2257,6 +2335,83 @@ struct ContentView: View {
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
+    }
+
+    var uninstallCenter: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text("UNINSTALL CENTER")
+                        .font(AppFont.heading(28))
+                        .foregroundStyle(UI.text)
+                    Spacer()
+                    Text(vm.isUninstalling ? "Running..." : "Ready")
+                        .font(AppFont.bodySemi(12))
+                        .foregroundStyle(vm.isUninstalling ? UI.accent : UI.muted)
+                }
+
+                Text("Select what you want to remove from this Mac. You can uninstall one component at a time.")
+                    .font(AppFont.body(13))
+                    .foregroundStyle(UI.muted)
+
+                VStack(spacing: 8) {
+                    uninstallRow("LM Studio app", isOn: $vm.uninstallLMStudioSelected)
+                    uninstallRow("Local LLM models", isOn: $vm.uninstallModelsSelected)
+                    uninstallRow("OpenClaw CLI and services", isOn: $vm.uninstallOpenClawSelected)
+                    uninstallRow("Node.js and npm/npx", isOn: $vm.uninstallNodeSelected)
+                    uninstallRow("Homebrew", isOn: $vm.uninstallHomebrewSelected)
+                    uninstallRow("Configs and cache", isOn: $vm.uninstallConfigsSelected)
+                }
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.07), lineWidth: 1))
+
+                HStack(spacing: 10) {
+                    Button(vm.isUninstalling ? "Working..." : "Uninstall Selected") {
+                        vm.runSelectedUninstall()
+                    }
+                    .buttonStyle(CTAButton(primary: true))
+                    .disabled(vm.isUninstalling)
+
+                    Button("Back") { vm.screen = .home }
+                        .buttonStyle(CTAButton(primary: false))
+                }
+
+                Text("Live log")
+                    .font(AppFont.bodySemi(14))
+                    .foregroundStyle(UI.muted)
+
+                ScrollView {
+                    Text(vm.uninstallLogs.isEmpty ? "No uninstall action started." : vm.uninstallLogs)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(UI.text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                }
+                .scrollIndicators(.hidden)
+                .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+                .frame(maxHeight: .infinity)
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
+            .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    func uninstallRow(_ title: String, isOn: Binding<Bool>) -> some View {
+        Toggle(isOn: isOn) {
+            Text(title)
+                .font(AppFont.bodySemi(13))
+                .foregroundStyle(UI.text)
+        }
+        .toggleStyle(.switch)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
     }
 
     func setupStepRow(_ step: String, _ title: String, _ state: String) -> some View {
