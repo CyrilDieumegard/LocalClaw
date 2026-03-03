@@ -330,7 +330,7 @@ final class CommandCenterViewModel: ObservableObject {
         ("llama", "Llama 3.3 70B", "openrouter/meta-llama/llama-3.3-70b-instruct"),
         ("deepseek", "DeepSeek Chat", "openrouter/deepseek/deepseek-chat"),
         ("mistral", "Mistral Large", "openrouter/mistralai/mistral-large"),
-        ("qwen", "Qwen 2.5 72B", "openrouter/qwen/qwen-2.5-72b-instruct"),
+        ("qwen", "Qwen 3.5 35B-A3B", "openrouter/qwen/qwen3.5-35b-a3b"),
         ("grok", "Grok 2", "openrouter/x-ai/grok-2"),
         ("command-r", "Command R+", "openrouter/cohere/command-r-plus")
     ]

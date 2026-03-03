@@ -92,10 +92,10 @@ final class InstallerEngine: @unchecked Sendable {
         switch profile.memoryGB {
         case ..<16:
             return Recommendation(tier: "Starter", model: "Qwen 3 8B", quant: "Q4_K_M", rationale: "Fast and stable on 8-16 GB")
-        case 16..<32:
+        case 16..<24:
             return Recommendation(tier: "Balanced", model: "Qwen 3 14B", quant: "Q4_K_M", rationale: "Best quality and speed on 16-24 GB")
         default:
-            return Recommendation(tier: "Power", model: "Qwen 3 32B", quant: "Q4_K_M", rationale: "Higher quality on 32 GB+")
+            return Recommendation(tier: "Power", model: "Qwen 3.5 35B-A3B", quant: "Q4_K_M", rationale: "Best quality/speed on 24 GB+ with MoE")
         }
     }
 

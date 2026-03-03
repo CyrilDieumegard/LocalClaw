@@ -120,6 +120,9 @@ final class InstallerViewModel: ObservableObject {
         OpenRouterModel(id: "openrouter/mistralai/codestral", displayName: "Codestral"),
         
         // Qwen
+        OpenRouterModel(id: "openrouter/qwen/qwen3.5-35b-a3b", displayName: "Qwen 3.5 35B-A3B"),
+        OpenRouterModel(id: "openrouter/qwen/qwen3.5-27b", displayName: "Qwen 3.5 27B"),
+        OpenRouterModel(id: "openrouter/qwen/qwen3.5-122b-a10b", displayName: "Qwen 3.5 122B-A10B"),
         OpenRouterModel(id: "openrouter/qwen/qwen-2.5-72b-instruct", displayName: "Qwen 2.5 72B"),
         OpenRouterModel(id: "openrouter/qwen/qwen-2.5-32b-instruct", displayName: "Qwen 2.5 32B"),
         OpenRouterModel(id: "openrouter/qwen/qwen-2.5-14b-instruct", displayName: "Qwen 2.5 14B"),
@@ -218,14 +221,17 @@ final class InstallerViewModel: ObservableObject {
     var statusService: String = "PENDING"
 
     let modelOptions = [
-        "Qwen 3 8B Q4_K_M",
+        "Qwen 3.5 35B-A3B Q4_K_M",
+        "Qwen 3.5 27B Q4_K_M",
         "Qwen 3 14B Q4_K_M",
-        "Qwen 3 32B Q4_K_M",
+        "Qwen 3 8B Q4_K_M",
         "DeepSeek R1 14B Q4_K_M",
         "Llama 3.3 8B Q4_K_M"
     ]
 
     let modelQueries: [String: String] = [
+        "Qwen 3.5 35B-A3B Q4_K_M": "qwen3.5-35b-a3b@q4_k_m",
+        "Qwen 3.5 27B Q4_K_M": "qwen3.5-27b@q4_k_m",
         "Qwen 3 8B Q4_K_M": "qwen-3-8b@q4_k_m",
         "Qwen 3 14B Q4_K_M": "qwen-3-14b@q4_k_m",
         "Qwen 3 32B Q4_K_M": "qwen-3-32b@q4_k_m",
@@ -234,6 +240,8 @@ final class InstallerViewModel: ObservableObject {
     ]
 
     let localProviderModelIds: [String: String] = [
+        "Qwen 3.5 35B-A3B Q4_K_M": "qwen3.5-35b-a3b",
+        "Qwen 3.5 27B Q4_K_M": "qwen3.5-27b",
         "Qwen 3 8B Q4_K_M": "qwen3-8b",
         "Qwen 3 14B Q4_K_M": "qwen3-14b",
         "Qwen 3 32B Q4_K_M": "qwen3-32b",
@@ -2431,6 +2439,9 @@ struct ContentView: View {
                             Text("Mistral Large").tag("openrouter/mistralai/mistral-large")
                             Text("Mistral Medium").tag("openrouter/mistralai/mistral-medium")
                             Text("Mistral Small").tag("openrouter/mistralai/mistral-small")
+                            Text("Qwen 3.5 35B-A3B").tag("openrouter/qwen/qwen3.5-35b-a3b")
+                            Text("Qwen 3.5 27B").tag("openrouter/qwen/qwen3.5-27b")
+                            Text("Qwen 3.5 122B-A10B").tag("openrouter/qwen/qwen3.5-122b-a10b")
                             Text("Qwen 2.5 72B").tag("openrouter/qwen/qwen-2.5-72b-instruct")
                             Text("Qwen 2.5 32B").tag("openrouter/qwen/qwen-2.5-32b-instruct")
                             Text("Grok 2").tag("openrouter/x-ai/grok-2")
