@@ -4,7 +4,7 @@ import AppKit
 
 @MainActor
 final class InstallerViewModel: ObservableObject {
-    enum Screen { case license, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter }
+    enum Screen { case license, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup }
     enum InstallMode: String {
         case llmOnly = "Install Local LLM only"
         case openClawOnly = "Install OpenClaw only"
@@ -239,6 +239,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var hasNodeInstalled = false
     @Published var hasHomebrewInstalled = false
     @Published var hasConfigCacheInstalled = false
+    @Published var channelSetupLogs: String = ""
 
     // Installation status tracking (using existing status variables)
     var statusNodeJS: String {
@@ -1047,6 +1048,37 @@ final class InstallerViewModel: ObservableObject {
 
     func openLMStudio() { _ = engine.shell("open -a 'LM Studio' || true") }
     func openOpenClaw() { _ = engine.shell("openclaw || true") }
+
+    func openChannelDocs() {
+        _ = engine.shell("open 'https://docs.openclaw.ai/channels' || true")
+    }
+
+    func openTerminalChannelLogin(_ channel: String) {
+        let script = """
+        #!/bin/zsh
+        clear
+        echo "=========================================="
+        echo "  LocalClaw Channel Setup: \(channel.capitalized)"
+        echo "=========================================="
+        echo ""
+        echo "Running: openclaw channels login --channel \(channel)"
+        echo ""
+        openclaw channels login --channel \(channel)
+        echo ""
+        echo "If login is done, test with:"
+        echo "openclaw message send --channel \(channel) --message \"LocalClaw test\""
+        echo ""
+        read -p "Press Enter to close..."
+        """
+
+        let path = "/tmp/localclaw_channel_\(channel).sh"
+        try? script.write(toFile: path, atomically: true, encoding: .utf8)
+        _ = engine.shell("chmod +x \(path)")
+        _ = engine.shell("open -a Terminal \(path)")
+
+        channelSetupLogs = channelSetupLogs.isEmpty ? "Started \(channel) login in Terminal" : channelSetupLogs + "\nStarted \(channel) login in Terminal"
+    }
+
     func openDashboard() { 
         // Reload token from config first to ensure we have the latest (gateway install may have regenerated it)
         loadTokenFromConfig()
@@ -1751,6 +1783,7 @@ struct ProgressSteps: View {
         case .controlCenter: return 0
         case .commandCenter: return 0
         case .uninstallCenter: return 0
+        case .channelSetup: return 0
         }
     }
 
@@ -1841,6 +1874,7 @@ struct ContentView: View {
                             case .controlCenter: controlCenter
                             case .commandCenter: commandCenter
                             case .uninstallCenter: uninstallCenter
+                            case .channelSetup: channelSetup
                             }
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1916,6 +1950,7 @@ struct ContentView: View {
             }
             sidebarButton("Updates", icon: "arrow.clockwise", isActive: vm.screen == .updates) { vm.screen = .updates }
             sidebarButton("Command Center", icon: "slider.horizontal.3", isActive: vm.screen == .commandCenter) { vm.screen = .commandCenter }
+            sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup) { vm.screen = .channelSetup }
             sidebarButton("Uninstall", icon: "trash", isActive: vm.screen == .uninstallCenter) { vm.screen = .uninstallCenter }
 
             Spacer()
@@ -2043,6 +2078,9 @@ struct ContentView: View {
                     }
                     HomeTile(label: "Control Center", icon: "slider.horizontal.3", selected: false) {
                         vm.screen = .commandCenter
+                    }
+                    HomeTile(label: "Channels", icon: "bubble.left.and.bubble.right", selected: false) {
+                        vm.screen = .channelSetup
                     }
                     HomeTile(label: "Uninstall Center", icon: "trash", selected: false) {
                         vm.screen = .uninstallCenter
@@ -2456,6 +2494,54 @@ struct ContentView: View {
 
             ScrollView {
                 Text(vm.logs.isEmpty ? "No update run yet. Click CHECK or UPDATE ALL." : vm.logs)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(UI.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            }
+            .scrollIndicators(.hidden)
+            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+            .frame(maxHeight: .infinity)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
+    }
+
+    var channelSetup: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("CHANNEL SETUP")
+                        .font(AppFont.heading(28))
+                        .foregroundStyle(UI.text)
+                    Text("Connect messaging channels in one click.")
+                        .font(AppFont.body(13))
+                        .foregroundStyle(UI.muted)
+                }
+                Spacer()
+                Button("Open docs") { vm.openChannelDocs() }
+                    .buttonStyle(CTAButton(primary: false))
+            }
+
+            HStack(spacing: 10) {
+                Button("Connect Telegram") { vm.openTerminalChannelLogin("telegram") }
+                    .buttonStyle(CTAButton(primary: true))
+                Button("Connect WhatsApp") { vm.openTerminalChannelLogin("whatsapp") }
+                    .buttonStyle(CTAButton(primary: false))
+                Button("Connect Discord") { vm.openTerminalChannelLogin("discord") }
+                    .buttonStyle(CTAButton(primary: false))
+            }
+
+            Text("Live log")
+                .font(AppFont.bodySemi(14))
+                .foregroundStyle(UI.muted)
+
+            ScrollView {
+                Text(vm.channelSetupLogs.isEmpty ? "No channel setup started yet." : vm.channelSetupLogs)
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(UI.text)
                     .frame(maxWidth: .infinity, alignment: .leading)
