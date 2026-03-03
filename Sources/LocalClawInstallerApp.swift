@@ -233,6 +233,13 @@ final class InstallerViewModel: ObservableObject {
     @Published var uninstallHomebrewSelected = false
     @Published var uninstallConfigsSelected = true
 
+    @Published var hasLMStudioInstalled = false
+    @Published var hasLocalModelsInstalled = false
+    @Published var hasOpenClawInstalled = false
+    @Published var hasNodeInstalled = false
+    @Published var hasHomebrewInstalled = false
+    @Published var hasConfigCacheInstalled = false
+
     // Installation status tracking (using existing status variables)
     var statusNodeJS: String {
         get { statusNode }
@@ -386,6 +393,7 @@ final class InstallerViewModel: ObservableObject {
 
         // Load OpenRouter model from config if exists
         loadOpenRouterModelFromConfig()
+        refreshUninstallInventory()
 
         if isActivated && !engine.hasCommand("brew") {
             showHomebrewPrompt = true
@@ -1513,6 +1521,20 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    func refreshUninstallInventory() {
+        hasLMStudioInstalled = engine.hasLMStudioApp()
+        hasLocalModelsInstalled = FileManager.default.fileExists(atPath: NSHomeDirectory() + "/.lmstudio/models") ||
+            FileManager.default.fileExists(atPath: NSHomeDirectory() + "/.cache/lm-studio/models")
+        hasOpenClawInstalled = engine.hasCommand("openclaw") ||
+            FileManager.default.fileExists(atPath: NSHomeDirectory() + "/.openclaw")
+        hasNodeInstalled = engine.hasCommand("node")
+        hasHomebrewInstalled = engine.hasCommand("brew")
+        hasConfigCacheInstalled = FileManager.default.fileExists(atPath: NSHomeDirectory() + "/.openclaw") ||
+            FileManager.default.fileExists(atPath: NSHomeDirectory() + "/.openclaw-gateway") ||
+            FileManager.default.fileExists(atPath: NSHomeDirectory() + "/.cache/openclaw") ||
+            FileManager.default.fileExists(atPath: NSHomeDirectory() + "/.cache/lm-studio")
+    }
+
     func runSelectedUninstall() {
         if isUninstalling { return }
 
@@ -1568,6 +1590,7 @@ final class InstallerViewModel: ObservableObject {
             await MainActor.run {
                 self.uninstallAppend("✅ Uninstall finished")
                 self.isUninstalling = false
+                self.refreshUninstallInventory()
             }
         }
     }
@@ -2473,12 +2496,12 @@ struct ContentView: View {
 
                 HStack(alignment: .top, spacing: 14) {
                     VStack(alignment: .leading, spacing: 8) {
-                        uninstallRow("LM Studio app", isOn: $vm.uninstallLMStudioSelected)
-                        uninstallRow("Local LLM models", isOn: $vm.uninstallModelsSelected)
-                        uninstallRow("OpenClaw CLI and services", isOn: $vm.uninstallOpenClawSelected)
-                        uninstallRow("Node.js and npm/npx", isOn: $vm.uninstallNodeSelected)
-                        uninstallRow("Homebrew", isOn: $vm.uninstallHomebrewSelected)
-                        uninstallRow("Configs and cache", isOn: $vm.uninstallConfigsSelected)
+                        uninstallRow("LM Studio app", isOn: $vm.uninstallLMStudioSelected, installed: vm.hasLMStudioInstalled)
+                        uninstallRow("Local LLM models", isOn: $vm.uninstallModelsSelected, installed: vm.hasLocalModelsInstalled)
+                        uninstallRow("OpenClaw CLI and services", isOn: $vm.uninstallOpenClawSelected, installed: vm.hasOpenClawInstalled)
+                        uninstallRow("Node.js and npm/npx", isOn: $vm.uninstallNodeSelected, installed: vm.hasNodeInstalled)
+                        uninstallRow("Homebrew", isOn: $vm.uninstallHomebrewSelected, installed: vm.hasHomebrewInstalled)
+                        uninstallRow("Configs and cache", isOn: $vm.uninstallConfigsSelected, installed: vm.hasConfigCacheInstalled)
                     }
                     .padding(12)
                     .frame(maxWidth: 520, alignment: .leading)
@@ -2537,21 +2560,34 @@ struct ContentView: View {
             .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
         }
         .scrollIndicators(.hidden)
+        .onAppear { vm.refreshUninstallInventory() }
     }
 
-    func uninstallRow(_ title: String, isOn: Binding<Bool>) -> some View {
-        Toggle(isOn: isOn) {
-            Text(title)
-                .font(AppFont.bodySemi(13))
-                .foregroundStyle(UI.text)
-                .lineLimit(1)
+    func uninstallRow(_ title: String, isOn: Binding<Bool>, installed: Bool) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(AppFont.bodySemi(13))
+                    .foregroundStyle(UI.text)
+                    .lineLimit(1)
+                Text(installed ? "Installed" : "Not installed")
+                    .font(AppFont.body(11))
+                    .foregroundStyle(installed ? Color(NSColor.systemGreen) : UI.muted)
+            }
+
+            Spacer()
+
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .disabled(!installed)
         }
-        .toggleStyle(.switch)
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.05), lineWidth: 1))
+        .opacity(installed ? 1 : 0.7)
     }
 
     func setupStepRow(_ step: String, _ title: String, _ state: String) -> some View {
