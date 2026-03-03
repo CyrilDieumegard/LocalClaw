@@ -430,7 +430,7 @@ final class CommandCenterViewModel: ObservableObject {
         }
 
         var profiles = root["profiles"] as? [String: Any] ?? [:]
-        profiles["lmstudio"] = ["type": "api_key", "key": "lm-studio"]
+        profiles["lmstudio"] = ["provider": "lmstudio", "type": "api_key", "key": "lm-studio"]
         root["profiles"] = profiles
         if root["version"] == nil { root["version"] = 1 }
 
@@ -527,6 +527,9 @@ final class CommandCenterViewModel: ObservableObject {
         var localId = detectInstalledLocalModel()
         if localId.hasPrefix("lmstudio/") {
             localId = String(localId.dropFirst("lmstudio/".count))
+        }
+        if localId.contains("/") {
+            localId = String(localId.split(separator: "/").last ?? Substring(localId))
         }
         addLog(.command, "Switching to local mode (lmstudio/\(localId))...")
         setPrimaryModel("lmstudio/\(localId)", mode: "local")

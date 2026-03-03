@@ -1149,7 +1149,7 @@ final class InstallerViewModel: ObservableObject {
         }
 
         var profiles = root["profiles"] as? [String: Any] ?? [:]
-        profiles["lmstudio"] = ["type": "api_key", "key": "lm-studio"]
+        profiles["lmstudio"] = ["provider": "lmstudio", "type": "api_key", "key": "lm-studio"]
         root["profiles"] = profiles
         if root["version"] == nil { root["version"] = 1 }
 
@@ -1198,6 +1198,9 @@ final class InstallerViewModel: ObservableObject {
             var localId = detectLiveLMStudioModelId()
             if localId.hasPrefix("lmstudio/") {
                 localId = String(localId.dropFirst("lmstudio/".count))
+            }
+            if localId.contains("/") {
+                localId = String(localId.split(separator: "/").last ?? Substring(localId))
             }
 
             if localId.isEmpty {
