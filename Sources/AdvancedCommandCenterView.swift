@@ -53,11 +53,18 @@ final class AsyncCommandRunner: @unchecked Sendable {
 /// ViewModel for real-time Gateway monitoring
 @MainActor
 final class CommandCenterViewModel: ObservableObject {
+    enum InferenceMode: String, CaseIterable, Identifiable {
+        case local = "Local"
+        case cloud = "Cloud"
+        var id: String { rawValue }
+    }
+
     @Published var gatewayStatus: GatewayStatus = .unknown
     @Published var gatewayLogs: [LogEntry] = []
     @Published var isMonitoring: Bool = false
     @Published var autoScroll: Bool = true
     @Published var selectedModel: String = "kimi"
+    @Published var inferenceModeSelection: InferenceMode = .cloud
     @Published var systemInfo: SystemInfo = SystemInfo()
     @Published var usageSnapshot: SystemUsageSnapshot = SystemUsageSnapshot(cpuPercent: 0, memoryUsedGB: 0, memoryAvailableGB: 0, memoryTotalGB: 0, swapUsedGB: 0, swapTotalGB: 0, lmStudioMemoryMB: 0, openclawMemoryMB: 0, nodeMemoryMB: 0)
     @Published var heavyProcesses: [ProcessUsageItem] = []
@@ -482,15 +489,25 @@ final class CommandCenterViewModel: ObservableObject {
     }
 
     func switchToLocalLLM() {
+        inferenceModeSelection = .local
         let localId = detectInstalledLocalModel()
         addLog(.command, "Switching to local mode (lmstudio/\(localId))...")
         setPrimaryModel("lmstudio/\(localId)", mode: "local")
     }
 
     func switchToCloudLLM() {
+        inferenceModeSelection = .cloud
         guard let model = availableModels.first(where: { $0.key == selectedModel }) else { return }
         addLog(.command, "Switching to cloud mode (\(model.name))...")
         setPrimaryModel(model.id, mode: "cloud")
+    }
+
+    func applyInferenceMode() {
+        if inferenceModeSelection == .local {
+            switchToLocalLLM()
+        } else {
+            switchToCloudLLM()
+        }
     }
 
     func changeModel() {
@@ -878,18 +895,14 @@ struct AdvancedCommandCenterView: View {
                 .kerning(0.6)
                 .foregroundStyle(UI.accent)
 
-            HStack(spacing: 8) {
-                Button(action: { viewModel.switchToLocalLLM() }) {
-                    Label("Local LLM", systemImage: "internaldrive")
-                        .frame(maxWidth: .infinity)
+            Picker("Inference", selection: $viewModel.inferenceModeSelection) {
+                ForEach(CommandCenterViewModel.InferenceMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
                 }
-                .buttonStyle(CTAButton(primary: false))
-
-                Button(action: { viewModel.switchToCloudLLM() }) {
-                    Label("Cloud", systemImage: "cloud.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(CTAButton(primary: true))
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: viewModel.inferenceModeSelection) { _ in
+                viewModel.applyInferenceMode()
             }
 
             Picker("Cloud model", selection: $viewModel.selectedModel) {
@@ -898,6 +911,12 @@ struct AdvancedCommandCenterView: View {
                 }
             }
             .pickerStyle(.menu)
+            .disabled(viewModel.inferenceModeSelection == .local)
+
+            Button(viewModel.inferenceModeSelection == .local ? "Apply Local" : "Apply Cloud") {
+                viewModel.applyInferenceMode()
+            }
+            .buttonStyle(CTAButton(primary: true))
         }
         .padding(12)
         .background(UI.cardSoft)
