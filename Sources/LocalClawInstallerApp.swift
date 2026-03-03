@@ -1790,63 +1790,49 @@ struct ContentView: View {
         ZStack {
             LinearGradient(colors: [UI.bg, UI.bg2], startPoint: .topLeading, endPoint: .bottomTrailing)
                 .ignoresSafeArea()
-            VStack(alignment: .leading, spacing: 18) {
-                HStack(spacing: 10) {
-                    BrandLogoView(size: 22)
-                    Text("LocalClaw")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(UI.text)
 
-                    Text(vm.inferenceMode == .local ? "LOCAL" : "CLOUD")
-                        .font(AppFont.bodySemi(11))
-                        .foregroundStyle(vm.inferenceMode == .local ? Color(NSColor.systemGreen) : UI.accent)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
+            if vm.screen == .license {
+                VStack(spacing: 16) {
+                    topBar
+                    license
+                }
+                .frame(maxWidth: 1120)
+                .padding(.horizontal, 28)
+                .padding(.vertical, 18)
+            } else {
+                HStack(spacing: 16) {
+                    sidebar
+                        .frame(width: 240)
 
-                    Spacer()
+                    VStack(spacing: 14) {
+                        topBar
 
-                    Picker("", selection: $vm.inferenceMode) {
-                        Text("Cloud").tag(InstallerViewModel.InferenceMode.cloud)
-                        Text("Local").tag(InstallerViewModel.InferenceMode.local)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 180)
-                    .onChange(of: vm.inferenceMode) { newValue in
-                        if newValue == .local {
-                            if vm.selectedModel.isEmpty { vm.selectedModel = vm.recommendation }
-                            vm.selectedProvider = .custom
-                        } else {
-                            if vm.selectedProvider == .custom { vm.selectedProvider = .openRouter }
+                        Group {
+                            switch vm.screen {
+                            case .license: license
+                            case .home: home
+                            case .options: options
+                            case .install: install
+                            case .ready: ready
+                            case .updates: updates
+                            case .controlCenter: controlCenter
+                            case .commandCenter: commandCenter
+                            case .uninstallCenter: uninstallCenter
+                            }
                         }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     }
                 }
-
-                ProgressSteps(screen: vm.screen)
-
-                switch vm.screen {
-                case .license: license
-                case .home: home
-                case .options: options
-                case .install: install
-                case .ready: ready
-                case .updates: updates
-                case .controlCenter: controlCenter
-                case .commandCenter: commandCenter
-                case .uninstallCenter: uninstallCenter
-                }
-                Spacer()
+                .frame(maxWidth: 1260, maxHeight: .infinity)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
             }
-            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ReturnToHome"))) { _ in
-                vm.screen = .home
-            }
-            .frame(maxWidth: 1120)
-            .padding(.horizontal, 40)
-            .padding(.top, 18)
-            .padding(.bottom, 26)
         }
-        .frame(minWidth: 820, idealWidth: 1040, maxWidth: 1400,
-               minHeight: 620, idealHeight: 760, maxHeight: 980)
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ReturnToHome"))) { _ in
+            vm.screen = .home
+        }
+        .frame(minWidth: 980, idealWidth: 1220, maxWidth: 1500,
+               minHeight: 700, idealHeight: 820, maxHeight: 1100)
         .onAppear { vm.bootstrap() }
         .alert("Homebrew Required", isPresented: $vm.showHomebrewPrompt) {
             Button("Install Homebrew", role: .none) { vm.installHomebrewWithUserConsent() }
@@ -1854,6 +1840,98 @@ struct ContentView: View {
         } message: {
             Text("Homebrew is needed to install LM Studio, Node.js and OpenClaw. Click 'Install Homebrew' and enter your Mac password when prompted.")
         }
+    }
+
+    private var topBar: some View {
+        HStack(spacing: 10) {
+            BrandLogoView(size: 20)
+            Text("LocalClaw")
+                .font(AppFont.bodySemi(18))
+                .foregroundStyle(UI.text)
+
+            Text(vm.inferenceMode == .local ? "LOCAL" : "CLOUD")
+                .font(AppFont.bodySemi(10))
+                .foregroundStyle(vm.inferenceMode == .local ? Color(NSColor.systemGreen) : UI.accent)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
+
+            Spacer()
+
+            Picker("", selection: $vm.inferenceMode) {
+                Text("Cloud").tag(InstallerViewModel.InferenceMode.cloud)
+                Text("Local").tag(InstallerViewModel.InferenceMode.local)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 170)
+            .onChange(of: vm.inferenceMode) { newValue in
+                if newValue == .local {
+                    if vm.selectedModel.isEmpty { vm.selectedModel = vm.recommendation }
+                    vm.selectedProvider = .custom
+                } else if vm.selectedProvider == .custom {
+                    vm.selectedProvider = .openRouter
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(RoundedRectangle(cornerRadius: 12).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.08), lineWidth: 1))
+    }
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("NAVIGATION")
+                .font(AppFont.heading(10))
+                .kerning(0.6)
+                .foregroundStyle(UI.muted)
+                .padding(.bottom, 4)
+
+            sidebarButton("Home", icon: "house", isActive: vm.screen == .home) { vm.screen = .home }
+            sidebarButton("Install", icon: "plus.circle", isActive: vm.screen == .options || vm.screen == .install || vm.screen == .ready) {
+                vm.chooseMode(.fullInstall)
+            }
+            sidebarButton("Updates", icon: "arrow.clockwise", isActive: vm.screen == .updates) { vm.screen = .updates }
+            sidebarButton("Command Center", icon: "slider.horizontal.3", isActive: vm.screen == .commandCenter) { vm.screen = .commandCenter }
+            sidebarButton("Uninstall", icon: "trash", isActive: vm.screen == .uninstallCenter) { vm.screen = .uninstallCenter }
+
+            Spacer()
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Machine")
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+                Text("\(vm.chip)")
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(UI.text)
+                    .lineLimit(2)
+                Text(vm.ram)
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 14).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.black.opacity(0.08), lineWidth: 1))
+    }
+
+    private func sidebarButton(_ title: String, icon: String, isActive: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .frame(width: 16)
+                Text(title)
+                    .font(AppFont.bodySemi(13))
+                Spacer()
+            }
+            .foregroundStyle(isActive ? .white : UI.text)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .background(RoundedRectangle(cornerRadius: 9).fill(isActive ? UI.accent : UI.cardSoft))
+        }
+        .buttonStyle(.plain)
     }
 
     var license: some View {
@@ -1929,7 +2007,7 @@ struct ContentView: View {
                     .buttonStyle(CTAButton(primary: vm.inferenceMode == .cloud))
                 }
             }
-            .padding(.top, 50)
+            .padding(.top, 8)
 
             VStack {
                 Spacer(minLength: 0)
