@@ -1137,25 +1137,89 @@ final class InstallerViewModel: ObservableObject {
         refreshControlCenter()
     }
 
+    private func ensureLMStudioAuthProfileForMainAgent() {
+        let path = NSHomeDirectory() + "/.openclaw/agents/main/agent/auth-profiles.json"
+        let dir = (path as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+
+        var root: [String: Any] = ["version": 1, "profiles": [:]]
+        if let data = FileManager.default.contents(atPath: path),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            root = json
+        }
+
+        var profiles = root["profiles"] as? [String: Any] ?? [:]
+        profiles["lmstudio"] = ["type": "api_key", "key": "lm-studio"]
+        root["profiles"] = profiles
+        if root["version"] == nil { root["version"] = 1 }
+
+        if let out = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]) {
+            try? out.write(to: URL(fileURLWithPath: path), options: .atomic)
+        }
+    }
+
+    private func detectLiveLMStudioModelId() -> String {
+        let cmd = "curl -s http://127.0.0.1:1234/v1/models 2>/dev/null | python3 -c \"import sys,json; d=json.load(sys.stdin); m=(d.get('data') or []); print((m[0].get('id') if m else ''))\" 2>/dev/null || true"
+        let (_, out) = engine.shell(cmd)
+        return out.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+    }
+
+    private func writePrimaryAndSecondaryModel(primary: String, secondary: String?) {
+        let path = NSHomeDirectory() + "/.openclaw/openclaw.json"
+        guard let data = FileManager.default.contents(atPath: path),
+              var json = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) else {
+            _ = engine.writeModelToConfig(modelIdentifier: primary)
+            return
+        }
+
+        var agents = json["agents"] as? [String: Any] ?? [:]
+        var defaults = agents["defaults"] as? [String: Any] ?? [:]
+        var model = defaults["model"] as? [String: Any] ?? [:]
+        model["primary"] = primary
+        if let secondary, !secondary.isEmpty {
+            model["secondary"] = secondary
+        } else {
+            model.removeValue(forKey: "secondary")
+        }
+        defaults["model"] = model
+        agents["defaults"] = defaults
+        json["agents"] = agents
+
+        if let out = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]) {
+            try? out.write(to: URL(fileURLWithPath: path), options: .atomic)
+        }
+    }
+
     func applyInferenceModeSwitch() {
         if inferenceMode == .local {
-            if selectedModel.isEmpty {
-                selectedModel = modelOptions.contains("Qwen 3 14B Q4_K_M") ? "Qwen 3 14B Q4_K_M" : (recommendation.isEmpty ? (modelOptions.first ?? "") : recommendation)
-            }
             selectedProvider = .custom
-            if let localId = localProviderModelIds[selectedModel] {
-                let result = engine.writeModelToConfig(modelIdentifier: "lmstudio/\(localId)")
-                controlCenterLogs += "[\(result.state.rawValue)] Switched to Local: \(selectedModel)\n"
+            ensureLMStudioAuthProfileForMainAgent()
+
+            var localId = detectLiveLMStudioModelId()
+            if localId.hasPrefix("lmstudio/") {
+                localId = String(localId.dropFirst("lmstudio/".count))
+            }
+
+            if localId.isEmpty {
+                if selectedModel.isEmpty {
+                    selectedModel = modelOptions.contains("Qwen 3 14B Q4_K_M") ? "Qwen 3 14B Q4_K_M" : (recommendation.isEmpty ? (modelOptions.first ?? "") : recommendation)
+                }
+                localId = localProviderModelIds[selectedModel] ?? ""
+            }
+
+            if !localId.isEmpty {
+                writePrimaryAndSecondaryModel(primary: "lmstudio/\(localId)", secondary: nil)
+                controlCenterLogs += "[OK] Switched to Local: lmstudio/\(localId)\n"
             } else {
-                controlCenterLogs += "[FAIL] Local switch failed: unknown local model mapping\n"
+                controlCenterLogs += "[FAIL] Local switch failed: no model found in LM Studio\n"
             }
         } else {
             selectedProvider = .openRouter
             if selectedOpenRouterModel.isEmpty {
                 selectedOpenRouterModel = "openrouter/moonshotai/kimi-k2.5"
             }
-            let result = engine.writeModelToConfig(modelIdentifier: selectedOpenRouterModel)
-            controlCenterLogs += "[\(result.state.rawValue)] Switched to Cloud: \(selectedOpenRouterModel)\n"
+            writePrimaryAndSecondaryModel(primary: selectedOpenRouterModel, secondary: nil)
+            controlCenterLogs += "[OK] Switched to Cloud: \(selectedOpenRouterModel)\n"
         }
 
         _ = engine.shell("openclaw gateway restart --preserve-token 2>/dev/null || openclaw gateway restart 2>/dev/null || true")
