@@ -2549,6 +2549,43 @@ struct ContentView: View {
         .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
     }
 
+    func gaugeColor(_ ratio: Double) -> Color {
+        if ratio >= 0.85 { return Color(NSColor.systemRed) }
+        if ratio >= 0.65 { return Color(NSColor.systemOrange) }
+        return Color(NSColor.systemGreen)
+    }
+
+    func machineGaugeRow(_ name: String, _ value: String, ratio: Double) -> some View {
+        let clamped = min(max(ratio, 0), 1)
+        let color = gaugeColor(clamped)
+
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text(name)
+                    .font(AppFont.bodySemi(13))
+                    .foregroundStyle(UI.text)
+                Spacer()
+                Text(value)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(UI.muted)
+            }
+
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 999)
+                        .fill(Color.black.opacity(0.08))
+                    RoundedRectangle(cornerRadius: 999)
+                        .fill(color)
+                        .frame(width: max(4, geo.size.width * clamped))
+                }
+            }
+            .frame(height: 8)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+    }
+
     var controlCenter: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -2582,10 +2619,18 @@ struct ContentView: View {
                         .foregroundStyle(UI.accent)
 
                     VStack(spacing: 8) {
-                        machineMetricRow("CPU", String(format: "%.1f %%", vm.machineCPUPercent))
-                        machineMetricRow("Memory", String(format: "%.1f / %.1f GB", vm.machineMemoryUsedGB, max(vm.machineMemoryTotalGB, 0.1)))
+                        machineGaugeRow("CPU", String(format: "%.1f %%", vm.machineCPUPercent), ratio: vm.machineCPUPercent / 100.0)
+                        machineGaugeRow(
+                            "Memory",
+                            String(format: "%.1f / %.1f GB", vm.machineMemoryUsedGB, max(vm.machineMemoryTotalGB, 0.1)),
+                            ratio: vm.machineMemoryTotalGB > 0 ? vm.machineMemoryUsedGB / vm.machineMemoryTotalGB : 0
+                        )
                         machineMetricRow("Memory available", String(format: "%.1f GB", vm.machineMemoryAvailableGB))
-                        machineMetricRow("Swap", vm.machineSwapTotalGB > 0 ? String(format: "%.2f / %.2f GB", vm.machineSwapUsedGB, vm.machineSwapTotalGB) : "0 GB")
+                        machineGaugeRow(
+                            "Swap",
+                            vm.machineSwapTotalGB > 0 ? String(format: "%.2f / %.2f GB", vm.machineSwapUsedGB, vm.machineSwapTotalGB) : "0 GB",
+                            ratio: vm.machineSwapTotalGB > 0 ? vm.machineSwapUsedGB / vm.machineSwapTotalGB : 0
+                        )
                         machineMetricRow("LM Studio", "\(vm.machineLMStudioMB) MB")
                         machineMetricRow("OpenClaw", "\(vm.machineOpenclawMB) MB")
                         machineMetricRow("Node", "\(vm.machineNodeMB) MB")
