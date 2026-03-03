@@ -152,6 +152,16 @@ final class InstallerViewModel: ObservableObject {
     @Published var selectedControlModel: String = "kimi"
     @Published var mode: InstallMode = .openClawOnly
 
+    @Published var machineCPUPercent: Double = 0
+    @Published var machineMemoryUsedGB: Double = 0
+    @Published var machineMemoryAvailableGB: Double = 0
+    @Published var machineMemoryTotalGB: Double = 0
+    @Published var machineSwapUsedGB: Double = 0
+    @Published var machineSwapTotalGB: Double = 0
+    @Published var machineLMStudioMB: Int = 0
+    @Published var machineOpenclawMB: Int = 0
+    @Published var machineNodeMB: Int = 0
+
     @Published var licenseEmail: String = ""
     @Published var licenseKey: String = ""
     @Published var activationStatus: String = "License required"
@@ -437,6 +447,17 @@ final class InstallerViewModel: ObservableObject {
         let status = engine.getGatewayStatus()
         gatewayIsRunning = status.isRunning
         currentModel = engine.getCurrentModel()
+
+        let usage = engine.getSystemUsage()
+        machineCPUPercent = usage.cpuPercent
+        machineMemoryUsedGB = usage.memoryUsedGB
+        machineMemoryAvailableGB = usage.memoryAvailableGB
+        machineMemoryTotalGB = usage.memoryTotalGB
+        machineSwapUsedGB = usage.swapUsedGB
+        machineSwapTotalGB = usage.swapTotalGB
+        machineLMStudioMB = usage.lmStudioMemoryMB
+        machineOpenclawMB = usage.openclawMemoryMB
+        machineNodeMB = usage.nodeMemoryMB
     }
 
     func runDoctor() {
@@ -2513,6 +2534,21 @@ struct ContentView: View {
         }
     }
 
+    func machineMetricRow(_ name: String, _ value: String) -> some View {
+        HStack {
+            Text(name)
+                .font(AppFont.bodySemi(13))
+                .foregroundStyle(UI.text)
+            Spacer()
+            Text(value)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(UI.muted)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+    }
+
     var controlCenter: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -2534,6 +2570,25 @@ struct ContentView: View {
                     HStack(spacing: 16) {
                         statusIndicator("Gateway", vm.gatewayIsRunning ? "Online" : "Offline", vm.gatewayIsRunning ? .green : .red)
                         statusIndicator("Model", vm.currentModel, .blue)
+                    }
+                }
+                .padding(14)
+                .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("MACHINE USAGE")
+                        .font(AppFont.heading(11))
+                        .kerning(0.6)
+                        .foregroundStyle(UI.accent)
+
+                    VStack(spacing: 8) {
+                        machineMetricRow("CPU", String(format: "%.1f %%", vm.machineCPUPercent))
+                        machineMetricRow("Memory", String(format: "%.1f / %.1f GB", vm.machineMemoryUsedGB, max(vm.machineMemoryTotalGB, 0.1)))
+                        machineMetricRow("Memory available", String(format: "%.1f GB", vm.machineMemoryAvailableGB))
+                        machineMetricRow("Swap", vm.machineSwapTotalGB > 0 ? String(format: "%.2f / %.2f GB", vm.machineSwapUsedGB, vm.machineSwapTotalGB) : "0 GB")
+                        machineMetricRow("LM Studio", "\(vm.machineLMStudioMB) MB")
+                        machineMetricRow("OpenClaw", "\(vm.machineOpenclawMB) MB")
+                        machineMetricRow("Node", "\(vm.machineNodeMB) MB")
                     }
                 }
                 .padding(14)
