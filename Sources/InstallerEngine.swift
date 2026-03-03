@@ -549,6 +549,21 @@ final class InstallerEngine: @unchecked Sendable {
         return code == 0 ? StepResult(state: .ok, message: "Killed heavy LocalClaw/LM Studio processes") : StepResult(state: .fail, message: out)
     }
 
+    func runPerformanceAutopilot() -> StepResult {
+        let command = [
+            "pkill -f '.lmstudio/.internal/utils/node' 2>/dev/null || true",
+            "pkill -f 'Google Chrome Helper (Renderer)' 2>/dev/null || true",
+            "pkill -f 'Brave Browser Helper (Renderer)' 2>/dev/null || true",
+            "pkill -f 'Discord Helper (Renderer)' 2>/dev/null || true",
+            "pkill -f 'Genspark Helper (Renderer)' 2>/dev/null || true"
+        ].joined(separator: "; ")
+
+        let (code, out) = shell(command)
+        return code == 0
+            ? StepResult(state: .ok, message: "Performance autopilot applied: killed heavy helper processes")
+            : StepResult(state: .fail, message: out)
+    }
+
     /// Open the OpenClaw dashboard in the default browser
     func openDashboard() -> StepResult {
         // Start gateway if not running

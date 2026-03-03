@@ -61,6 +61,9 @@ final class CommandCenterViewModel: ObservableObject {
     @Published var systemInfo: SystemInfo = SystemInfo()
     @Published var usageSnapshot: SystemUsageSnapshot = SystemUsageSnapshot(cpuPercent: 0, memoryUsedGB: 0, memoryAvailableGB: 0, memoryTotalGB: 0, swapUsedGB: 0, swapTotalGB: 0, lmStudioMemoryMB: 0, openclawMemoryMB: 0, nodeMemoryMB: 0)
     @Published var heavyProcesses: [ProcessUsageItem] = []
+    @Published var perfHealthLabel: String = "Healthy"
+    @Published var perfHealthColor: Color = .green
+    @Published var perfAdvice: String = "Machine is stable"
     
     private var monitoringTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
@@ -183,6 +186,23 @@ final class CommandCenterViewModel: ObservableObject {
     func refreshResourceInfo() {
         usageSnapshot = engine.getSystemUsage()
         heavyProcesses = engine.topProcesses(limit: 12)
+
+        let memRatio = usageSnapshot.memoryTotalGB > 0 ? usageSnapshot.memoryUsedGB / usageSnapshot.memoryTotalGB : 0
+        let swap = usageSnapshot.swapUsedGB
+
+        if swap >= 3 || memRatio >= 0.9 {
+            perfHealthLabel = "Critical"
+            perfHealthColor = .red
+            perfAdvice = "High memory pressure. Run Fix My Speed and close heavy browser tabs."
+        } else if swap >= 1 || memRatio >= 0.75 {
+            perfHealthLabel = "Warning"
+            perfHealthColor = .orange
+            perfAdvice = "Memory load is elevated. Keep one browser and reduce active tabs."
+        } else {
+            perfHealthLabel = "Healthy"
+            perfHealthColor = .green
+            perfAdvice = "Machine is stable."
+        }
     }
 
     func killProcess(_ pid: Int) {
@@ -193,6 +213,12 @@ final class CommandCenterViewModel: ObservableObject {
 
     func emergencyCleanup() {
         let result = engine.emergencyCleanup()
+        addLog(result.state == .ok ? .success : .error, result.message)
+        refreshResourceInfo()
+    }
+
+    func fixMySpeed() {
+        let result = engine.runPerformanceAutopilot()
         addLog(result.state == .ok ? .success : .error, result.message)
         refreshResourceInfo()
     }
@@ -1011,6 +1037,35 @@ struct AdvancedCommandCenterView: View {
                     }
                     .buttonStyle(CTAButton(primary: false))
                 }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Performance Autopilot")
+                            .font(AppFont.bodySemi(13))
+                            .foregroundStyle(UI.text)
+                        Spacer()
+                        Text(viewModel.perfHealthLabel)
+                            .font(AppFont.bodySemi(11))
+                            .foregroundStyle(viewModel.perfHealthColor)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(RoundedRectangle(cornerRadius: 999).fill(UI.card))
+                    }
+
+                    Text(viewModel.perfAdvice)
+                        .font(AppFont.body(12))
+                        .foregroundStyle(UI.muted)
+
+                    HStack(spacing: 8) {
+                        Button("Fix My Speed") { viewModel.fixMySpeed() }
+                            .buttonStyle(CTAButton(primary: true))
+                        Button("Refresh Analysis") { viewModel.refreshResourceInfo() }
+                            .buttonStyle(CTAButton(primary: false))
+                    }
+                }
+                .padding(10)
+                .background(UI.cardSoft)
+                .cornerRadius(8)
 
                 resourceGaugeRow("CPU", value: String(format: "%.1f%%", viewModel.usageSnapshot.cpuPercent), ratio: viewModel.usageSnapshot.cpuPercent / 100)
                 resourceGaugeRow(
