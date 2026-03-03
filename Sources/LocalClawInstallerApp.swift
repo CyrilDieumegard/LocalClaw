@@ -1137,6 +1137,31 @@ final class InstallerViewModel: ObservableObject {
         refreshControlCenter()
     }
 
+    func applyInferenceModeSwitch() {
+        if inferenceMode == .local {
+            if selectedModel.isEmpty {
+                selectedModel = modelOptions.contains("Qwen 3 14B Q4_K_M") ? "Qwen 3 14B Q4_K_M" : (recommendation.isEmpty ? (modelOptions.first ?? "") : recommendation)
+            }
+            selectedProvider = .custom
+            if let localId = localProviderModelIds[selectedModel] {
+                let result = engine.writeModelToConfig(modelIdentifier: "lmstudio/\(localId)")
+                controlCenterLogs += "[\(result.state.rawValue)] Switched to Local: \(selectedModel)\n"
+            } else {
+                controlCenterLogs += "[FAIL] Local switch failed: unknown local model mapping\n"
+            }
+        } else {
+            selectedProvider = .openRouter
+            if selectedOpenRouterModel.isEmpty {
+                selectedOpenRouterModel = "openrouter/moonshotai/kimi-k2.5"
+            }
+            let result = engine.writeModelToConfig(modelIdentifier: selectedOpenRouterModel)
+            controlCenterLogs += "[\(result.state.rawValue)] Switched to Cloud: \(selectedOpenRouterModel)\n"
+        }
+
+        _ = engine.shell("openclaw gateway restart --preserve-token 2>/dev/null || openclaw gateway restart 2>/dev/null || true")
+        refreshControlCenter()
+    }
+
     func runHealthCheck() {
         healthLogs = "Running health check...\n"
 
@@ -2044,13 +2069,8 @@ struct ContentView: View {
             }
             .pickerStyle(.segmented)
             .frame(width: 170)
-            .onChange(of: vm.inferenceMode) { newValue in
-                if newValue == .local {
-                    if vm.selectedModel.isEmpty { vm.selectedModel = vm.recommendation }
-                    vm.selectedProvider = .custom
-                } else if vm.selectedProvider == .custom {
-                    vm.selectedProvider = .openRouter
-                }
+            .onChange(of: vm.inferenceMode) { _ in
+                vm.applyInferenceModeSwitch()
             }
         }
         .padding(.horizontal, 14)
