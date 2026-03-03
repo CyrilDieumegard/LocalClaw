@@ -1654,26 +1654,26 @@ struct HomeTile: View {
         Button(action: action) {
             VStack(spacing: 14) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
                         .fill(cardFill)
 
                     Image(systemName: icon)
-                        .font(.system(size: 86, weight: .medium))
+                        .font(.system(size: 64, weight: .medium))
                         .symbolRenderingMode(.monochrome)
                         .foregroundStyle(iconColor)
-                        .offset(y: -6)
+                        .offset(y: -4)
                 }
-                .frame(width: 240, height: 240)
-                .overlay(RoundedRectangle(cornerRadius: 28).stroke(cardStroke, lineWidth: selected ? 1.5 : 1))
-                .shadow(color: selected ? UI.accent.opacity(0.10) : Color.black.opacity(0.06), radius: selected ? 16 : 10, x: 0, y: 8)
+                .frame(width: 180, height: 180)
+                .overlay(RoundedRectangle(cornerRadius: 22).stroke(cardStroke, lineWidth: selected ? 1.5 : 1))
+                .shadow(color: selected ? UI.accent.opacity(0.10) : Color.black.opacity(0.06), radius: selected ? 12 : 8, x: 0, y: 6)
 
                 Text(label)
-                    .font(AppFont.bodySemi(22))
+                    .font(AppFont.bodySemi(18))
                     .foregroundStyle(Color.black.opacity(0.86))
                     .multilineTextAlignment(.center)
-                    .frame(width: 240)
+                    .frame(width: 180)
             }
-            .frame(width: 250)
+            .frame(width: 190)
         }
         .buttonStyle(.plain)
     }
@@ -1810,8 +1810,8 @@ struct ContentView: View {
             .padding(.top, 18)
             .padding(.bottom, 26)
         }
-        .frame(minWidth: 900, idealWidth: 980, maxWidth: 1200,
-               minHeight: 680, idealHeight: 760, maxHeight: 900)
+        .frame(minWidth: 820, idealWidth: 1040, maxWidth: 1400,
+               minHeight: 620, idealHeight: 760, maxHeight: 980)
         .onAppear { vm.bootstrap() }
         .alert("Homebrew Required", isPresented: $vm.showHomebrewPrompt) {
             Button("Install Homebrew", role: .none) { vm.installHomebrewWithUserConsent() }
@@ -1898,8 +1898,7 @@ struct ContentView: View {
 
             VStack {
                 Spacer(minLength: 0)
-                HStack(alignment: .top, spacing: 20) {
-                    Spacer(minLength: 0)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 190, maximum: 220), spacing: 18, alignment: .top)], spacing: 20) {
                     HomeTile(label: "Install", icon: "plus.circle", selected: false) {
                         vm.chooseMode(.fullInstall)
                     }
@@ -1912,8 +1911,9 @@ struct ContentView: View {
                     HomeTile(label: "Uninstall Center", icon: "trash", selected: false) {
                         vm.screen = .uninstallCenter
                     }
-                    Spacer(minLength: 0)
                 }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 8)
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
