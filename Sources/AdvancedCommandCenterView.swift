@@ -1,6 +1,7 @@
 import SwiftUI
 import Foundation
 import Combine
+import AppKit
 
 // MARK: - Async Command Runner (Non-isolated)
 
@@ -208,6 +209,34 @@ final class CommandCenterViewModel: ObservableObject {
     
     func clearLogs() {
         gatewayLogs.removeAll()
+    }
+
+    func copyResourceReportToClipboard() {
+        let top = heavyProcesses.prefix(10).map {
+            "- PID \($0.pid) | CPU \(String(format: "%.1f", $0.cpuPercent))% | RAM \($0.memoryMB)MB | \($0.command)"
+        }.joined(separator: "\n")
+
+        let report = """
+        LocalClaw Resource Report
+        Timestamp: \(ISO8601DateFormatter().string(from: Date()))
+
+        CPU: \(String(format: "%.1f", usageSnapshot.cpuPercent))%
+        Memory: \(String(format: "%.1f", usageSnapshot.memoryUsedGB))/\(String(format: "%.1f", usageSnapshot.memoryTotalGB)) GB
+        Memory Available: \(String(format: "%.1f", usageSnapshot.memoryAvailableGB)) GB
+        Swap: \(String(format: "%.2f", usageSnapshot.swapUsedGB))/\(String(format: "%.2f", usageSnapshot.swapTotalGB)) GB
+
+        Process Memory:
+        - LM Studio: \(usageSnapshot.lmStudioMemoryMB) MB
+        - OpenClaw: \(usageSnapshot.openclawMemoryMB) MB
+        - Node: \(usageSnapshot.nodeMemoryMB) MB
+
+        Heavy Processes:
+        \(top.isEmpty ? "- none" : top)
+        """
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(report, forType: .string)
+        addLog(.success, "Resource report copied to clipboard")
     }
     
     // MARK: - Async Command Execution
@@ -971,10 +1000,17 @@ struct AdvancedCommandCenterView: View {
     private var resourcesPanel: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("RESOURCE DASHBOARD")
-                    .font(AppFont.heading(12))
-                    .kerning(0.6)
-                    .foregroundStyle(UI.accent)
+                HStack {
+                    Text("RESOURCE DASHBOARD")
+                        .font(AppFont.heading(12))
+                        .kerning(0.6)
+                        .foregroundStyle(UI.accent)
+                    Spacer()
+                    Button(action: { viewModel.copyResourceReportToClipboard() }) {
+                        Label("Copy to LLM", systemImage: "doc.on.doc")
+                    }
+                    .buttonStyle(CTAButton(primary: false))
+                }
 
                 resourceGaugeRow("CPU", value: String(format: "%.1f%%", viewModel.usageSnapshot.cpuPercent), ratio: viewModel.usageSnapshot.cpuPercent / 100)
                 resourceGaugeRow(
