@@ -4,7 +4,7 @@ import AppKit
 
 @MainActor
 final class InstallerViewModel: ObservableObject {
-    enum Screen { case license, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup }
+    enum Screen { case license, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, templates }
     enum InstallMode: String {
         case llmOnly = "Install Local LLM only"
         case openClawOnly = "Install OpenClaw only"
@@ -240,6 +240,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var hasHomebrewInstalled = false
     @Published var hasConfigCacheInstalled = false
     @Published var channelSetupLogs: String = ""
+    @Published var templateLogs: String = ""
 
     // Installation status tracking (using existing status variables)
     var statusNodeJS: String {
@@ -1079,6 +1080,41 @@ final class InstallerViewModel: ObservableObject {
         channelSetupLogs = channelSetupLogs.isEmpty ? "Started \(channel) login in Terminal" : channelSetupLogs + "\nStarted \(channel) login in Terminal"
     }
 
+    func applyAgentTemplate(_ template: String) {
+        switch template {
+        case "founder":
+            inferenceMode = .cloud
+            selectedProvider = .openRouter
+            selectedOpenRouterModel = "openrouter/moonshotai/kimi-k2.5"
+            _ = engine.writeModelToConfig(modelIdentifier: selectedOpenRouterModel)
+            templateLogs = "Applied Founder mode: Kimi K2.5 + cloud"
+        case "support":
+            inferenceMode = .cloud
+            selectedProvider = .openRouter
+            selectedOpenRouterModel = "openrouter/google/gemini-2.5-flash-preview"
+            _ = engine.writeModelToConfig(modelIdentifier: selectedOpenRouterModel)
+            templateLogs = "Applied Support mode: Gemini 2.5 Flash + cloud"
+        case "growth":
+            inferenceMode = .cloud
+            selectedProvider = .openRouter
+            selectedOpenRouterModel = "openrouter/openai/gpt-4o-mini"
+            _ = engine.writeModelToConfig(modelIdentifier: selectedOpenRouterModel)
+            templateLogs = "Applied Growth mode: GPT-4o Mini + cloud"
+        case "dev":
+            inferenceMode = .local
+            selectedModel = modelOptions.contains("Qwen 3 14B Q4_K_M") ? "Qwen 3 14B Q4_K_M" : modelOptions.first ?? ""
+            if let localId = localProviderModelIds[selectedModel] {
+                _ = engine.writeModelToConfig(modelIdentifier: "lmstudio/\(localId)")
+            }
+            templateLogs = "Applied Dev mode: local \(selectedModel)"
+        default:
+            templateLogs = "Unknown template"
+        }
+
+        _ = engine.shell("openclaw gateway restart --preserve-token 2>/dev/null || openclaw gateway restart 2>/dev/null || true")
+        refreshControlCenter()
+    }
+
     func openDashboard() { 
         // Reload token from config first to ensure we have the latest (gateway install may have regenerated it)
         loadTokenFromConfig()
@@ -1784,6 +1820,7 @@ struct ProgressSteps: View {
         case .commandCenter: return 0
         case .uninstallCenter: return 0
         case .channelSetup: return 0
+        case .templates: return 0
         }
     }
 
@@ -1875,6 +1912,7 @@ struct ContentView: View {
                             case .commandCenter: commandCenter
                             case .uninstallCenter: uninstallCenter
                             case .channelSetup: channelSetup
+                            case .templates: templates
                             }
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1951,6 +1989,7 @@ struct ContentView: View {
             sidebarButton("Updates", icon: "arrow.clockwise", isActive: vm.screen == .updates) { vm.screen = .updates }
             sidebarButton("Command Center", icon: "slider.horizontal.3", isActive: vm.screen == .commandCenter) { vm.screen = .commandCenter }
             sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup) { vm.screen = .channelSetup }
+            sidebarButton("Templates", icon: "square.grid.2x2", isActive: vm.screen == .templates) { vm.screen = .templates }
             sidebarButton("Uninstall", icon: "trash", isActive: vm.screen == .uninstallCenter) { vm.screen = .uninstallCenter }
 
             Spacer()
@@ -2081,6 +2120,9 @@ struct ContentView: View {
                     }
                     HomeTile(label: "Channels", icon: "bubble.left.and.bubble.right", selected: false) {
                         vm.screen = .channelSetup
+                    }
+                    HomeTile(label: "Templates", icon: "square.grid.2x2", selected: false) {
+                        vm.screen = .templates
                     }
                     HomeTile(label: "Uninstall Center", icon: "trash", selected: false) {
                         vm.screen = .uninstallCenter
@@ -2494,6 +2536,54 @@ struct ContentView: View {
 
             ScrollView {
                 Text(vm.logs.isEmpty ? "No update run yet. Click CHECK or UPDATE ALL." : vm.logs)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(UI.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            }
+            .scrollIndicators(.hidden)
+            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+            .frame(maxHeight: .infinity)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
+    }
+
+    var templates: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("AGENT TEMPLATES")
+                        .font(AppFont.heading(28))
+                        .foregroundStyle(UI.text)
+                    Text("One-click presets by use-case.")
+                        .font(AppFont.body(13))
+                        .foregroundStyle(UI.muted)
+                }
+                Spacer()
+            }
+
+            HStack(spacing: 10) {
+                Button("Founder mode") { vm.applyAgentTemplate("founder") }
+                    .buttonStyle(CTAButton(primary: true))
+                Button("Support mode") { vm.applyAgentTemplate("support") }
+                    .buttonStyle(CTAButton(primary: false))
+                Button("Growth mode") { vm.applyAgentTemplate("growth") }
+                    .buttonStyle(CTAButton(primary: false))
+                Button("Dev mode") { vm.applyAgentTemplate("dev") }
+                    .buttonStyle(CTAButton(primary: false))
+            }
+
+            Text("Applied template log")
+                .font(AppFont.bodySemi(14))
+                .foregroundStyle(UI.muted)
+
+            ScrollView {
+                Text(vm.templateLogs.isEmpty ? "No template applied yet." : vm.templateLogs)
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(UI.text)
                     .frame(maxWidth: .infinity, alignment: .leading)
