@@ -161,6 +161,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var machineLMStudioMB: Int = 0
     @Published var machineOpenclawMB: Int = 0
     @Published var machineNodeMB: Int = 0
+    @Published var topProcesses: [ProcessUsageItem] = []
 
     @Published var licenseEmail: String = ""
     @Published var licenseKey: String = ""
@@ -458,6 +459,19 @@ final class InstallerViewModel: ObservableObject {
         machineLMStudioMB = usage.lmStudioMemoryMB
         machineOpenclawMB = usage.openclawMemoryMB
         machineNodeMB = usage.nodeMemoryMB
+        topProcesses = engine.topProcesses(limit: 10)
+    }
+
+    func killHeavyProcess(_ pid: Int) {
+        let result = engine.killProcess(pid: pid)
+        controlCenterLogs += "[\(result.state.rawValue)] \(result.message)\n"
+        refreshControlCenter()
+    }
+
+    func emergencyCleanupAction() {
+        let result = engine.emergencyCleanup()
+        controlCenterLogs += "[\(result.state.rawValue)] \(result.message)\n"
+        refreshControlCenter()
     }
 
     func runDoctor() {
@@ -2634,6 +2648,49 @@ struct ContentView: View {
                         machineMetricRow("LM Studio", "\(vm.machineLMStudioMB) MB")
                         machineMetricRow("OpenClaw", "\(vm.machineOpenclawMB) MB")
                         machineMetricRow("Node", "\(vm.machineNodeMB) MB")
+                    }
+                }
+                .padding(14)
+                .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("HEAVY PROCESSES")
+                            .font(AppFont.heading(11))
+                            .kerning(0.6)
+                            .foregroundStyle(UI.accent)
+                        Spacer()
+                        Button("Emergency cleanup") { vm.emergencyCleanupAction() }
+                            .buttonStyle(CTAButton(primary: false))
+                    }
+
+                    VStack(spacing: 8) {
+                        ForEach(vm.topProcesses.prefix(8)) { proc in
+                            HStack(spacing: 8) {
+                                Text("\(proc.pid)")
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(UI.muted)
+                                    .frame(width: 58, alignment: .leading)
+                                Text(String(format: "%.1f%%", proc.cpuPercent))
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(UI.muted)
+                                    .frame(width: 56, alignment: .leading)
+                                Text("\(proc.memoryMB) MB")
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(UI.muted)
+                                    .frame(width: 82, alignment: .leading)
+                                Text(proc.command)
+                                    .font(AppFont.body(11))
+                                    .foregroundStyle(UI.text)
+                                    .lineLimit(1)
+                                Spacer()
+                                Button("Kill") { vm.killHeavyProcess(proc.pid) }
+                                    .buttonStyle(CTAButton(primary: false))
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+                        }
                     }
                 }
                 .padding(14)

@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 enum InstallState: String {
     case pending = "PENDING"
@@ -55,6 +56,14 @@ struct SystemUsageSnapshot {
     let lmStudioMemoryMB: Int
     let openclawMemoryMB: Int
     let nodeMemoryMB: Int
+}
+
+struct ProcessUsageItem: Identifiable {
+    let id = UUID()
+    let pid: Int
+    let cpuPercent: Double
+    let memoryMB: Int
+    let command: String
 }
 
 final class InstallerEngine: @unchecked Sendable {
@@ -497,6 +506,47 @@ final class InstallerEngine: @unchecked Sendable {
         }
 
         return (readValue(after: "used = "), readValue(after: "total = "))
+    }
+
+    func topProcesses(limit: Int = 8) -> [ProcessUsageItem] {
+        let cmd = "ps -Ao pid,pcpu,rss,comm | sort -k2 -nr | head -n \(max(1, limit + 1))"
+        let (_, out) = shell(cmd)
+        let lines = out.components(separatedBy: "\n").dropFirst()
+
+        return lines.compactMap { line in
+            let parts = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard parts.count >= 4,
+                  let pid = Int(parts[0]),
+                  let cpu = Double(parts[1].replacingOccurrences(of: ",", with: ".")),
+                  let rssKB = Int(parts[2]) else { return nil }
+            let command = parts.dropFirst(3).joined(separator: " ")
+            return ProcessUsageItem(pid: pid, cpuPercent: cpu, memoryMB: max(0, rssKB / 1024), command: String(command))
+        }
+    }
+
+    func killProcess(pid: Int) -> StepResult {
+        let appPid = ProcessInfo.processInfo.processIdentifier
+        if pid == appPid {
+            return StepResult(state: .fail, message: "Cannot kill LocalClaw itself")
+        }
+
+        let (_, currentUser) = shell("id -un")
+        let (_, owner) = shell("ps -o user= -p \(pid)")
+        if !owner.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           owner.trimmingCharacters(in: .whitespacesAndNewlines) != currentUser.trimmingCharacters(in: .whitespacesAndNewlines) {
+            return StepResult(state: .fail, message: "PID \(pid) is not owned by current user")
+        }
+
+        let (code, out) = shell("kill -TERM \(pid) 2>&1 || true")
+        if code == 0 {
+            return StepResult(state: .ok, message: "Sent TERM to PID \(pid)")
+        }
+        return StepResult(state: .fail, message: out)
+    }
+
+    func emergencyCleanup() -> StepResult {
+        let (code, out) = shell("pkill -f '.lmstudio/.internal/utils/node' 2>/dev/null || true; pkill -f 'LM Studio' 2>/dev/null || true; pkill -f 'openclaw-gateway' 2>/dev/null || true")
+        return code == 0 ? StepResult(state: .ok, message: "Killed heavy LocalClaw/LM Studio processes") : StepResult(state: .fail, message: out)
     }
 
     /// Open the OpenClaw dashboard in the default browser
