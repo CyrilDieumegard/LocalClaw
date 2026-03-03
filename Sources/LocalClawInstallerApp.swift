@@ -2452,42 +2452,66 @@ struct ContentView: View {
 
     var uninstallCenter: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 16) {
                 HStack {
-                    Text("UNINSTALL CENTER")
-                        .font(AppFont.heading(28))
-                        .foregroundStyle(UI.text)
-                    Spacer()
-                    Text(vm.isUninstalling ? "Running..." : "Ready")
-                        .font(AppFont.bodySemi(12))
-                        .foregroundStyle(vm.isUninstalling ? UI.accent : UI.muted)
-                }
-
-                Text("Select what you want to remove from this Mac. You can uninstall one component at a time.")
-                    .font(AppFont.body(13))
-                    .foregroundStyle(UI.muted)
-
-                VStack(spacing: 8) {
-                    uninstallRow("LM Studio app", isOn: $vm.uninstallLMStudioSelected)
-                    uninstallRow("Local LLM models", isOn: $vm.uninstallModelsSelected)
-                    uninstallRow("OpenClaw CLI and services", isOn: $vm.uninstallOpenClawSelected)
-                    uninstallRow("Node.js and npm/npx", isOn: $vm.uninstallNodeSelected)
-                    uninstallRow("Homebrew", isOn: $vm.uninstallHomebrewSelected)
-                    uninstallRow("Configs and cache", isOn: $vm.uninstallConfigsSelected)
-                }
-                .padding(12)
-                .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.07), lineWidth: 1))
-
-                HStack(spacing: 10) {
-                    Button(vm.isUninstalling ? "Working..." : "Uninstall Selected") {
-                        vm.runSelectedUninstall()
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("UNINSTALL CENTER")
+                            .font(AppFont.heading(28))
+                            .foregroundStyle(UI.text)
+                        Text("Remove components cleanly, one by one.")
+                            .font(AppFont.body(13))
+                            .foregroundStyle(UI.muted)
                     }
-                    .buttonStyle(CTAButton(primary: true))
-                    .disabled(vm.isUninstalling)
+                    Spacer()
+                    Label(vm.isUninstalling ? "Running" : "Ready", systemImage: vm.isUninstalling ? "hourglass" : "checkmark.circle.fill")
+                        .font(AppFont.bodySemi(12))
+                        .foregroundStyle(vm.isUninstalling ? UI.accent : Color(NSColor.systemGreen))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
+                }
 
-                    Button("Back") { vm.screen = .home }
-                        .buttonStyle(CTAButton(primary: false))
+                HStack(alignment: .top, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        uninstallRow("LM Studio app", isOn: $vm.uninstallLMStudioSelected)
+                        uninstallRow("Local LLM models", isOn: $vm.uninstallModelsSelected)
+                        uninstallRow("OpenClaw CLI and services", isOn: $vm.uninstallOpenClawSelected)
+                        uninstallRow("Node.js and npm/npx", isOn: $vm.uninstallNodeSelected)
+                        uninstallRow("Homebrew", isOn: $vm.uninstallHomebrewSelected)
+                        uninstallRow("Configs and cache", isOn: $vm.uninstallConfigsSelected)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: 520, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.07), lineWidth: 1))
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Safety")
+                            .font(AppFont.bodySemi(13))
+                            .foregroundStyle(UI.text)
+                        Text("Open apps may respawn background processes. Close LM Studio and browsers first for a cleaner uninstall.")
+                            .font(AppFont.body(12))
+                            .foregroundStyle(UI.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Divider().overlay(Color.black.opacity(0.08))
+
+                        Text("Actions")
+                            .font(AppFont.bodySemi(13))
+                            .foregroundStyle(UI.text)
+                        Button(vm.isUninstalling ? "Working..." : "Uninstall Selected") {
+                            vm.runSelectedUninstall()
+                        }
+                        .buttonStyle(CTAButton(primary: true))
+                        .disabled(vm.isUninstalling)
+
+                        Button("Back") { vm.screen = .home }
+                            .buttonStyle(CTAButton(primary: false))
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.07), lineWidth: 1))
                 }
 
                 Text("Live log")
@@ -2502,9 +2526,9 @@ struct ContentView: View {
                         .padding(12)
                 }
                 .scrollIndicators(.hidden)
+                .frame(minHeight: 170, maxHeight: 260)
                 .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
-                .frame(maxHeight: .infinity)
             }
             .padding(18)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -2520,11 +2544,14 @@ struct ContentView: View {
             Text(title)
                 .font(AppFont.bodySemi(13))
                 .foregroundStyle(UI.text)
+                .lineLimit(1)
         }
         .toggleStyle(.switch)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.05), lineWidth: 1))
     }
 
     func setupStepRow(_ step: String, _ title: String, _ state: String) -> some View {
