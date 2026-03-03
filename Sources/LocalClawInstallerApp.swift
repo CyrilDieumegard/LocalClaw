@@ -4,7 +4,7 @@ import AppKit
 
 @MainActor
 final class InstallerViewModel: ObservableObject {
-    enum Screen { case license, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, templates, healthCenter }
+    enum Screen { case license, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, templates, healthCenter, usageCenter }
     enum InstallMode: String {
         case llmOnly = "Install Local LLM only"
         case openClawOnly = "Install OpenClaw only"
@@ -243,6 +243,10 @@ final class InstallerViewModel: ObservableObject {
     @Published var templateLogs: String = ""
     @Published var healthLogs: String = ""
     @Published var healthStatus: String = "Unknown"
+    @Published var usageLogs: String = ""
+    @Published var estimatedMonthlyTokensM: Double = 2.0
+    @Published var estimatedMonthlyCostUSD: Double = 0
+    @Published var costAdvice: String = ""
 
     // Installation status tracking (using existing status variables)
     var statusNodeJS: String {
@@ -1155,6 +1159,27 @@ final class InstallerViewModel: ObservableObject {
         healthLogs += "Backup: \(result.1)\n"
     }
 
+    func refreshUsageCostEstimate() {
+        // Simple blended estimate ($ per 1M tokens) by current model family
+        let model = selectedOpenRouterModel.lowercased()
+        let ratePerMillion: Double
+        if model.contains("gpt-4") || model.contains("claude") { ratePerMillion = 8.0 }
+        else if model.contains("gemini") || model.contains("kimi") || model.contains("qwen") { ratePerMillion = 2.5 }
+        else { ratePerMillion = 1.5 }
+
+        estimatedMonthlyCostUSD = estimatedMonthlyTokensM * ratePerMillion
+
+        if estimatedMonthlyCostUSD <= 10 {
+            costAdvice = "Cost is low. Current setup is efficient."
+        } else if estimatedMonthlyCostUSD <= 50 {
+            costAdvice = "Cost is moderate. Consider cheaper model for low-value tasks."
+        } else {
+            costAdvice = "Cost is high. Route routine tasks to a cheaper model and keep premium models for high-value prompts."
+        }
+
+        usageLogs = String(format: "Estimated %.1fM tokens/month at $%.2f/M => $%.2f", estimatedMonthlyTokensM, ratePerMillion, estimatedMonthlyCostUSD)
+    }
+
     func openDashboard() { 
         // Reload token from config first to ensure we have the latest (gateway install may have regenerated it)
         loadTokenFromConfig()
@@ -1862,6 +1887,7 @@ struct ProgressSteps: View {
         case .channelSetup: return 0
         case .templates: return 0
         case .healthCenter: return 0
+        case .usageCenter: return 0
         }
     }
 
@@ -1955,6 +1981,7 @@ struct ContentView: View {
                             case .channelSetup: channelSetup
                             case .templates: templates
                             case .healthCenter: healthCenter
+                            case .usageCenter: usageCenter
                             }
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -2033,6 +2060,7 @@ struct ContentView: View {
             sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup) { vm.screen = .channelSetup }
             sidebarButton("Templates", icon: "square.grid.2x2", isActive: vm.screen == .templates) { vm.screen = .templates }
             sidebarButton("Health", icon: "cross.case", isActive: vm.screen == .healthCenter) { vm.screen = .healthCenter }
+            sidebarButton("Usage & Cost", icon: "dollarsign.circle", isActive: vm.screen == .usageCenter) { vm.screen = .usageCenter }
             sidebarButton("Uninstall", icon: "trash", isActive: vm.screen == .uninstallCenter) { vm.screen = .uninstallCenter }
 
             Spacer()
@@ -2169,6 +2197,9 @@ struct ContentView: View {
                     }
                     HomeTile(label: "Health", icon: "cross.case", selected: false) {
                         vm.screen = .healthCenter
+                    }
+                    HomeTile(label: "Usage & Cost", icon: "dollarsign.circle", selected: false) {
+                        vm.screen = .usageCenter
                     }
                     HomeTile(label: "Uninstall Center", icon: "trash", selected: false) {
                         vm.screen = .uninstallCenter
@@ -2697,6 +2728,67 @@ struct ContentView: View {
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
+    }
+
+    var usageCenter: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("USAGE & COST")
+                        .font(AppFont.heading(28))
+                        .foregroundStyle(UI.text)
+                    Text("Estimate token costs and optimize model spend.")
+                        .font(AppFont.body(13))
+                        .foregroundStyle(UI.muted)
+                }
+                Spacer()
+                Text(String(format: "$%.2f / month", vm.estimatedMonthlyCostUSD))
+                    .font(AppFont.bodySemi(13))
+                    .foregroundStyle(UI.accent)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Estimated monthly tokens: \(String(format: "%.1f", vm.estimatedMonthlyTokensM))M")
+                    .font(AppFont.bodySemi(13))
+                    .foregroundStyle(UI.text)
+                Slider(value: $vm.estimatedMonthlyTokensM, in: 0.1...50, step: 0.1)
+                HStack(spacing: 10) {
+                    Button("Refresh estimate") { vm.refreshUsageCostEstimate() }
+                        .buttonStyle(CTAButton(primary: true))
+                    Text(vm.costAdvice)
+                        .font(AppFont.body(12))
+                        .foregroundStyle(UI.muted)
+                }
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+
+            Text("Estimator log")
+                .font(AppFont.bodySemi(14))
+                .foregroundStyle(UI.muted)
+
+            ScrollView {
+                Text(vm.usageLogs.isEmpty ? "No estimate run yet." : vm.usageLogs)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(UI.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            }
+            .scrollIndicators(.hidden)
+            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+            .frame(maxHeight: .infinity)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
+        .onAppear { vm.refreshUsageCostEstimate() }
     }
 
     var channelSetup: some View {
