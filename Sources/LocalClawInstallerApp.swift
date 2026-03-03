@@ -4,7 +4,7 @@ import AppKit
 
 @MainActor
 final class InstallerViewModel: ObservableObject {
-    enum Screen { case license, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, templates }
+    enum Screen { case license, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, templates, healthCenter }
     enum InstallMode: String {
         case llmOnly = "Install Local LLM only"
         case openClawOnly = "Install OpenClaw only"
@@ -241,6 +241,8 @@ final class InstallerViewModel: ObservableObject {
     @Published var hasConfigCacheInstalled = false
     @Published var channelSetupLogs: String = ""
     @Published var templateLogs: String = ""
+    @Published var healthLogs: String = ""
+    @Published var healthStatus: String = "Unknown"
 
     // Installation status tracking (using existing status variables)
     var statusNodeJS: String {
@@ -1115,6 +1117,44 @@ final class InstallerViewModel: ObservableObject {
         refreshControlCenter()
     }
 
+    func runHealthCheck() {
+        healthLogs = "Running health check...\n"
+
+        let gateway = engine.getGatewayStatus()
+        healthLogs += "Gateway: \(gateway.isRunning ? "Online" : "Offline")\n"
+
+        let verify = engine.verifyOpenClawSetup()
+        healthLogs += "Verify: [\(verify.state.rawValue)] \(verify.message)\n"
+
+        let usage = engine.getSystemUsage()
+        healthLogs += String(format: "CPU: %.1f%% | RAM: %.1f/%.1f GB | Swap: %.2f/%.2f GB\n", usage.cpuPercent, usage.memoryUsedGB, usage.memoryTotalGB, usage.swapUsedGB, usage.swapTotalGB)
+
+        if verify.state == .ok && gateway.isRunning && usage.swapUsedGB < 2 {
+            healthStatus = "Healthy"
+        } else if usage.swapUsedGB >= 4 || verify.state == .fail {
+            healthStatus = "Critical"
+        } else {
+            healthStatus = "Warning"
+        }
+    }
+
+    func runQuickRepair() {
+        healthLogs += "\nRunning quick repair...\n"
+        let doctor = engine.runDoctorRepair()
+        healthLogs += "Doctor: [\(doctor.state.rawValue)] \(doctor.message)\n"
+        let restart = engine.restartGateway()
+        healthLogs += "Gateway restart: [\(restart.state.rawValue)] \(restart.message)\n"
+        runHealthCheck()
+    }
+
+    func backupOpenClawConfig() {
+        let ts = Int(Date().timeIntervalSince1970)
+        let src = NSHomeDirectory() + "/.openclaw/openclaw.json"
+        let dst = NSHomeDirectory() + "/.openclaw/openclaw.backup.\(ts).json"
+        let result = engine.shell("[ -f '\(src)' ] && cp '\(src)' '\(dst)' && echo '\(dst)' || echo 'missing config'")
+        healthLogs += "Backup: \(result.1)\n"
+    }
+
     func openDashboard() { 
         // Reload token from config first to ensure we have the latest (gateway install may have regenerated it)
         loadTokenFromConfig()
@@ -1821,6 +1861,7 @@ struct ProgressSteps: View {
         case .uninstallCenter: return 0
         case .channelSetup: return 0
         case .templates: return 0
+        case .healthCenter: return 0
         }
     }
 
@@ -1913,6 +1954,7 @@ struct ContentView: View {
                             case .uninstallCenter: uninstallCenter
                             case .channelSetup: channelSetup
                             case .templates: templates
+                            case .healthCenter: healthCenter
                             }
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1990,6 +2032,7 @@ struct ContentView: View {
             sidebarButton("Command Center", icon: "slider.horizontal.3", isActive: vm.screen == .commandCenter) { vm.screen = .commandCenter }
             sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup) { vm.screen = .channelSetup }
             sidebarButton("Templates", icon: "square.grid.2x2", isActive: vm.screen == .templates) { vm.screen = .templates }
+            sidebarButton("Health", icon: "cross.case", isActive: vm.screen == .healthCenter) { vm.screen = .healthCenter }
             sidebarButton("Uninstall", icon: "trash", isActive: vm.screen == .uninstallCenter) { vm.screen = .uninstallCenter }
 
             Spacer()
@@ -2123,6 +2166,9 @@ struct ContentView: View {
                     }
                     HomeTile(label: "Templates", icon: "square.grid.2x2", selected: false) {
                         vm.screen = .templates
+                    }
+                    HomeTile(label: "Health", icon: "cross.case", selected: false) {
+                        vm.screen = .healthCenter
                     }
                     HomeTile(label: "Uninstall Center", icon: "trash", selected: false) {
                         vm.screen = .uninstallCenter
@@ -2584,6 +2630,58 @@ struct ContentView: View {
 
             ScrollView {
                 Text(vm.templateLogs.isEmpty ? "No template applied yet." : vm.templateLogs)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(UI.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            }
+            .scrollIndicators(.hidden)
+            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+            .frame(maxHeight: .infinity)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
+    }
+
+    var healthCenter: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("HEALTH & RECOVERY")
+                        .font(AppFont.heading(28))
+                        .foregroundStyle(UI.text)
+                    Text("Diagnose, repair, and backup your setup.")
+                        .font(AppFont.body(13))
+                        .foregroundStyle(UI.muted)
+                }
+                Spacer()
+                Text(vm.healthStatus)
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(vm.healthStatus == "Healthy" ? .green : (vm.healthStatus == "Critical" ? .red : .orange))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
+            }
+
+            HStack(spacing: 10) {
+                Button("Run Health Check") { vm.runHealthCheck() }
+                    .buttonStyle(CTAButton(primary: true))
+                Button("Quick Repair") { vm.runQuickRepair() }
+                    .buttonStyle(CTAButton(primary: false))
+                Button("Backup Config") { vm.backupOpenClawConfig() }
+                    .buttonStyle(CTAButton(primary: false))
+            }
+
+            Text("Diagnostics log")
+                .font(AppFont.bodySemi(14))
+                .foregroundStyle(UI.muted)
+
+            ScrollView {
+                Text(vm.healthLogs.isEmpty ? "No diagnostic run yet." : vm.healthLogs)
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(UI.text)
                     .frame(maxWidth: .infinity, alignment: .leading)
