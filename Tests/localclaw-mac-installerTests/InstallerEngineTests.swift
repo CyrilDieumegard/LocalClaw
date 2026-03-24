@@ -28,7 +28,7 @@ struct InstallerEngineTests {
 
         let reco = engine.recommend(for: profile)
 
-        #expect(reco.model == "Qwen 3 32B")
+        #expect(reco.model == "Qwen 3.5 35B-A3B")
         #expect(reco.quant == "Q4_K_M")
     }
 

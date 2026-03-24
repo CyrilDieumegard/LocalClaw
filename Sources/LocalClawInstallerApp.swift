@@ -1602,26 +1602,28 @@ final class InstallerViewModel: ObservableObject {
         append("LocalClaw will detect when installation is complete.")
     }
     
+    private var installPollTask: Task<Void, Never>?
+
     private func startPollingForInstallCompletion() {
-        // Poll every 2 seconds to check status
-        var lastStatusCount = 0
-        Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { timer in
-            // Check for status updates
-            if let statusContent = try? String(contentsOfFile: "/tmp/localclaw_status", encoding: String.Encoding.utf8) {
-                let lines = statusContent.components(separatedBy: .newlines).filter { !$0.isEmpty }
-                if lines.count > lastStatusCount {
-                    let newLines = Array(lines.suffix(from: lastStatusCount))
-                    lastStatusCount = lines.count
-                    
-                    DispatchQueue.main.async {
+        installPollTask?.cancel()
+        installPollTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var lastStatusCount = 0
+
+            while !Task.isCancelled {
+                if let statusContent = try? String(contentsOfFile: "/tmp/localclaw_status", encoding: .utf8) {
+                    let lines = statusContent.components(separatedBy: .newlines).filter { !$0.isEmpty }
+                    if lines.count > lastStatusCount {
+                        let newLines = Array(lines.suffix(from: lastStatusCount))
+                        lastStatusCount = lines.count
+
                         for line in newLines {
                             let parts = line.components(separatedBy: ":")
                             if parts.count == 2 {
                                 let component = parts[0]
                                 let status = parts[1]
                                 self.append("[\(component)] \(status)")
-                                
-                                // Update specific status vars if needed
+
                                 if component == "homebrew" { self.statusHomebrew = status }
                                 if component == "lmstudio" { self.statusLMStudio = status }
                                 if component == "model" { self.statusModel = status }
@@ -1633,30 +1635,25 @@ final class InstallerViewModel: ObservableObject {
                         }
                     }
                 }
-            }
-            
-            // Check if installation is complete
-            if FileManager.default.fileExists(atPath: "/tmp/localclaw_install_done") {
-                timer.invalidate()
-                // Clean up
-                try? FileManager.default.removeItem(atPath: "/tmp/localclaw_install_done")
-                try? FileManager.default.removeItem(atPath: "/tmp/localclaw_status")
-                try? FileManager.default.removeItem(atPath: "/tmp/localclaw_token")
-                
-                // Reload token FROM CONFIG (not from temp file) because gateway install may have regenerated it
-                DispatchQueue.main.async {
+
+                if FileManager.default.fileExists(atPath: "/tmp/localclaw_install_done") {
+                    try? FileManager.default.removeItem(atPath: "/tmp/localclaw_install_done")
+                    try? FileManager.default.removeItem(atPath: "/tmp/localclaw_status")
+                    try? FileManager.default.removeItem(atPath: "/tmp/localclaw_token")
+
                     self.loadTokenFromConfig()
                     if !self.gatewayToken.isEmpty {
                         self.append("✓ Token synced from config: \(self.gatewayToken.prefix(16))...")
                     }
-                }
-                
-                DispatchQueue.main.async {
+
                     self.isRunning = false
                     self.refreshVersions()
                     self.screen = .ready
                     self.append("Installation completed!")
+                    break
                 }
+
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
     }
