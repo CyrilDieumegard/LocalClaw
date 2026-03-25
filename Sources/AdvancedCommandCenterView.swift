@@ -166,7 +166,6 @@ final class CommandCenterViewModel: ObservableObject {
         addLog(.info, "Monitoring started")
 
         if availableModels.isEmpty {
-            availableModels = fallbackModels
             refreshOpenRouterModels()
         }
 
@@ -433,14 +432,6 @@ final class CommandCenterViewModel: ObservableObject {
         })
     }
     
-    private let fallbackModels: [(key: String, name: String, id: String)] = [
-        ("openrouter/moonshotai/kimi-k2.5", "Kimi K2.5", "openrouter/moonshotai/kimi-k2.5"),
-        ("openrouter/anthropic/claude-3.5-sonnet", "Claude 3.5 Sonnet", "openrouter/anthropic/claude-3.5-sonnet"),
-        ("openrouter/openai/gpt-4o", "GPT-4o", "openrouter/openai/gpt-4o"),
-        ("openrouter/google/gemini-2.5-flash-preview", "Gemini 2.5 Flash", "openrouter/google/gemini-2.5-flash-preview"),
-        ("openrouter/deepseek/deepseek-chat", "DeepSeek Chat", "openrouter/deepseek/deepseek-chat"),
-        ("openrouter/nvidia/nemotron-3-nano-4b", "Nemotron 3 Nano 4B", "openrouter/nvidia/nemotron-3-nano-4b")
-    ]
 
     private struct OpenRouterModelsResponse: Decodable {
         struct Item: Decodable {
@@ -451,18 +442,24 @@ final class CommandCenterViewModel: ObservableObject {
     }
 
     func refreshOpenRouterModels() {
-        guard let url = URL(string: "https://openrouter.ai/api/v1/models") else {
-            availableModels = fallbackModels
-            return
-        }
+        guard let url = URL(string: "https://openrouter.ai/api/v1/models") else { return }
 
-        URLSession.shared.dataTask(with: url) { data, _, error in
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("https://localclaw.io", forHTTPHeaderField: "HTTP-Referer")
+        request.setValue("LocalClaw", forHTTPHeaderField: "X-Title")
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
             Task { @MainActor in
                 guard error == nil,
                       let data,
+                      let http = response as? HTTPURLResponse,
+                      (200...299).contains(http.statusCode),
                       let decoded = try? JSONDecoder().decode(OpenRouterModelsResponse.self, from: data) else {
-                    self.availableModels = self.fallbackModels
-                    self.addLog(.warning, "Using fallback cloud model list")
+                    self.availableModels = []
+                    self.addLog(.error, "Could not load OpenRouter model catalog")
                     return
                 }
 
@@ -474,15 +471,11 @@ final class CommandCenterViewModel: ObservableObject {
                     }
                     .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
-                if mapped.isEmpty {
-                    self.availableModels = self.fallbackModels
-                } else {
-                    self.availableModels = mapped
-                    if !self.availableModels.contains(where: { $0.key == self.selectedModel }) {
-                        self.selectedModel = self.availableModels.first?.key ?? self.fallbackModels.first!.key
-                    }
-                    self.addLog(.success, "Loaded \(mapped.count) models from OpenRouter")
+                self.availableModels = mapped
+                if !self.availableModels.contains(where: { $0.key == self.selectedModel }) {
+                    self.selectedModel = self.availableModels.first?.key ?? ""
                 }
+                self.addLog(.success, "Loaded \(mapped.count) models from OpenRouter")
             }
         }.resume()
     }
@@ -610,8 +603,8 @@ final class CommandCenterViewModel: ObservableObject {
 
     func switchToCloudLLM() {
         inferenceModeSelection = .cloud
-        guard let model = availableModels.first(where: { $0.key == selectedModel }) ?? fallbackModels.first(where: { $0.key == selectedModel }) else {
-            addLog(.error, "Cloud model not found in list")
+        guard let model = availableModels.first(where: { $0.key == selectedModel }) else {
+            addLog(.error, "Cloud model not found. Refresh the OpenRouter catalog first.")
             return
         }
         addLog(.command, "Switching to cloud mode (\(model.name))...")
@@ -1054,12 +1047,25 @@ struct AdvancedCommandCenterView: View {
             }
 
             if viewModel.inferenceModeSelection == .cloud {
-                Picker("Cloud model", selection: $viewModel.selectedModel) {
-                    ForEach(viewModel.availableModels, id: \.key) { model in
-                        Text(model.name).tag(model.key)
+                HStack(spacing: 8) {
+                    if viewModel.availableModels.isEmpty {
+                        Text("OpenRouter catalog not loaded")
+                            .font(AppFont.body(12))
+                            .foregroundStyle(UI.muted)
+                    } else {
+                        Picker("Cloud model", selection: $viewModel.selectedModel) {
+                            ForEach(viewModel.availableModels, id: \.key) { model in
+                                Text(model.name).tag(model.key)
+                            }
+                        }
+                        .pickerStyle(.menu)
                     }
+
+                    Button("Refresh") {
+                        viewModel.refreshOpenRouterModels()
+                    }
+                    .buttonStyle(CTAButton(primary: false))
                 }
-                .pickerStyle(.menu)
             }
 
             Text(viewModel.inferenceModeSelection == .local ? "You are configuring Local mode (LM Studio)." : "You are configuring Cloud mode (OpenRouter model).")
