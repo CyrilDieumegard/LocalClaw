@@ -847,13 +847,19 @@ struct AdvancedCommandCenterView: View {
         .cornerRadius(10)
     }
     
+    @State private var showAdvancedActions = false
+
     private var actionsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("QUICK ACTIONS")
+            Text("ACTIONS")
                 .font(AppFont.heading(10))
                 .kerning(0.6)
                 .foregroundStyle(UI.accent)
-            
+
+            Text("Essentials")
+                .font(AppFont.bodySemi(12))
+                .foregroundStyle(UI.text)
+
             VStack(spacing: 8) {
                 ActionButton(
                     title: "Start Gateway",
@@ -861,69 +867,78 @@ struct AdvancedCommandCenterView: View {
                     color: .green,
                     action: { viewModel.startGateway() }
                 )
-                
-                ActionButton(
-                    title: "Stop Gateway",
-                    icon: "stop.fill",
-                    color: .red,
-                    action: { viewModel.stopGateway() }
-                )
-                
-                ActionButton(
-                    title: "Install Gateway Service",
-                    icon: "arrow.down.circle.fill",
-                    color: .purple,
-                    action: { viewModel.installGatewayService() }
-                )
-                
+
                 ActionButton(
                     title: "Restart Gateway",
                     icon: "arrow.clockwise",
                     color: .orange,
                     action: { viewModel.restartGateway() }
                 )
-                
+
+                ActionButton(
+                    title: "Stop Gateway",
+                    icon: "stop.fill",
+                    color: .red,
+                    action: { viewModel.stopGateway() }
+                )
+
                 ActionButton(
                     title: "Run Doctor",
                     icon: "stethoscope",
                     color: .blue,
                     action: { viewModel.runDoctor() }
                 )
-                
-                ActionButton(
-                    title: "Fix Auth",
-                    icon: "key.fill",
-                    color: .red,
-                    action: { viewModel.fixAuth() }
-                )
-                
+
                 ActionButton(
                     title: "Open Dashboard",
                     icon: "globe",
                     color: .purple,
                     action: { viewModel.openDashboard() }
                 )
-                
-                ActionButton(
-                    title: "View Config",
-                    icon: "doc.text",
-                    color: .gray,
-                    action: { viewModel.viewConfig() }
-                )
-                
-                ActionButton(
-                    title: "Open Workspace",
-                    icon: "folder",
-                    color: .gray,
-                    action: { viewModel.openWorkspace() }
-                )
-                
-                ActionButton(
-                    title: "Update OpenClaw",
-                    icon: "arrow.down.circle",
-                    color: .blue,
-                    action: { viewModel.updateOpenClaw() }
-                )
+            }
+
+            DisclosureGroup(isExpanded: $showAdvancedActions) {
+                VStack(spacing: 8) {
+                    ActionButton(
+                        title: "Install Gateway Service",
+                        icon: "arrow.down.circle.fill",
+                        color: .purple,
+                        action: { viewModel.installGatewayService() }
+                    )
+
+                    ActionButton(
+                        title: "Fix Auth",
+                        icon: "key.fill",
+                        color: .red,
+                        action: { viewModel.fixAuth() }
+                    )
+
+                    ActionButton(
+                        title: "View Config",
+                        icon: "doc.text",
+                        color: .gray,
+                        action: { viewModel.viewConfig() }
+                    )
+
+                    ActionButton(
+                        title: "Open Workspace",
+                        icon: "folder",
+                        color: .gray,
+                        action: { viewModel.openWorkspace() }
+                    )
+
+                    ActionButton(
+                        title: "Update OpenClaw",
+                        icon: "arrow.down.circle",
+                        color: .blue,
+                        action: { viewModel.updateOpenClaw() }
+                    )
+                }
+                .padding(.top, 8)
+            } label: {
+                Text("Advanced")
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(UI.muted)
             }
         }
         .padding(12)
@@ -934,7 +949,7 @@ struct AdvancedCommandCenterView: View {
     
     private var modelSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("AI MODEL")
+            Text("MODE & MODEL")
                 .font(AppFont.heading(10))
                 .kerning(0.6)
                 .foregroundStyle(UI.accent)
@@ -956,6 +971,10 @@ struct AdvancedCommandCenterView: View {
             }
             .pickerStyle(.menu)
             .disabled(viewModel.inferenceModeSelection == .local)
+
+            Text(viewModel.inferenceModeSelection == .local ? "Local mode uses your LM Studio model." : "Cloud mode writes selected OpenRouter model.")
+                .font(AppFont.body(11))
+                .foregroundStyle(UI.muted)
 
             Button(viewModel.inferenceModeSelection == .local ? "Apply Local" : "Apply Cloud") {
                 viewModel.applyInferenceMode()
