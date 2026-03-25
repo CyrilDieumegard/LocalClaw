@@ -1028,6 +1028,7 @@ struct AdvancedCommandCenterView: View {
             }
             .buttonStyle(CTAButton(primary: true))
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .background(UI.cardSoft)
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.06), lineWidth: 1))
@@ -1047,6 +1048,7 @@ struct AdvancedCommandCenterView: View {
                 InfoRow(label: "Port", value: viewModel.systemInfo.gatewayPort)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .background(UI.cardSoft)
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.06), lineWidth: 1))
