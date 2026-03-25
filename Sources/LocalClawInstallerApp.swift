@@ -27,6 +27,12 @@ final class InstallerViewModel: ObservableObject {
         case xAI = "xAI"
         case custom = "Custom / Multi"
 
+        enum OpenAIAuthMethod: String, CaseIterable, Identifiable {
+            case apiKey = "API Key"
+            case oauth = "OAuth (Codex / ChatGPT)"
+            var id: String { rawValue }
+        }
+
         var id: String { rawValue }
 
         var setupURL: String {
@@ -184,6 +190,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var installOpenClaw = true
 
     @Published var selectedProvider: AIProvider = .openRouter
+    @Published var openAIAuthMethod: AIProvider.OpenAIAuthMethod = .apiKey
     @Published var selectedOpenRouterModel: String = "openrouter/moonshotai/kimi-k2.5"
     @Published var openRouterKeyVerified: Bool = false
     @Published var hasExistingOpenClawSetup = false
@@ -582,7 +589,7 @@ final class InstallerViewModel: ObservableObject {
         var errors: [String] = []
 
         // Gateway token is auto-generated during installation, not required here
-        if inferenceMode == .cloud && selectedProvider.requiresApiKey && requiredProviderKey().isEmpty {
+        if inferenceMode == .cloud && providerNeedsApiKey() && requiredProviderKey().isEmpty {
             errors.append("Add API key for \(selectedProvider.rawValue)")
         }
 
@@ -604,7 +611,27 @@ final class InstallerViewModel: ObservableObject {
         return errors
     }
 
+    var isOpenAIOAuthMode: Bool {
+        selectedProvider == .openAI && openAIAuthMethod == .oauth
+    }
+
+    func effectiveModelIdentifier() -> String {
+        if isOpenAIOAuthMode { return "openai-codex/gpt-5.4" }
+        return selectedProvider.modelIdentifier
+    }
+
+    func effectiveAuthProvider() -> String {
+        if isOpenAIOAuthMode { return "openai-codex" }
+        return selectedProvider.authProvider
+    }
+
+    func providerNeedsApiKey() -> Bool {
+        if isOpenAIOAuthMode { return false }
+        return selectedProvider.requiresApiKey
+    }
+
     func requiredProviderKey() -> String {
+        if isOpenAIOAuthMode { return "" }
         switch selectedProvider {
         case .openRouter: return openRouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         case .openAI: return openAIApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -930,7 +957,7 @@ final class InstallerViewModel: ObservableObject {
         let modelQuery = self.modelQueries[selectedModel] ?? ""
         let engine = self.engine
         let token = self.gatewayToken
-        let modelId = self.selectedProvider.modelIdentifier
+        let modelId = self.effectiveModelIdentifier()
 
         Task.detached {
             await self.runStep(name: "Homebrew") { engine.installHomebrewIfNeeded() }
@@ -1330,6 +1357,45 @@ final class InstallerViewModel: ObservableObject {
         _ = engine.openDashboard() 
     }
 
+    func openTerminalOpenAIOAuth() {
+        let script = """
+        #!/bin/zsh
+        clear
+        export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+
+        OPENCLAW_BIN="$(command -v openclaw 2>/dev/null || true)"
+        echo "=========================================="
+        echo "  OpenAI OAuth Setup (Codex / ChatGPT)"
+        echo "=========================================="
+        echo ""
+
+        if [ -z "$OPENCLAW_BIN" ]; then
+            echo "[ERROR] openclaw command not found in PATH"
+            echo "Install OpenClaw first from Install tab."
+            echo ""
+        else
+            echo "Running: $OPENCLAW_BIN models auth login --provider openai-codex --set-default"
+            echo ""
+            "$OPENCLAW_BIN" models auth login --provider openai-codex --set-default
+            echo ""
+            echo "If login succeeded, use model: openai-codex/gpt-5.4"
+        fi
+
+        echo ""
+        read -r "REPLY?Press Enter to close..."
+        """
+
+        let scriptPath = "/tmp/localclaw_openai_oauth.sh"
+        do {
+            try script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
+            _ = engine.shell("chmod +x \(scriptPath)")
+            _ = engine.shell("osascript -e 'tell application \"Terminal\" to do script \"\(scriptPath)\"'")
+            append("Opened Terminal for OpenAI OAuth login")
+        } catch {
+            append("Failed to open OAuth terminal: \(error.localizedDescription)")
+        }
+    }
+
     func openTerminalAndInstall() {
         let script = """
         #!/bin/zsh
@@ -1377,7 +1443,7 @@ final class InstallerViewModel: ObservableObject {
         echo ""
         echo "[5/6] Configuring OpenClaw..."
         mkdir -p ~/.openclaw
-        echo '{"gateway":{"mode":"local","port":18789,"auth":{"mode":"token","token":"\(gatewayToken)"}},"agents":{"defaults":{"model":{"primary":"\(selectedProvider.modelIdentifier)"}}}}' > ~/.openclaw/openclaw.json
+        echo '{"gateway":{"mode":"local","port":18789,"auth":{"mode":"token","token":"\(gatewayToken)"}},"agents":{"defaults":{"model":{"primary":"\(effectiveModelIdentifier())"}}}}' > ~/.openclaw/openclaw.json
         echo "  ✓ Config saved"
         
         echo ""
@@ -1412,8 +1478,8 @@ final class InstallerViewModel: ObservableObject {
         let modelQuery = modelQueries[resolvedLocalModel] ?? ""
         let localModelSlug = modelQuery.split(separator: "@").first.map(String.init) ?? "openai"
         let providerModelId = localProviderModelIds[resolvedLocalModel] ?? localModelSlug
-        let modelId = installLMStudio ? "lmstudio/\(providerModelId)" : (selectedProvider == .openRouter ? selectedOpenRouterModel : selectedProvider.modelIdentifier)
-        let authProvider = selectedProvider.authProvider
+        let modelId = installLMStudio ? "lmstudio/\(providerModelId)" : (selectedProvider == .openRouter ? selectedOpenRouterModel : effectiveModelIdentifier())
+        let authProvider = effectiveAuthProvider()
         let apiKey = installLMStudio ? "" : requiredProviderKey()
         
         // Build script as array then join
@@ -1688,8 +1754,8 @@ final class InstallerViewModel: ObservableObject {
 
         let engine = self.engine
         let token = self.gatewayToken
-        let modelId = self.selectedProvider.modelIdentifier
-        let authProvider = self.selectedProvider.authProvider
+        let modelId = self.effectiveModelIdentifier()
+        let authProvider = self.effectiveAuthProvider()
         let apiKey = self.requiredProviderKey()
 
         Task.detached {
@@ -2538,19 +2604,42 @@ struct ContentView: View {
 
     @ViewBuilder
     private var apiKeySection: some View {
-        if vm.selectedProvider.requiresApiKey {
+        if vm.selectedProvider == .openAI {
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("OpenAI auth", selection: $vm.openAIAuthMethod) {
+                    ForEach(InstallerViewModel.AIProvider.OpenAIAuthMethod.allCases) { method in
+                        Text(method.rawValue).tag(method)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                if vm.openAIAuthMethod == .apiKey {
+                    SecureField("OpenAI API Key", text: $vm.openAIApiKey)
+                        .textFieldStyle(.roundedBorder)
+                } else {
+                    Text("OAuth uses your ChatGPT/Codex account (no API key needed).")
+                        .font(AppFont.body(11))
+                        .foregroundStyle(UI.muted)
+
+                    Button("Sign in with OpenAI (OAuth)") {
+                        vm.openTerminalOpenAIOAuth()
+                    }
+                    .buttonStyle(CTAButton(primary: false))
+                }
+            }
+        } else if vm.providerNeedsApiKey() {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     SecureField("API Key", text: bindingForProviderKey())
                         .textFieldStyle(.roundedBorder)
-                    
+
                     if vm.selectedProvider == .openRouter {
                         Button("Verify") { vm.verifyOpenRouterKey() }
                             .buttonStyle(CTAButton(primary: false))
                             .disabled(vm.openRouterApiKey.count < 20)
                     }
                 }
-                
+
                 openRouterKeyStatus
             }
         }
