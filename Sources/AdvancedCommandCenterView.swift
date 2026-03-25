@@ -137,11 +137,36 @@ final class CommandCenterViewModel: ObservableObject {
         var logPath: String = "~/.openclaw/logs/"
     }
     
+    private func syncModeFromConfig() {
+        let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
+        guard let data = FileManager.default.contents(atPath: configPath),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let agents = json["agents"] as? [String: Any],
+              let defaults = agents["defaults"] as? [String: Any],
+              let model = defaults["model"] as? [String: Any],
+              let primary = model["primary"] as? String else {
+            return
+        }
+
+        if primary.hasPrefix("lmstudio/") {
+            inferenceModeSelection = .local
+            addLog(.info, "Detected current mode: Local")
+        } else {
+            inferenceModeSelection = .cloud
+            if let mapped = availableModels.first(where: { $0.id == primary }) {
+                selectedModel = mapped.key
+            }
+            addLog(.info, "Detected current mode: Cloud")
+        }
+    }
+
     func startMonitoring() {
         isMonitoring = true
         addLog(.info, "Monitoring started")
-        
-        // Check immédiat
+
+        syncModeFromConfig()
+
+        // Immediate checks
         checkGatewayStatus()
         refreshSystemInfo()
         refreshResourceInfo()
@@ -981,15 +1006,20 @@ struct AdvancedCommandCenterView: View {
                 viewModel.applyInferenceMode()
             }
 
-            Picker("Cloud model", selection: $viewModel.selectedModel) {
-                ForEach(viewModel.availableModels, id: \.key) { model in
-                    Text(model.name).tag(model.key)
+            if viewModel.inferenceModeSelection == .cloud {
+                Picker("Cloud model", selection: $viewModel.selectedModel) {
+                    ForEach(viewModel.availableModels, id: \.key) { model in
+                        Text(model.name).tag(model.key)
+                    }
                 }
+                .pickerStyle(.menu)
             }
-            .pickerStyle(.menu)
-            .disabled(viewModel.inferenceModeSelection == .local)
 
-            Text(viewModel.inferenceModeSelection == .local ? "Local mode uses your LM Studio model." : "Cloud mode writes selected OpenRouter model.")
+            Text(viewModel.inferenceModeSelection == .local ? "You are configuring Local mode (LM Studio)." : "You are configuring Cloud mode (OpenRouter model).")
+                .font(AppFont.body(11))
+                .foregroundStyle(UI.muted)
+
+            Text("Changes apply only after clicking the button below.")
                 .font(AppFont.body(11))
                 .foregroundStyle(UI.muted)
 
