@@ -63,8 +63,9 @@ final class CommandCenterViewModel: ObservableObject {
     @Published var gatewayLogs: [LogEntry] = []
     @Published var isMonitoring: Bool = false
     @Published var autoScroll: Bool = true
-    @Published var selectedModel: String = "kimi"
+    @Published var selectedModel: String = "openrouter/moonshotai/kimi-k2.5"
     @Published var inferenceModeSelection: InferenceMode = .cloud
+    @Published var availableModels: [(key: String, name: String, id: String)] = []
     @Published var systemInfo: SystemInfo = SystemInfo()
     @Published var usageSnapshot: SystemUsageSnapshot = SystemUsageSnapshot(cpuPercent: 0, memoryUsedGB: 0, memoryAvailableGB: 0, memoryTotalGB: 0, swapUsedGB: 0, swapTotalGB: 0, lmStudioMemoryMB: 0, openclawMemoryMB: 0, nodeMemoryMB: 0)
     @Published var heavyProcesses: [ProcessUsageItem] = []
@@ -163,6 +164,11 @@ final class CommandCenterViewModel: ObservableObject {
     func startMonitoring() {
         isMonitoring = true
         addLog(.info, "Monitoring started")
+
+        if availableModels.isEmpty {
+            availableModels = fallbackModels
+            refreshOpenRouterModels()
+        }
 
         syncModeFromConfig()
 
@@ -427,21 +433,59 @@ final class CommandCenterViewModel: ObservableObject {
         })
     }
     
-    // All OpenRouter models available
-    let availableModels: [(key: String, name: String, id: String)] = [
-        ("kimi", "Kimi K2.5", "openrouter/moonshotai/kimi-k2.5"),
-        ("claude-sonnet", "Claude 3.5 Sonnet", "openrouter/anthropic/claude-3.5-sonnet"),
-        ("claude-haiku", "Claude 3.5 Haiku", "openrouter/anthropic/claude-3.5-haiku"),
-        ("gpt4o", "GPT-4o", "openrouter/openai/gpt-4o"),
-        ("gpt4o-mini", "GPT-4o Mini", "openrouter/openai/gpt-4o-mini"),
-        ("gemini", "Gemini 2.5 Flash", "openrouter/google/gemini-2.5-flash-preview"),
-        ("llama", "Llama 3.3 70B", "openrouter/meta-llama/llama-3.3-70b-instruct"),
-        ("deepseek", "DeepSeek Chat", "openrouter/deepseek/deepseek-chat"),
-        ("mistral", "Mistral Large", "openrouter/mistralai/mistral-large"),
-        ("qwen", "Qwen 3.5 35B-A3B", "openrouter/qwen/qwen3.5-35b-a3b"),
-        ("grok", "Grok 2", "openrouter/x-ai/grok-2"),
-        ("command-r", "Command R+", "openrouter/cohere/command-r-plus")
+    private let fallbackModels: [(key: String, name: String, id: String)] = [
+        ("openrouter/moonshotai/kimi-k2.5", "Kimi K2.5", "openrouter/moonshotai/kimi-k2.5"),
+        ("openrouter/anthropic/claude-3.5-sonnet", "Claude 3.5 Sonnet", "openrouter/anthropic/claude-3.5-sonnet"),
+        ("openrouter/openai/gpt-4o", "GPT-4o", "openrouter/openai/gpt-4o"),
+        ("openrouter/google/gemini-2.5-flash-preview", "Gemini 2.5 Flash", "openrouter/google/gemini-2.5-flash-preview"),
+        ("openrouter/deepseek/deepseek-chat", "DeepSeek Chat", "openrouter/deepseek/deepseek-chat"),
+        ("openrouter/nvidia/nemotron-3-nano-4b", "Nemotron 3 Nano 4B", "openrouter/nvidia/nemotron-3-nano-4b")
     ]
+
+    private struct OpenRouterModelsResponse: Decodable {
+        struct Item: Decodable {
+            let id: String
+            let name: String?
+        }
+        let data: [Item]
+    }
+
+    func refreshOpenRouterModels() {
+        guard let url = URL(string: "https://openrouter.ai/api/v1/models") else {
+            availableModels = fallbackModels
+            return
+        }
+
+        URLSession.shared.dataTask(with: url) { data, _, error in
+            Task { @MainActor in
+                guard error == nil,
+                      let data,
+                      let decoded = try? JSONDecoder().decode(OpenRouterModelsResponse.self, from: data) else {
+                    self.availableModels = self.fallbackModels
+                    self.addLog(.warning, "Using fallback cloud model list")
+                    return
+                }
+
+                let mapped: [(key: String, name: String, id: String)] = decoded.data
+                    .filter { !$0.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                    .map { item in
+                        let id = "openrouter/\(item.id)"
+                        return (id, item.name ?? item.id, id)
+                    }
+                    .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+
+                if mapped.isEmpty {
+                    self.availableModels = self.fallbackModels
+                } else {
+                    self.availableModels = mapped
+                    if !self.availableModels.contains(where: { $0.key == self.selectedModel }) {
+                        self.selectedModel = self.availableModels.first?.key ?? self.fallbackModels.first!.key
+                    }
+                    self.addLog(.success, "Loaded \(mapped.count) models from OpenRouter")
+                }
+            }
+        }.resume()
+    }
     
     private func ensureLMStudioAuthProfile() {
         let authPath = NSHomeDirectory() + "/.openclaw/agents/main/agent/auth-profiles.json"
@@ -566,7 +610,10 @@ final class CommandCenterViewModel: ObservableObject {
 
     func switchToCloudLLM() {
         inferenceModeSelection = .cloud
-        guard let model = availableModels.first(where: { $0.key == selectedModel }) else { return }
+        guard let model = availableModels.first(where: { $0.key == selectedModel }) ?? fallbackModels.first(where: { $0.key == selectedModel }) else {
+            addLog(.error, "Cloud model not found in list")
+            return
+        }
         addLog(.command, "Switching to cloud mode (\(model.name))...")
         setPrimaryModel(model.id, mode: "cloud")
     }
