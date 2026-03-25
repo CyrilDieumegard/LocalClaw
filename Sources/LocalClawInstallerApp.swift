@@ -1086,18 +1086,32 @@ final class InstallerViewModel: ObservableObject {
         let script = """
         #!/bin/zsh
         clear
+
+        # Ensure common Homebrew + user paths are available in non-login shells
+        export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+
+        OPENCLAW_BIN="$(command -v openclaw 2>/dev/null || true)"
+
         echo "=========================================="
         echo "  LocalClaw Channel Setup: \(channel.capitalized)"
         echo "=========================================="
         echo ""
-        echo "Running: openclaw channels login --channel \(channel)"
-        echo ""
-        openclaw channels login --channel \(channel)
-        echo ""
-        echo "If login is done, test with:"
-        echo "openclaw message send --channel \(channel) --message \"LocalClaw test\""
-        echo ""
-        read -p "Press Enter to close..."
+
+        if [ -z "$OPENCLAW_BIN" ]; then
+            echo "[ERROR] openclaw command not found in PATH"
+            echo "Try restarting Terminal or reinstalling OpenClaw from Install tab."
+            echo ""
+        else
+            echo "Running: $OPENCLAW_BIN channels login --channel \(channel)"
+            echo ""
+            "$OPENCLAW_BIN" channels login --channel \(channel)
+            echo ""
+            echo "If login is done, test with:"
+            echo "$OPENCLAW_BIN message send --channel \(channel) --message \"LocalClaw test\""
+            echo ""
+        fi
+
+        read -r "REPLY?Press Enter to close..."
         """
 
         let path = "/tmp/localclaw_channel_\(channel).sh"
