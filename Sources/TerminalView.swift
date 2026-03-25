@@ -30,7 +30,7 @@ final class TerminalViewModel: ObservableObject {
     /// Execute a command and stream output
     func execute(_ command: String, streaming: Bool = true) {
         guard !isRunning else {
-            append("⚠️  Une commande est déjà en cours...")
+            append("⚠️  A command is already running...")
             return
         }
         
@@ -69,9 +69,9 @@ final class TerminalViewModel: ObservableObject {
                     
                     let exitCode = process.terminationStatus
                     if exitCode == 0 {
-                        self?.append("✅ Commande terminée (exit 0)")
+                        self?.append("✅ Command finished (exit 0)")
                     } else {
-                        self?.append("❌ Commande échouée (exit \(exitCode))")
+                        self?.append("❌ Command failed (exit \(exitCode))")
                     }
                 }
             }
