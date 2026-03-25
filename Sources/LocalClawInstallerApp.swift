@@ -200,6 +200,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var selectedCloudAuthMode: CloudAuthMode = .api
     @Published var openAIAuthMethod: AIProvider.OpenAIAuthMethod = .apiKey
     @Published var selectedOpenRouterModel: String = "openrouter/moonshotai/kimi-k2.5"
+    @Published var openRouterModelsLive: [OpenRouterModel] = InstallerViewModel.openRouterModels
     @Published var openRouterKeyVerified: Bool = false
     @Published var hasExistingOpenClawSetup = false
     @Published var gatewayToken: String = ""
@@ -446,6 +447,7 @@ final class InstallerViewModel: ObservableObject {
         }
 
         loadExistingConfigIfPresent()
+        refreshOpenRouterModels()
         refreshLocalClawBuildLabel()
         refreshVersions()
 
@@ -669,6 +671,52 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    func refreshOpenRouterModels() {
+        guard let url = URL(string: "https://openrouter.ai/api/v1/models") else { return }
+
+        Task.detached {
+            do {
+                let (data, response) = try await URLSession.shared.data(from: url)
+                guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                    await MainActor.run {
+                        self.append("Using fallback OpenRouter model list")
+                    }
+                    return
+                }
+
+                struct ORModels: Decodable {
+                    struct Item: Decodable {
+                        let id: String
+                        let name: String?
+                    }
+                    let data: [Item]
+                }
+
+                let decoded = try JSONDecoder().decode(ORModels.self, from: data)
+                let mapped = decoded.data
+                    .filter { !$0.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                    .map { item in
+                        OpenRouterModel(id: "openrouter/\(item.id)", displayName: item.name ?? item.id)
+                    }
+                    .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+
+                await MainActor.run {
+                    if !mapped.isEmpty {
+                        self.openRouterModelsLive = mapped
+                        if !self.openRouterModelsLive.contains(where: { $0.id == self.selectedOpenRouterModel }) {
+                            self.selectedOpenRouterModel = self.openRouterModelsLive.first?.id ?? "openrouter/moonshotai/kimi-k2.5"
+                        }
+                        self.append("✓ Loaded \(mapped.count) OpenRouter models")
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.append("OpenRouter model list refresh failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
     func verifyOpenRouterKey() {
         let key = openRouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard key.count >= 20 else {
@@ -706,6 +754,7 @@ final class InstallerViewModel: ObservableObject {
                     if let http = response as? HTTPURLResponse, http.statusCode == 200 {
                         self.openRouterKeyVerified = true
                         self.append("✓ OpenRouter key verified successfully")
+                        self.refreshOpenRouterModels()
                     } else {
                         self.openRouterKeyVerified = false
                         self.append("✗ OpenRouter key verification failed")
@@ -2707,7 +2756,7 @@ struct ContentView: View {
     private var openRouterModelPicker: some View {
         if vm.selectedCloudAuthMode == .api && vm.selectedProvider == .openRouter && vm.openRouterKeyVerified {
             Picker("Model", selection: $vm.selectedOpenRouterModel) {
-                ForEach(InstallerViewModel.openRouterModels, id: \.self) { model in
+                ForEach(vm.openRouterModelsLive, id: \.self) { model in
                     Text(model.displayName).tag(model.id)
                 }
             }
