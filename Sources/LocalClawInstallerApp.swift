@@ -200,7 +200,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var selectedCloudAuthMode: CloudAuthMode = .api
     @Published var openAIAuthMethod: AIProvider.OpenAIAuthMethod = .apiKey
     @Published var selectedOpenRouterModel: String = "openrouter/moonshotai/kimi-k2.5"
-    @Published var openRouterModelsLive: [OpenRouterModel] = InstallerViewModel.openRouterModels
+    @Published var openRouterModelsLive: [OpenRouterModel] = []
     @Published var openRouterKeyVerified: Bool = false
     @Published var hasExistingOpenClawSetup = false
     @Published var gatewayToken: String = ""
@@ -673,13 +673,26 @@ final class InstallerViewModel: ObservableObject {
 
     func refreshOpenRouterModels() {
         guard let url = URL(string: "https://openrouter.ai/api/v1/models") else { return }
+        let key = openRouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
 
         Task.detached {
             do {
-                let (data, response) = try await URLSession.shared.data(from: url)
+                var request = URLRequest(url: url)
+                request.httpMethod = "GET"
+                request.timeoutInterval = 15
+                request.setValue("application/json", forHTTPHeaderField: "Accept")
+                request.setValue("https://localclaw.io", forHTTPHeaderField: "HTTP-Referer")
+                request.setValue("LocalClaw", forHTTPHeaderField: "X-Title")
+
+                if key.hasPrefix("sk-or-") {
+                    request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+                }
+
+                let (data, response) = try await URLSession.shared.data(for: request)
                 guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
                     await MainActor.run {
-                        self.append("Using fallback OpenRouter model list")
+                        self.openRouterModelsLive = []
+                        self.append("OpenRouter model list unavailable")
                     }
                     return
                 }
@@ -701,16 +714,15 @@ final class InstallerViewModel: ObservableObject {
                     .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
 
                 await MainActor.run {
-                    if !mapped.isEmpty {
-                        self.openRouterModelsLive = mapped
-                        if !self.openRouterModelsLive.contains(where: { $0.id == self.selectedOpenRouterModel }) {
-                            self.selectedOpenRouterModel = self.openRouterModelsLive.first?.id ?? "openrouter/moonshotai/kimi-k2.5"
-                        }
-                        self.append("✓ Loaded \(mapped.count) OpenRouter models")
+                    self.openRouterModelsLive = mapped
+                    if !self.openRouterModelsLive.contains(where: { $0.id == self.selectedOpenRouterModel }) {
+                        self.selectedOpenRouterModel = self.openRouterModelsLive.first?.id ?? ""
                     }
+                    self.append("✓ Loaded \(mapped.count) OpenRouter models")
                 }
             } catch {
                 await MainActor.run {
+                    self.openRouterModelsLive = []
                     self.append("OpenRouter model list refresh failed: \(error.localizedDescription)")
                 }
             }
@@ -2755,12 +2767,18 @@ struct ContentView: View {
     @ViewBuilder
     private var openRouterModelPicker: some View {
         if vm.selectedCloudAuthMode == .api && vm.selectedProvider == .openRouter && vm.openRouterKeyVerified {
-            Picker("Model", selection: $vm.selectedOpenRouterModel) {
-                ForEach(vm.openRouterModelsLive, id: \.self) { model in
-                    Text(model.displayName).tag(model.id)
+            if vm.openRouterModelsLive.isEmpty {
+                Text("No OpenRouter models loaded yet. Click Verify to sync the live catalog.")
+                    .font(AppFont.body(12))
+                    .foregroundStyle(UI.muted)
+            } else {
+                Picker("Model", selection: $vm.selectedOpenRouterModel) {
+                    ForEach(vm.openRouterModelsLive, id: \.self) { model in
+                        Text(model.displayName).tag(model.id)
+                    }
                 }
+                .pickerStyle(.menu)
             }
-            .pickerStyle(.menu)
         }
     }
 
