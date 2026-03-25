@@ -714,24 +714,41 @@ struct AdvancedCommandCenterView: View {
         var id: String { rawValue }
     }
 
+    enum WorkspaceTab: String, CaseIterable, Identifiable {
+        case operations = "Operations"
+        case monitoring = "Monitoring"
+        var id: String { rawValue }
+    }
+
     @StateObject private var viewModel = CommandCenterViewModel()
     @State private var leftPanelWidth: CGFloat = 320
     @State private var showSettings = false
     @State private var rightTab: RightTab = .resources
+    @State private var workspaceTab: WorkspaceTab = .operations
     
     var body: some View {
-        HStack(spacing: 0) {
-            // Left Panel: Controls & Status
-            leftPanel
-                .frame(width: leftPanelWidth)
-                .background(UI.card)
-            
-            // Resizer
-            resizer
-            
-            // Right Panel: Terminal & Logs
-            rightPanel
-                .background(UI.card)
+        VStack(spacing: 10) {
+            HStack {
+                Picker("Workspace", selection: $workspaceTab) {
+                    ForEach(WorkspaceTab.allCases) { tab in
+                        Text(tab.rawValue).tag(tab)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 260)
+
+                Spacer()
+            }
+            .padding(.horizontal, 8)
+
+            if workspaceTab == .operations {
+                leftPanel
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(UI.card)
+            } else {
+                rightPanel
+                    .background(UI.card)
+            }
         }
         .onAppear {
             viewModel.startMonitoring()
@@ -1061,17 +1078,14 @@ struct AdvancedCommandCenterView: View {
                     .buttonStyle(.borderless)
                     .foregroundStyle(UI.muted)
 
-                    Toggle("Monitoring", isOn: Binding(
-                        get: { viewModel.isMonitoring },
-                        set: { newValue in
-                            if newValue {
-                                viewModel.startMonitoring()
-                            } else {
-                                viewModel.stopMonitoring()
-                            }
+                    Button(viewModel.isMonitoring ? "Stop Monitoring" : "Start Monitoring") {
+                        if viewModel.isMonitoring {
+                            viewModel.stopMonitoring()
+                        } else {
+                            viewModel.startMonitoring()
                         }
-                    ))
-                    .toggleStyle(.checkbox)
+                    }
+                    .buttonStyle(CTAButton(primary: false))
                 }
             }
             .padding(.horizontal, 12)
