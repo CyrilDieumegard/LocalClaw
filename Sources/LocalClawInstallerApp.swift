@@ -1084,7 +1084,7 @@ final class InstallerViewModel: ObservableObject {
         append("Opened installer download: \(installerDownloadURL)")
     }
 
-    func updateFromGitHub() {
+    func updateLocalClaw() {
         let defaultRepoDir = NSHomeDirectory() + "/LocalClaw"
         let repoDir = ProcessInfo.processInfo.environment["LOCALCLAW_REPO_DIR"] ?? defaultRepoDir
         let repoURL = ProcessInfo.processInfo.environment["LOCALCLAW_GITHUB_REPO"] ?? "https://github.com/CyrilDieumegard/LocalClaw.git"
@@ -1098,7 +1098,7 @@ final class InstallerViewModel: ObservableObject {
         REPO_URL="\(repoURL)"
 
         echo "=========================================="
-        echo "  LocalClaw Update from GitHub"
+        echo "  LocalClaw Update"
         echo "=========================================="
         echo ""
 
@@ -1135,12 +1135,12 @@ final class InstallerViewModel: ObservableObject {
         read -r "REPLY?Press Enter to close..."
         """
 
-        let scriptPath = "/tmp/localclaw_update_from_github.sh"
+        let scriptPath = "/tmp/localclaw_update.sh"
         do {
             try script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
             _ = engine.shell("chmod +x \(scriptPath)")
             _ = engine.shell("osascript -e 'tell application \"Terminal\" to do script \"\(scriptPath)\"'")
-            append("Opened Terminal for GitHub update flow")
+            append("Opened Terminal for LocalClaw update")
         } catch {
             append("Failed to start GitHub update flow: \(error.localizedDescription)")
         }
@@ -2894,11 +2894,8 @@ struct ContentView: View {
                     .buttonStyle(CTAButton(primary: true))
                     .disabled(vm.isRunning)
                 Button("CHECK") { vm.refreshVersions() }.buttonStyle(CTAButton(primary: false))
-                Button("UPDATE FROM GITHUB") { vm.updateFromGitHub() }
+                Button("UPDATE LOCALCLAW") { vm.updateLocalClaw() }
                     .buttonStyle(CTAButton(primary: false))
-                Button("GET LATEST LOCALCLAW") { vm.downloadLatestInstaller() }
-                    .buttonStyle(CTAButton(primary: false))
-                    .disabled(vm.installerDownloadURL.isEmpty)
                 Button("BACK") { vm.screen = .home }.buttonStyle(CTAButton(primary: false))
             }
 
