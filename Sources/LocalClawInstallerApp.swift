@@ -2294,35 +2294,34 @@ struct ContentView: View {
     }
 
     var home: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                Text("LocalClaw")
-                    .font(AppFont.heading(44))
-                    .foregroundStyle(UI.text)
-                Text("Install, update or control your OpenClaw setup.")
-                    .font(AppFont.body(16))
-                    .foregroundStyle(UI.muted)
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("LocalClaw")
+                        .font(AppFont.heading(40))
+                        .foregroundStyle(UI.text)
+                    Text("Install, update or control your OpenClaw setup.")
+                        .font(AppFont.body(16))
+                        .foregroundStyle(UI.muted)
 
-                HStack(spacing: 10) {
-                    Button("Use Local LLM") {
-                        vm.inferenceMode = .local
-                        if vm.selectedModel.isEmpty { vm.selectedModel = vm.recommendation }
-                        vm.screen = .options
-                    }
-                    .buttonStyle(CTAButton(primary: vm.inferenceMode == .local))
+                    HStack(spacing: 10) {
+                        Button("Use Local LLM") {
+                            vm.inferenceMode = .local
+                            if vm.selectedModel.isEmpty { vm.selectedModel = vm.recommendation }
+                            vm.screen = .options
+                        }
+                        .buttonStyle(CTAButton(primary: vm.inferenceMode == .local))
 
-                    Button("Use Cloud") {
-                        vm.inferenceMode = .cloud
-                        vm.selectedModel = ""
-                        vm.screen = .options
+                        Button("Use Cloud") {
+                            vm.inferenceMode = .cloud
+                            vm.selectedModel = ""
+                            vm.screen = .options
+                        }
+                        .buttonStyle(CTAButton(primary: vm.inferenceMode == .cloud))
                     }
-                    .buttonStyle(CTAButton(primary: vm.inferenceMode == .cloud))
                 }
-            }
-            .padding(.top, 8)
+                .padding(.top, 4)
 
-            VStack {
-                Spacer(minLength: 0)
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 190, maximum: 220), spacing: 18, alignment: .top)], spacing: 20) {
                     HomeTile(label: "Install", icon: "plus.circle", selected: false) {
                         vm.chooseMode(.fullInstall)
@@ -2350,12 +2349,13 @@ struct ContentView: View {
                     }
                 }
                 .frame(maxWidth: .infinity)
-                .padding(.horizontal, 8)
-                Spacer(minLength: 0)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 10)
+            .frame(maxWidth: 940, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
-        .frame(maxHeight: .infinity, alignment: .top)
+        .scrollIndicators(.hidden)
     }
 
     var options: some View {
