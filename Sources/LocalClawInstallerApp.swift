@@ -520,6 +520,12 @@ final class InstallerViewModel: ObservableObject {
         gatewayIsRunning = status.isRunning
         currentModel = engine.getCurrentModel()
 
+        if currentModel.hasPrefix("openrouter/") {
+            selectedControlModel = currentModel
+        }
+
+        refreshOpenRouterModels()
+
         let usage = engine.getSystemUsage()
         machineCPUPercent = usage.cpuPercent
         machineMemoryUsedGB = usage.memoryUsedGB
@@ -3644,50 +3650,24 @@ struct ContentView: View {
 
                     VStack(alignment: .leading, spacing: 8) {
                         Picker("Model", selection: $vm.selectedControlModel) {
-                            // Recommended
-                            Text("⭐ Kimi K2.5").tag("openrouter/moonshotai/kimi-k2.5")
-                            Text("⭐ Claude 3.5 Sonnet").tag("openrouter/anthropic/claude-3.5-sonnet")
-                            Text("⭐ GPT-4o").tag("openrouter/openai/gpt-4o")
-                            Text("⭐ GPT-4o Mini").tag("openrouter/openai/gpt-4o-mini")
-                            
-                            Divider()
-                            
-                            // All others
-                            Text("Claude 3.5 Haiku").tag("openrouter/anthropic/claude-3.5-haiku")
-                            Text("Claude 3 Opus").tag("openrouter/anthropic/claude-3-opus")
-                            Text("Claude 3 Sonnet").tag("openrouter/anthropic/claude-3-sonnet")
-                            Text("Claude 3 Haiku").tag("openrouter/anthropic/claude-3-haiku")
-                            Text("GPT-4 Turbo").tag("openrouter/openai/gpt-4-turbo")
-                            Text("GPT-4").tag("openrouter/openai/gpt-4")
-                            Text("GPT-3.5 Turbo").tag("openrouter/openai/gpt-3.5-turbo")
-                            Text("Gemini 2.5 Flash").tag("openrouter/google/gemini-2.5-flash-preview")
-                            Text("Gemini 2.0 Flash").tag("openrouter/google/gemini-2.0-flash-exp")
-                            Text("Gemini 1.5 Pro").tag("openrouter/google/gemini-1.5-pro")
-                            Text("Llama 3.3 70B").tag("openrouter/meta-llama/llama-3.3-70b-instruct")
-                            Text("Llama 3.2 90B Vision").tag("openrouter/meta-llama/llama-3.2-90b-vision-instruct")
-                            Text("Llama 3.1 405B").tag("openrouter/meta-llama/llama-3.1-405b-instruct")
-                            Text("Llama 3.1 70B").tag("openrouter/meta-llama/llama-3.1-70b-instruct")
-                            Text("Llama 3.1 8B").tag("openrouter/meta-llama/llama-3.1-8b-instruct")
-                            Text("DeepSeek Chat").tag("openrouter/deepseek/deepseek-chat")
-                            Text("DeepSeek Coder").tag("openrouter/deepseek/deepseek-coder")
-                            Text("Mistral Large").tag("openrouter/mistralai/mistral-large")
-                            Text("Mistral Medium").tag("openrouter/mistralai/mistral-medium")
-                            Text("Mistral Small").tag("openrouter/mistralai/mistral-small")
-                            Text("Qwen 3.5 35B-A3B").tag("openrouter/qwen/qwen3.5-35b-a3b")
-                            Text("Qwen 3.5 27B").tag("openrouter/qwen/qwen3.5-27b")
-                            Text("Qwen 3.5 122B-A10B").tag("openrouter/qwen/qwen3.5-122b-a10b")
-                            Text("Qwen 3.5 9B").tag("openrouter/qwen/qwen3.5-9b")
-                            Text("Qwen 3.5 4B").tag("openrouter/qwen/qwen3.5-4b")
-                            Text("Qwen 3.5 2B").tag("openrouter/qwen/qwen3.5-2b")
-                            Text("Qwen 3.5 0.8B").tag("openrouter/qwen/qwen3.5-0.8b")
-                            Text("Qwen 2.5 72B").tag("openrouter/qwen/qwen-2.5-72b-instruct")
-                            Text("Qwen 2.5 32B").tag("openrouter/qwen/qwen-2.5-32b-instruct")
-                            Text("Grok 2").tag("openrouter/x-ai/grok-2")
-                            Text("Grok 2 Mini").tag("openrouter/x-ai/grok-2-mini")
-                            Text("Command R+").tag("openrouter/cohere/command-r-plus")
+                            if vm.openRouterModelsLive.isEmpty {
+                                Text("No OpenRouter catalog loaded").tag(vm.selectedControlModel)
+                            } else {
+                                ForEach(vm.openRouterModelsLive, id: \.self) { model in
+                                    Text(model.displayName).tag(model.id)
+                                }
+                            }
                         }
                         .pickerStyle(.menu)
                         .frame(width: 280)
+
+                        HStack(spacing: 8) {
+                            Button("Refresh catalog") { vm.refreshOpenRouterModels() }
+                                .buttonStyle(CTAButton(primary: false))
+                            Text("\(vm.openRouterModelsLive.count) models")
+                                .font(AppFont.body(11))
+                                .foregroundStyle(UI.muted)
+                        }
 
                         Button("Apply & Restart Gateway") { vm.applyModelChange() }
                             .buttonStyle(CTAButton(primary: true))
