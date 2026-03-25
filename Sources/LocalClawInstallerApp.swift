@@ -2767,18 +2767,33 @@ struct ContentView: View {
     @ViewBuilder
     private var openRouterModelPicker: some View {
         if vm.selectedCloudAuthMode == .api && vm.selectedProvider == .openRouter && vm.openRouterKeyVerified {
-            if vm.openRouterModelsLive.isEmpty {
-                Text("No OpenRouter models loaded yet. Click Verify to sync the live catalog.")
-                    .font(AppFont.body(12))
-                    .foregroundStyle(UI.muted)
-            } else {
-                Picker("Model", selection: $vm.selectedOpenRouterModel) {
-                    ForEach(vm.openRouterModelsLive, id: \.self) { model in
-                        Text(model.displayName).tag(model.id)
-                    }
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("OpenRouter catalog")
+                        .font(AppFont.body(11))
+                        .foregroundStyle(UI.muted)
+                    Spacer()
+                    Text("\(vm.openRouterModelsLive.count) models")
+                        .font(AppFont.body(11))
+                        .foregroundStyle(UI.muted)
+                    Button("Refresh") { vm.refreshOpenRouterModels() }
+                        .buttonStyle(CTAButton(primary: false))
                 }
-                .pickerStyle(.menu)
+
+                if vm.openRouterModelsLive.isEmpty {
+                    Text("No OpenRouter models loaded yet. Click Refresh.")
+                        .font(AppFont.body(12))
+                        .foregroundStyle(UI.muted)
+                } else {
+                    Picker("Model", selection: $vm.selectedOpenRouterModel) {
+                        ForEach(vm.openRouterModelsLive, id: \.self) { model in
+                            Text(model.displayName).tag(model.id)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
             }
+            .onAppear { vm.refreshOpenRouterModels() }
         }
     }
 
