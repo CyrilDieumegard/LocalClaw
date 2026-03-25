@@ -1084,6 +1084,68 @@ final class InstallerViewModel: ObservableObject {
         append("Opened installer download: \(installerDownloadURL)")
     }
 
+    func updateFromGitHub() {
+        let defaultRepoDir = NSHomeDirectory() + "/LocalClaw"
+        let repoDir = ProcessInfo.processInfo.environment["LOCALCLAW_REPO_DIR"] ?? defaultRepoDir
+        let repoURL = ProcessInfo.processInfo.environment["LOCALCLAW_GITHUB_REPO"] ?? "https://github.com/CyrilDieumegard/LocalClaw.git"
+
+        let script = """
+        #!/bin/zsh
+        clear
+        export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+
+        REPO_DIR="\(repoDir)"
+        REPO_URL="\(repoURL)"
+
+        echo "=========================================="
+        echo "  LocalClaw Update from GitHub"
+        echo "=========================================="
+        echo ""
+
+        if [ ! -d "$REPO_DIR/.git" ]; then
+          echo "Repo not found at: $REPO_DIR"
+          echo "Cloning from: $REPO_URL"
+          git clone "$REPO_URL" "$REPO_DIR" || exit 1
+        fi
+
+        cd "$REPO_DIR" || exit 1
+
+        echo "Fetching remote..."
+        git fetch origin main || exit 1
+
+        LOCAL_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
+        REMOTE_SHA=$(git rev-parse origin/main 2>/dev/null || echo "")
+
+        if [ -n "$LOCAL_SHA" ] && [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
+          echo "Already up to date."
+        else
+          echo "Updating to latest main..."
+          git pull --ff-only origin main || exit 1
+        fi
+
+        echo ""
+        echo "Rebuilding..."
+        swift build || exit 1
+
+        echo ""
+        echo "Done."
+        echo "Run LocalClaw with:"
+        echo "cd $REPO_DIR && swift run"
+        echo ""
+        read -r "REPLY?Press Enter to close..."
+        """
+
+        let scriptPath = "/tmp/localclaw_update_from_github.sh"
+        do {
+            try script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
+            _ = engine.shell("chmod +x \(scriptPath)")
+            _ = engine.shell("osascript -e 'tell application \"Terminal\" to do script \"\(scriptPath)\"'")
+            append("Opened Terminal for GitHub update flow")
+        } catch {
+            append("Failed to start GitHub update flow: \(error.localizedDescription)")
+        }
+    }
+
     func updateAll() {
         if isRunning { return }
         isRunning = true
@@ -2832,6 +2894,8 @@ struct ContentView: View {
                     .buttonStyle(CTAButton(primary: true))
                     .disabled(vm.isRunning)
                 Button("CHECK") { vm.refreshVersions() }.buttonStyle(CTAButton(primary: false))
+                Button("UPDATE FROM GITHUB") { vm.updateFromGitHub() }
+                    .buttonStyle(CTAButton(primary: false))
                 Button("GET LATEST LOCALCLAW") { vm.downloadLatestInstaller() }
                     .buttonStyle(CTAButton(primary: false))
                     .disabled(vm.installerDownloadURL.isEmpty)
