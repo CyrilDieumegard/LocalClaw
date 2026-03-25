@@ -226,6 +226,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var installerLatestVersion = "Checking..."
     @Published var installerUpdateStatus = "Checking..."
     @Published var installerDownloadURL = ""
+    @Published var localClawBuildLabel = "build unknown"
     @Published var brewUpToDate = false
     @Published var nodeUpToDate = false
     @Published var lmStudioUpToDate = false
@@ -384,6 +385,20 @@ final class InstallerViewModel: ObservableObject {
         return Double(done) / 6.0
     }
 
+    private func refreshLocalClawBuildLabel() {
+        let defaultRepoDir = NSHomeDirectory() + "/LocalClaw"
+        let repoDir = ProcessInfo.processInfo.environment["LOCALCLAW_REPO_DIR"] ?? defaultRepoDir
+
+        let (_, gitLabelRaw) = engine.shell("git -C '\(repoDir)' describe --tags --always --dirty 2>/dev/null || git -C '\(repoDir)' rev-parse --short HEAD 2>/dev/null || true")
+        let gitLabel = gitLabelRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !gitLabel.isEmpty {
+            localClawBuildLabel = gitLabel
+        } else {
+            localClawBuildLabel = "build unknown"
+        }
+    }
+
     func bootstrap() {
         loadLocalLicenseIfPresent()
 
@@ -423,6 +438,7 @@ final class InstallerViewModel: ObservableObject {
         }
 
         loadExistingConfigIfPresent()
+        refreshLocalClawBuildLabel()
         refreshVersions()
 
         // Auto-detect existing token from config
@@ -2278,9 +2294,14 @@ struct ContentView: View {
     private var topBar: some View {
         HStack(spacing: 10) {
             BrandLogoView(size: 20)
-            Text("LocalClaw")
-                .font(AppFont.bodySemi(18))
-                .foregroundStyle(UI.text)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("LocalClaw")
+                    .font(AppFont.bodySemi(18))
+                    .foregroundStyle(UI.text)
+                Text("Version \(vm.installerCurrentVersion) • \(vm.localClawBuildLabel)")
+                    .font(AppFont.body(10))
+                    .foregroundStyle(UI.muted)
+            }
 
             Text(vm.inferenceMode == .local ? "LOCAL" : "CLOUD")
                 .font(AppFont.bodySemi(10))
@@ -2886,7 +2907,7 @@ struct ContentView: View {
                 versionRow("Homebrew", vm.brewVersion, "latest via brew update", isUpToDate: vm.brewUpToDate)
                 versionRow("Node", vm.nodeVersion, "latest via brew upgrade", isUpToDate: vm.nodeUpToDate)
                 versionRow("LM Studio", vm.lmStudioVersion, "latest via brew cask", isUpToDate: vm.lmStudioUpToDate)
-                versionRow("LocalClaw", vm.installerCurrentVersion, vm.installerLatestVersion, isUpToDate: vm.installerUpdateStatus == "Up to date")
+                versionRow("LocalClaw", "\(vm.installerCurrentVersion) (\(vm.localClawBuildLabel))", vm.installerLatestVersion, isUpToDate: vm.installerUpdateStatus == "Up to date")
             }
 
             HStack(spacing: 10) {
