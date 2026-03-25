@@ -120,6 +120,7 @@ final class InstallerViewModel: ObservableObject {
         OpenRouterModel(id: "openrouter/mistralai/codestral", displayName: "Codestral"),
         
         // Qwen
+        OpenRouterModel(id: "openrouter/nvidia/nemotron-3-nano-4b", displayName: "Nemotron 3 Nano 4B"),
         OpenRouterModel(id: "openrouter/qwen/qwen3.5-35b-a3b", displayName: "Qwen 3.5 35B-A3B"),
         OpenRouterModel(id: "openrouter/qwen/qwen3.5-27b", displayName: "Qwen 3.5 27B"),
         OpenRouterModel(id: "openrouter/qwen/qwen3.5-122b-a10b", displayName: "Qwen 3.5 122B-A10B"),
@@ -271,6 +272,7 @@ final class InstallerViewModel: ObservableObject {
         "Qwen 3.5 0.8B Q4_K_M",
         "Qwen 3 14B Q4_K_M",
         "Qwen 3 8B Q4_K_M",
+        "Nemotron 3 Nano 4B Q4_K_M",
         "DeepSeek R1 14B Q4_K_M",
         "Llama 3.3 8B Q4_K_M"
     ]
@@ -285,6 +287,7 @@ final class InstallerViewModel: ObservableObject {
         "Qwen 3 8B Q4_K_M": "qwen-3-8b@q4_k_m",
         "Qwen 3 14B Q4_K_M": "qwen-3-14b@q4_k_m",
         "Qwen 3 32B Q4_K_M": "qwen-3-32b@q4_k_m",
+        "Nemotron 3 Nano 4B Q4_K_M": "nemotron-3-nano-4b@q4_k_m",
         "DeepSeek R1 14B Q4_K_M": "deepseek-r1-distill-qwen-14b@q4_k_m",
         "Llama 3.3 8B Q4_K_M": "llama-3.3-8b-instruct@q4_k_m"
     ]
@@ -299,6 +302,7 @@ final class InstallerViewModel: ObservableObject {
         "Qwen 3 8B Q4_K_M": "qwen3-8b",
         "Qwen 3 14B Q4_K_M": "qwen3-14b",
         "Qwen 3 32B Q4_K_M": "qwen3-32b",
+        "Nemotron 3 Nano 4B Q4_K_M": "nvidia/nemotron-3-nano-4b",
         "DeepSeek R1 14B Q4_K_M": "deepseek-r1-distill-qwen-14b",
         "Llama 3.3 8B Q4_K_M": "llama-3.3-8b-instruct"
     ]
@@ -1126,7 +1130,7 @@ final class InstallerViewModel: ObservableObject {
             templateLogs = "Applied Growth mode: GPT-4o Mini + cloud"
         case "dev":
             inferenceMode = .local
-            selectedModel = modelOptions.contains("Qwen 3 14B Q4_K_M") ? "Qwen 3 14B Q4_K_M" : modelOptions.first ?? ""
+            selectedModel = !recommendation.isEmpty ? recommendation : (modelOptions.first ?? "")
             if let localId = localProviderModelIds[selectedModel] {
                 _ = engine.writeModelToConfig(modelIdentifier: "lmstudio/\(localId)")
             }
@@ -1216,7 +1220,7 @@ final class InstallerViewModel: ObservableObject {
 
             if localId.isEmpty {
                 if selectedModel.isEmpty {
-                    selectedModel = modelOptions.contains("Qwen 3 14B Q4_K_M") ? "Qwen 3 14B Q4_K_M" : (recommendation.isEmpty ? (modelOptions.first ?? "") : recommendation)
+                    selectedModel = !recommendation.isEmpty ? recommendation : (modelOptions.first ?? "")
                 }
                 localId = localProviderModelIds[selectedModel] ?? ""
             }
