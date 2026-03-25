@@ -19,6 +19,13 @@ final class InstallerViewModel: ObservableObject {
         var id: String { rawValue }
     }
 
+    enum CloudAuthMode: String, CaseIterable, Identifiable {
+        case api = "API"
+        case oauth = "OAuth"
+
+        var id: String { rawValue }
+    }
+
     enum AIProvider: String, CaseIterable, Identifiable {
         case openRouter = "OpenRouter"
         case openAI = "OpenAI"
@@ -190,6 +197,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var installOpenClaw = true
 
     @Published var selectedProvider: AIProvider = .openRouter
+    @Published var selectedCloudAuthMode: CloudAuthMode = .api
     @Published var openAIAuthMethod: AIProvider.OpenAIAuthMethod = .apiKey
     @Published var selectedOpenRouterModel: String = "openrouter/moonshotai/kimi-k2.5"
     @Published var openRouterKeyVerified: Bool = false
@@ -628,7 +636,7 @@ final class InstallerViewModel: ObservableObject {
     }
 
     var isOpenAIOAuthMode: Bool {
-        selectedProvider == .openAI && openAIAuthMethod == .oauth
+        selectedCloudAuthMode == .oauth
     }
 
     func effectiveModelIdentifier() -> String {
@@ -2653,12 +2661,34 @@ struct ContentView: View {
                 .font(AppFont.bodySemi(14))
                 .foregroundStyle(UI.text)
 
+            Picker("Cloud auth", selection: $vm.selectedCloudAuthMode) {
+                ForEach(InstallerViewModel.CloudAuthMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: vm.selectedCloudAuthMode) { mode in
+                if mode == .oauth {
+                    vm.selectedProvider = .openAI
+                    vm.openAIAuthMethod = .oauth
+                } else if vm.openAIAuthMethod == .oauth {
+                    vm.openAIAuthMethod = .apiKey
+                }
+            }
+
             Picker("Provider", selection: $vm.selectedProvider) {
                 ForEach(InstallerViewModel.AIProvider.allCases) { provider in
                     Text(provider.rawValue).tag(provider)
                 }
             }
             .pickerStyle(.menu)
+            .disabled(vm.selectedCloudAuthMode == .oauth)
+
+            if vm.selectedCloudAuthMode == .oauth {
+                Text("OAuth currently uses OpenAI (Codex / ChatGPT).")
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+            }
 
             openRouterModelPicker
             apiKeySection
@@ -2675,7 +2705,7 @@ struct ContentView: View {
 
     @ViewBuilder
     private var openRouterModelPicker: some View {
-        if vm.selectedProvider == .openRouter && vm.openRouterKeyVerified {
+        if vm.selectedCloudAuthMode == .api && vm.selectedProvider == .openRouter && vm.openRouterKeyVerified {
             Picker("Model", selection: $vm.selectedOpenRouterModel) {
                 ForEach(InstallerViewModel.openRouterModels, id: \.self) { model in
                     Text(model.displayName).tag(model.id)
@@ -2687,33 +2717,21 @@ struct ContentView: View {
 
     @ViewBuilder
     private var apiKeySection: some View {
-        if vm.selectedProvider == .openAI {
+        if vm.selectedCloudAuthMode == .oauth {
             VStack(alignment: .leading, spacing: 8) {
-                Picker("OpenAI auth", selection: $vm.openAIAuthMethod) {
-                    ForEach(InstallerViewModel.AIProvider.OpenAIAuthMethod.allCases) { method in
-                        Text(method.rawValue).tag(method)
-                    }
-                }
-                .pickerStyle(.segmented)
+                Text("OAuth uses your ChatGPT/Codex account (no API key needed).")
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
 
-                if vm.openAIAuthMethod == .apiKey {
-                    SecureField("OpenAI API Key", text: $vm.openAIApiKey)
-                        .textFieldStyle(.roundedBorder)
-                } else {
-                    Text("OAuth uses your ChatGPT/Codex account (no API key needed).")
-                        .font(AppFont.body(11))
-                        .foregroundStyle(UI.muted)
-
-                    Button("Sign in with OpenAI (OAuth)") {
-                        vm.openTerminalOpenAIOAuth()
-                    }
-                    .buttonStyle(CTAButton(primary: false))
+                Button("Sign in with OpenAI (OAuth)") {
+                    vm.openTerminalOpenAIOAuth()
                 }
+                .buttonStyle(CTAButton(primary: false))
             }
         } else if vm.providerNeedsApiKey() {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    SecureField("API Key", text: bindingForProviderKey())
+                    SecureField(vm.selectedProvider == .openAI ? "OpenAI API Key" : "API Key", text: bindingForProviderKey())
                         .textFieldStyle(.roundedBorder)
 
                     if vm.selectedProvider == .openRouter {
