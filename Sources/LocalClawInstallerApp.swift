@@ -643,6 +643,10 @@ final class InstallerViewModel: ObservableObject {
         return errors
     }
 
+    var canStartInstall: Bool {
+        !isRunning && setupValidationErrors.isEmpty
+    }
+
     var isOpenAIOAuthMode: Bool {
         selectedCloudAuthMode == .oauth
     }
@@ -1626,6 +1630,15 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func openTerminalAndInstallFull() {
+        let validationErrors = setupValidationErrors
+        if !validationErrors.isEmpty {
+            append("Cannot start installation until setup errors are fixed:")
+            for err in validationErrors {
+                append("- \(err)")
+            }
+            return
+        }
+
         let installLMStudio = (inferenceMode == .local)
         let resolvedLocalModel = selectedModel.isEmpty ? recommendation : selectedModel
         let modelQuery = modelQueries[resolvedLocalModel] ?? ""
@@ -2693,7 +2706,7 @@ struct ContentView: View {
                         vm.openTerminalAndInstallFull()
                     }
                     .buttonStyle(CTAButton(primary: true))
-                    .disabled(vm.isRunning)
+                    .disabled(!vm.canStartInstall)
                 }
             }
             .padding(22)
