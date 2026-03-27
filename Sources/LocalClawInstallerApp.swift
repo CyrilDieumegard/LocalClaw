@@ -2317,7 +2317,16 @@ struct BrandLogoView: View {
 }
 
 struct ContentView: View {
+    enum HelpTab: String, CaseIterable, Identifiable {
+        case stepByStep = "Step by step"
+        case faq = "FAQ"
+        case healthCommands = "Health commands"
+
+        var id: String { rawValue }
+    }
+
     @StateObject private var vm = InstallerViewModel()
+    @State private var helpTab: HelpTab = .stepByStep
 
     var body: some View {
         ZStack {
@@ -2440,7 +2449,7 @@ struct ContentView: View {
             sidebarButton("Command Center", icon: "slider.horizontal.3", isActive: vm.screen == .commandCenter) { vm.screen = .commandCenter }
             sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup) { vm.screen = .channelSetup }
             sidebarButton("Templates", icon: "square.grid.2x2", isActive: vm.screen == .templates) { vm.screen = .templates }
-            sidebarButton("Health", icon: "cross.case", isActive: vm.screen == .healthCenter) { vm.screen = .healthCenter }
+            sidebarButton("Help", icon: "cross.case", isActive: vm.screen == .healthCenter) { vm.screen = .healthCenter }
             sidebarButton("Usage & Cost", icon: "dollarsign.circle", isActive: vm.screen == .usageCenter) { vm.screen = .usageCenter }
             sidebarButton("Uninstall", icon: "trash", isActive: vm.screen == .uninstallCenter) { vm.screen = .uninstallCenter }
 
@@ -2575,7 +2584,7 @@ struct ContentView: View {
                     HomeTile(label: "Templates", icon: "square.grid.2x2", selected: false) {
                         vm.screen = .templates
                     }
-                    HomeTile(label: "Health", icon: "cross.case", selected: false) {
+                    HomeTile(label: "Help", icon: "cross.case", selected: false) {
                         vm.screen = .healthCenter
                     }
                     HomeTile(label: "Usage & Cost", icon: "dollarsign.circle", selected: false) {
@@ -3116,10 +3125,10 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("HEALTH & RECOVERY")
+                    Text("HELP")
                         .font(AppFont.heading(28))
                         .foregroundStyle(UI.text)
-                    Text("Diagnose, repair, and backup your setup.")
+                    Text("Step by step setup, FAQ, and recovery tools.")
                         .font(AppFont.body(13))
                         .foregroundStyle(UI.muted)
                 }
@@ -3132,30 +3141,89 @@ struct ContentView: View {
                     .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
             }
 
-            HStack(spacing: 10) {
-                Button("Run Health Check") { vm.runHealthCheck() }
-                    .buttonStyle(CTAButton(primary: true))
-                Button("Quick Repair") { vm.runQuickRepair() }
-                    .buttonStyle(CTAButton(primary: false))
-                Button("Backup Config") { vm.backupOpenClawConfig() }
-                    .buttonStyle(CTAButton(primary: false))
+            Picker("Help section", selection: $helpTab) {
+                ForEach(HelpTab.allCases) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
             }
+            .pickerStyle(.segmented)
 
-            Text("Diagnostics log")
-                .font(AppFont.bodySemi(14))
-                .foregroundStyle(UI.muted)
-
-            ScrollView {
-                Text(vm.healthLogs.isEmpty ? "No diagnostic run yet." : vm.healthLogs)
-                    .font(.system(size: 12, design: .monospaced))
+            Group {
+                switch helpTab {
+                case .stepByStep:
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("STEP BY STEP")
+                            .font(AppFont.bodySemi(14))
+                            .foregroundStyle(UI.text)
+                        Text("1. Open Install")
+                        Text("2. Choose mode: Cloud (simple) or Local")
+                        Text("3. Cloud: pick OAuth (no API key) or API key mode")
+                        Text("4. If API key mode, paste key before install")
+                        Text("5. Click Install Everything")
+                        Text("6. In Terminal, if asked for Password, type your Mac password (nothing will appear) then press Enter")
+                        Text("7. Wait for Installation Complete")
+                        Text("8. Open Dashboard and send a first test message")
+                    }
+                    .font(AppFont.body(13))
                     .foregroundStyle(UI.text)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(12)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+
+                case .faq:
+                    VStack(alignment: .leading, spacing: 10) {
+                        Group {
+                            Text("Q: Where do I put my API key?")
+                                .font(AppFont.bodySemi(13))
+                            Text("A: Install > AI Provider > API Key field > Verify.")
+                            Text("Q: It asks for Password in Terminal. What password?")
+                                .font(AppFont.bodySemi(13))
+                            Text("A: Your Mac user password. Input is hidden by macOS.")
+                            Text("Q: Do I need API credits?")
+                                .font(AppFont.bodySemi(13))
+                            Text("A: Yes for API key mode. No for OpenAI OAuth mode.")
+                            Text("Q: Install completed but no replies?")
+                                .font(AppFont.bodySemi(13))
+                            Text("A: Reopen Install, verify provider/key, then run Health commands.")
+                        }
+                    }
+                    .font(AppFont.body(13))
+                    .foregroundStyle(UI.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+
+                case .healthCommands:
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 10) {
+                            Button("Run Health Check") { vm.runHealthCheck() }
+                                .buttonStyle(CTAButton(primary: true))
+                            Button("Quick Repair") { vm.runQuickRepair() }
+                                .buttonStyle(CTAButton(primary: false))
+                            Button("Backup Config") { vm.backupOpenClawConfig() }
+                                .buttonStyle(CTAButton(primary: false))
+                        }
+
+                        Text("Diagnostics log")
+                            .font(AppFont.bodySemi(14))
+                            .foregroundStyle(UI.muted)
+
+                        ScrollView {
+                            Text(vm.healthLogs.isEmpty ? "No diagnostic run yet." : vm.healthLogs)
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(UI.text)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(12)
+                        }
+                        .scrollIndicators(.hidden)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+                        .frame(maxHeight: .infinity)
+                    }
+                }
             }
-            .scrollIndicators(.hidden)
-            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
-            .frame(maxHeight: .infinity)
         }
         .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
