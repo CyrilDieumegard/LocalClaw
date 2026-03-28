@@ -7,7 +7,8 @@ cd "$ROOT"
 APP_NAME="LocalClaw"
 DMG_NAME="localclaw"
 BUNDLE_ID="io.localclaw.installer"
-VERSION="1.0.1"
+MARKETING_VERSION="1.0.2"
+BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
 APP_PATH="dist/${APP_NAME}.app"
 DMG_PATH="dist/${DMG_NAME}.dmg"
 STAGING="dist/dmg-staging"
@@ -59,8 +60,8 @@ cat > "$APP_PATH/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>${APP_NAME}</string>
   <key>CFBundleDisplayName</key><string>LocalClaw</string>
   <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
-  <key>CFBundleVersion</key><string>${VERSION}</string>
-  <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+  <key>CFBundleVersion</key><string>${BUILD_NUMBER}</string>
+  <key>CFBundleShortVersionString</key><string>${MARKETING_VERSION}</string>
   <key>CFBundleExecutable</key><string>${APP_NAME}</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>

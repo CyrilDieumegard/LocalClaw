@@ -8,7 +8,7 @@ const crypto = require('crypto');
 
 const PORT = process.env.PORT || 3000;
 const SECRET = process.env.DOWNLOAD_SECRET || 'change-me';
-const DMG_URL = process.env.DMG_URL || 'https://localclaw.io/downloads/builds/LocalClawInstaller-v1.0.1.dmg';
+const DMG_URL = process.env.DMG_URL || 'https://localclaw.io/downloads/builds/localclaw.dmg';
 
 // fake in-memory db
 const licenses = new Map();

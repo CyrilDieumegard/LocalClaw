@@ -234,6 +234,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var nodeVersion = "Checking..."
     @Published var lmStudioVersion = "Checking..."
     @Published var installerCurrentVersion = InstallerViewModel.detectAppVersion()
+    @Published var installerBuildNumber = InstallerViewModel.detectBuildNumber()
     @Published var installerLatestVersion = "Checking..."
     @Published var installerUpdateStatus = "Checking..."
     @Published var installerDownloadURL = ""
@@ -401,7 +402,15 @@ final class InstallerViewModel: ObservableObject {
            !short.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return short
         }
-        return "1.0.1"
+        return "1.0.2"
+    }
+
+    private static func detectBuildNumber() -> String {
+        if let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
+           !build.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return build
+        }
+        return "-"
     }
 
     private func refreshLocalClawBuildLabel() {
@@ -2490,7 +2499,7 @@ struct ContentView: View {
                 Text("LocalClaw")
                     .font(AppFont.bodySemi(18))
                     .foregroundStyle(UI.text)
-                Text("Version \(vm.installerCurrentVersion)")
+                Text("Version \(vm.installerCurrentVersion) (build \(vm.installerBuildNumber))")
                     .font(AppFont.body(10))
                     .foregroundStyle(UI.muted)
             }
@@ -3212,7 +3221,7 @@ struct ContentView: View {
                 versionRow("Homebrew", vm.brewVersion, "latest via brew update", isUpToDate: vm.brewUpToDate)
                 versionRow("Node", vm.nodeVersion, "latest via brew upgrade", isUpToDate: vm.nodeUpToDate)
                 versionRow("LM Studio", vm.lmStudioVersion, "latest via brew cask", isUpToDate: vm.lmStudioUpToDate)
-                versionRow("LocalClaw", vm.installerCurrentVersion, vm.installerLatestVersion, isUpToDate: vm.installerUpdateStatus == "Up to date")
+                versionRow("LocalClaw", "\(vm.installerCurrentVersion) (build \(vm.installerBuildNumber))", vm.installerLatestVersion, isUpToDate: vm.installerUpdateStatus == "Up to date")
             }
 
             HStack(spacing: 10) {
