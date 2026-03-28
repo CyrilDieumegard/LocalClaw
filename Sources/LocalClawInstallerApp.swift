@@ -2555,7 +2555,6 @@ struct ContentView: View {
             sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup) { vm.screen = .channelSetup }
             sidebarButton("Templates", icon: "square.grid.2x2", isActive: vm.screen == .templates) { vm.screen = .templates }
             sidebarButton("Help", icon: "cross.case", isActive: vm.screen == .healthCenter) { vm.screen = .healthCenter }
-            sidebarButton("Budget (optional)", icon: "dollarsign.circle", isActive: vm.screen == .usageCenter) { vm.screen = .usageCenter }
             sidebarButton("Uninstall", icon: "trash", isActive: vm.screen == .uninstallCenter) { vm.screen = .uninstallCenter }
 
             Spacer()
@@ -2733,9 +2732,6 @@ struct ContentView: View {
                     }
                     HomeTile(label: "Help", icon: "cross.case", selected: false) {
                         vm.screen = .healthCenter
-                    }
-                    HomeTile(label: "Budget (optional)", icon: "dollarsign.circle", selected: false) {
-                        vm.screen = .usageCenter
                     }
                     HomeTile(label: "Uninstall Center", icon: "trash", selected: false) {
                         vm.screen = .uninstallCenter
