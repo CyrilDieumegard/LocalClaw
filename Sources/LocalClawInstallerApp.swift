@@ -2479,6 +2479,7 @@ struct ContentView: View {
                     Text("Local").tag(InstallerViewModel.InferenceMode.local)
                 }
                 .pickerStyle(.segmented)
+                .tint(UI.accent)
                 .frame(width: 170)
                 .onChange(of: vm.inferenceMode) { _ in
                     vm.applyInferenceModeSwitch()
@@ -2704,6 +2705,7 @@ struct ContentView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                .tint(UI.accent)
                     .onChange(of: vm.inferenceMode) { newValue in
                         if newValue == .local {
                             if vm.selectedModel.isEmpty {
@@ -2820,6 +2822,7 @@ struct ContentView: View {
                 }
             }
             .pickerStyle(.segmented)
+                .tint(UI.accent)
             .onChange(of: vm.selectedCloudAuthMode) { mode in
                 if mode == .oauth {
                     vm.selectedProvider = .openAI
@@ -3255,6 +3258,7 @@ struct ContentView: View {
                 }
             }
             .pickerStyle(.segmented)
+                .tint(UI.accent)
 
             Group {
                 switch helpTab {
