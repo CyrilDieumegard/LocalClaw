@@ -1183,6 +1183,8 @@ final class InstallerViewModel: ObservableObject {
         let defaultRepoDir = NSHomeDirectory() + "/LocalClaw"
         let repoDir = ProcessInfo.processInfo.environment["LOCALCLAW_REPO_DIR"] ?? defaultRepoDir
         let repoURL = ProcessInfo.processInfo.environment["LOCALCLAW_GITHUB_REPO"] ?? "https://github.com/CyrilDieumegard/LocalClaw.git"
+        let runningBundlePath = Bundle.main.bundlePath
+        let runningAppPath = runningBundlePath.hasSuffix(".app") ? runningBundlePath : ""
 
         let script = """
         #!/bin/zsh
@@ -1236,7 +1238,24 @@ final class InstallerViewModel: ObservableObject {
         echo ""
         echo "Installing updated app..."
         INSTALLED_TO=""
-        if [ -d "/Applications/LocalClaw.app" ]; then
+        TARGET_APP="\(runningAppPath)"
+
+        if [ -n "$TARGET_APP" ] && [ -d "$TARGET_APP" ]; then
+          echo "Updating currently running app: $TARGET_APP"
+          if [[ "$TARGET_APP" == /Applications/* ]]; then
+            if sudo rm -rf "$TARGET_APP" && sudo cp -R "$APP_SOURCE" "$TARGET_APP"; then
+              INSTALLED_TO="$TARGET_APP"
+            else
+              echo "Could not write running app in /Applications."
+            fi
+          else
+            if rm -rf "$TARGET_APP" && cp -R "$APP_SOURCE" "$TARGET_APP"; then
+              INSTALLED_TO="$TARGET_APP"
+            fi
+          fi
+        fi
+
+        if [ -z "$INSTALLED_TO" ] && [ -d "/Applications/LocalClaw.app" ]; then
           echo "Trying /Applications install..."
           if sudo rm -rf "/Applications/LocalClaw.app" && sudo cp -R "$APP_SOURCE" "/Applications/LocalClaw.app"; then
             INSTALLED_TO="/Applications/LocalClaw.app"
