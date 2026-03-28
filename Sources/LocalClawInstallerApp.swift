@@ -1234,21 +1234,32 @@ final class InstallerViewModel: ObservableObject {
         fi
 
         echo ""
-        echo "Installing updated app to: $TARGET_APP"
-        if [ "$TARGET_APP" = "/Applications/LocalClaw.app" ]; then
-          sudo rm -rf "$TARGET_APP" || exit 1
-          sudo cp -R "$APP_SOURCE" "$TARGET_APP" || exit 1
-        else
-          mkdir -p "$HOME/Applications"
-          rm -rf "$TARGET_APP"
-          cp -R "$APP_SOURCE" "$TARGET_APP" || exit 1
+        echo "Installing updated app..."
+        INSTALLED_TO=""
+        if [ -d "/Applications/LocalClaw.app" ]; then
+          echo "Trying /Applications install..."
+          if sudo rm -rf "/Applications/LocalClaw.app" && sudo cp -R "$APP_SOURCE" "/Applications/LocalClaw.app"; then
+            INSTALLED_TO="/Applications/LocalClaw.app"
+          else
+            echo "Could not write /Applications (permission denied or sudo cancelled)."
+            echo "Falling back to user install."
+          fi
         fi
+
+        if [ -z "$INSTALLED_TO" ]; then
+          mkdir -p "$HOME/Applications"
+          rm -rf "$HOME/Applications/LocalClaw.app"
+          cp -R "$APP_SOURCE" "$HOME/Applications/LocalClaw.app" || exit 1
+          INSTALLED_TO="$HOME/Applications/LocalClaw.app"
+        fi
+
+        echo "Installed to: $INSTALLED_TO"
 
         echo ""
         echo "Restarting LocalClaw..."
         osascript -e 'tell application "LocalClaw" to quit' >/dev/null 2>&1 || true
         sleep 1
-        open "$TARGET_APP" || true
+        open "$INSTALLED_TO" || true
 
         echo ""
         echo "Done. LocalClaw was rebuilt and reinstalled."
