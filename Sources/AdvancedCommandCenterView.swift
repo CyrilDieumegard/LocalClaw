@@ -74,6 +74,7 @@ final class CommandCenterViewModel: ObservableObject {
     @Published var perfAdvice: String = "Machine is stable"
     
     private var monitoringTimer: Timer?
+    private var monitoringTick: Int = 0
     private var cancellables = Set<AnyCancellable>()
     private let engine = InstallerEngine()
     
@@ -176,11 +177,16 @@ final class CommandCenterViewModel: ObservableObject {
         refreshSystemInfo()
         refreshResourceInfo()
         
-        // Timer toutes les 5 secondes
-        monitoringTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
+        monitoringTick = 0
+
+        // Timer every 8s: resources each tick, gateway probe every ~24s to reduce UI jank
+        monitoringTimer = Timer.scheduledTimer(withTimeInterval: 8.0, repeats: true) { _ in
             Task { @MainActor in
-                self.checkGatewayStatus()
+                self.monitoringTick += 1
                 self.refreshResourceInfo()
+                if self.monitoringTick % 3 == 0 {
+                    self.checkGatewayStatus()
+                }
             }
         }
     }
@@ -189,21 +195,27 @@ final class CommandCenterViewModel: ObservableObject {
         isMonitoring = false
         monitoringTimer?.invalidate()
         monitoringTimer = nil
+        monitoringTick = 0
         addLog(.info, "Monitoring stopped")
     }
     
     func checkGatewayStatus() {
         gatewayStatus = .checking
-        
-        // Test 1: Vérifier si le port répond (méthode fiable)
+
+        // Fast probe first
         let (_, portCheck) = engine.shell("curl -s -o /dev/null -w '%{http_code}' http://localhost:18789/api/health 2>/dev/null || echo '000'")
         let portResponds = portCheck.trimmingCharacters(in: .whitespacesAndNewlines) == "200"
-        
-        // Test 2: Vérifier via CLI
+
+        if portResponds {
+            gatewayStatus = .online
+            return
+        }
+
+        // Slower CLI check only when fast probe fails
         let (_, output) = engine.shell("openclaw gateway status --no-color 2>&1")
         let cliSaysRunning = output.contains("running") || output.contains("Online")
-        
-        if portResponds || cliSaysRunning {
+
+        if cliSaysRunning {
             gatewayStatus = .online
         } else if output.contains("not running") || output.contains("Offline") {
             gatewayStatus = .offline
@@ -800,6 +812,7 @@ struct AdvancedCommandCenterView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .tint(UI.accent)
                 .frame(width: 260)
 
                 Spacer()
@@ -938,53 +951,40 @@ struct AdvancedCommandCenterView: View {
                 .kerning(0.6)
                 .foregroundStyle(UI.accent)
 
-            Text("Essentials")
+            Text("Quick actions")
                 .font(AppFont.bodySemi(12))
                 .foregroundStyle(UI.text)
 
-            VStack(spacing: 8) {
-                ActionButton(
-                    title: "Start Gateway",
-                    icon: "play.fill",
-                    color: .green,
-                    action: { viewModel.startGateway() }
-                )
-
-                ActionButton(
-                    title: "Restart Gateway",
-                    icon: "arrow.clockwise",
-                    color: .orange,
-                    action: { viewModel.restartGateway() }
-                )
-
-                ActionButton(
-                    title: "Stop Gateway",
-                    icon: "stop.fill",
-                    color: .red,
-                    action: { viewModel.stopGateway() }
-                )
-
-                ActionButton(
-                    title: "Run Doctor",
-                    icon: "stethoscope",
-                    color: .blue,
-                    action: { viewModel.runDoctor() }
-                )
-
-                ActionButton(
-                    title: "Open Dashboard",
-                    icon: "globe",
-                    color: .purple,
-                    action: { viewModel.openDashboard() }
-                )
+            HStack(spacing: 8) {
+                compactActionButton("Start", icon: "play.fill", color: .green) { viewModel.startGateway() }
+                compactActionButton("Restart", icon: "arrow.clockwise", color: .orange) { viewModel.restartGateway() }
+                compactActionButton("Dashboard", icon: "globe", color: UI.accent) { viewModel.openDashboard() }
             }
+
+            Text("Use Advanced only for troubleshooting.")
+                .font(AppFont.body(11))
+                .foregroundStyle(UI.muted)
 
             DisclosureGroup(isExpanded: $showAdvancedActions) {
                 VStack(spacing: 8) {
                     ActionButton(
+                        title: "Run Doctor",
+                        icon: "stethoscope",
+                        color: .orange,
+                        action: { viewModel.runDoctor() }
+                    )
+
+                    ActionButton(
+                        title: "Stop Gateway",
+                        icon: "stop.fill",
+                        color: .red,
+                        action: { viewModel.stopGateway() }
+                    )
+
+                    ActionButton(
                         title: "Install Gateway Service",
                         icon: "arrow.down.circle.fill",
-                        color: .purple,
+                        color: UI.accent,
                         action: { viewModel.installGatewayService() }
                     )
 
@@ -1012,7 +1012,7 @@ struct AdvancedCommandCenterView: View {
                     ActionButton(
                         title: "Update OpenClaw",
                         icon: "arrow.down.circle",
-                        color: .blue,
+                        color: UI.accent,
                         action: { viewModel.updateOpenClaw() }
                     )
                 }
@@ -1029,6 +1029,23 @@ struct AdvancedCommandCenterView: View {
         .cornerRadius(10)
     }
     
+    private func compactActionButton(_ title: String, icon: String, color: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(title)
+                    .font(AppFont.bodySemi(12))
+            }
+            .foregroundStyle(color)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
     private var modelSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("MODE & MODEL")
@@ -1042,9 +1059,7 @@ struct AdvancedCommandCenterView: View {
                 }
             }
             .pickerStyle(.segmented)
-            .onChange(of: viewModel.inferenceModeSelection) { _ in
-                viewModel.applyInferenceMode()
-            }
+            .tint(UI.accent)
 
             if viewModel.inferenceModeSelection == .cloud {
                 HStack(spacing: 8) {
@@ -1140,6 +1155,7 @@ struct AdvancedCommandCenterView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .tint(UI.accent)
                 .frame(width: 220)
 
                 Spacer()
