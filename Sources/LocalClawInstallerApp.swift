@@ -4,7 +4,7 @@ import AppKit
 
 @MainActor
 final class InstallerViewModel: ObservableObject {
-    enum Screen { case license, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, templates, healthCenter, usageCenter }
+    enum Screen { case license, onboarding, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, templates, healthCenter, usageCenter }
     enum InstallMode: String {
         case llmOnly = "Install Local LLM only"
         case openClawOnly = "Install OpenClaw only"
@@ -162,6 +162,8 @@ final class InstallerViewModel: ObservableObject {
 
     @Published var screen: Screen = .license
     @Published var showHomebrewPrompt: Bool = false
+
+    private let onboardingCompletedKey = "localclaw.onboardingCompleted"
 
     // Control Center
     @Published var controlCenterLogs: String = ""
@@ -469,7 +471,30 @@ final class InstallerViewModel: ObservableObject {
         if isActivated && !engine.hasCommand("brew") {
             showHomebrewPrompt = true
         }
-        screen = isActivated ? .home : .license
+
+        if isActivated {
+            screen = hasCompletedOnboarding() ? .home : .onboarding
+        } else {
+            screen = .license
+        }
+    }
+
+    func hasCompletedOnboarding() -> Bool {
+        UserDefaults.standard.bool(forKey: onboardingCompletedKey)
+    }
+
+    func markOnboardingCompleted() {
+        UserDefaults.standard.set(true, forKey: onboardingCompletedKey)
+    }
+
+    func completeOnboarding() {
+        markOnboardingCompleted()
+        screen = .home
+    }
+
+    func restartOnboarding() {
+        UserDefaults.standard.set(false, forKey: onboardingCompletedKey)
+        screen = .onboarding
     }
 
     private func loadOpenRouterModelFromConfig() {
@@ -2313,6 +2338,7 @@ struct ProgressSteps: View {
     private var idx: Int {
         switch screen {
         case .license: return 0
+        case .onboarding: return 0
         case .home: return 0
         case .options: return 1
         case .install: return 2
@@ -2397,10 +2423,14 @@ struct ContentView: View {
             LinearGradient(colors: [UI.bg, UI.bg2], startPoint: .topLeading, endPoint: .bottomTrailing)
                 .ignoresSafeArea()
 
-            if vm.screen == .license {
+            if vm.screen == .license || vm.screen == .onboarding {
                 VStack(spacing: 16) {
                     topBar
-                    license
+                    if vm.screen == .license {
+                        license
+                    } else {
+                        onboarding
+                    }
                 }
                 .frame(maxWidth: 1120)
                 .padding(.horizontal, 28)
@@ -2416,6 +2446,7 @@ struct ContentView: View {
                         Group {
                             switch vm.screen {
                             case .license: license
+                            case .onboarding: onboarding
                             case .home: home
                             case .options: options
                             case .install: install
@@ -2602,6 +2633,48 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, alignment: .center)
             Spacer(minLength: 0)
         }
+    }
+
+    var onboarding: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Welcome to LocalClaw")
+                    .font(AppFont.heading(34))
+                    .foregroundStyle(UI.text)
+                Text("Quick first-run setup. This guide appears only once.")
+                    .font(AppFont.body(14))
+                    .foregroundStyle(UI.muted)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    helpStepCard(number: 1, title: "Choose your mode", detail: "Use Cloud for fastest setup. Use Local for offline usage.", icon: "slider.horizontal.3", tint: UI.accent)
+                    helpStepCard(number: 2, title: "Pick provider auth", detail: "OpenAI can use OAuth or API key. Other providers use API key.", icon: "person.badge.key", tint: .orange)
+                    helpStepCard(number: 3, title: "Run installation", detail: "Go to Install and click Install Everything.", icon: "gearshape.2.fill", tint: .red)
+                    helpStepCard(number: 4, title: "Verify success", detail: "Send one test message from Dashboard.", icon: "checkmark.message.fill", tint: .green)
+                }
+
+                HStack(spacing: 10) {
+                    Button("Start Setup") {
+                        vm.markOnboardingCompleted()
+                        vm.screen = .options
+                    }
+                    .buttonStyle(CTAButton(primary: true))
+
+                    Button("Skip to Dashboard") {
+                        vm.completeOnboarding()
+                    }
+                    .buttonStyle(CTAButton(primary: false))
+                }
+
+                Text("You can reopen this guide anytime from Help.")
+                    .font(AppFont.body(12))
+                    .foregroundStyle(UI.muted)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 10)
+            .frame(maxWidth: 940, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .scrollIndicators(.hidden)
     }
 
     var home: some View {
@@ -2851,6 +2924,8 @@ struct ContentView: View {
                 }
             }
 
+            providerAuthMatrix
+
             openRouterModelPicker
             apiKeySection
             
@@ -2862,6 +2937,36 @@ struct ContentView: View {
         }
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
+    }
+
+    private var providerAuthMatrix: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Provider auth methods")
+                .font(AppFont.bodySemi(11))
+                .foregroundStyle(UI.text)
+
+            authMatrixRow(provider: "OpenAI", auth: "OAuth available + API key")
+            authMatrixRow(provider: "OpenRouter", auth: "API key required")
+            authMatrixRow(provider: "Kimi (via OpenRouter)", auth: "API key required")
+            authMatrixRow(provider: "Anthropic", auth: "API key required")
+            authMatrixRow(provider: "Gemini", auth: "API key required")
+            authMatrixRow(provider: "xAI", auth: "API key required")
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.06), lineWidth: 1))
+    }
+
+    private func authMatrixRow(provider: String, auth: String) -> some View {
+        HStack {
+            Text(provider)
+                .font(AppFont.body(11))
+                .foregroundStyle(UI.text)
+            Spacer()
+            Text(auth)
+                .font(AppFont.body(11))
+                .foregroundStyle(UI.muted)
+        }
     }
 
     @ViewBuilder
@@ -3249,6 +3354,11 @@ struct ContentView: View {
                         .foregroundStyle(UI.muted)
                 }
                 Spacer()
+                Button("Rerun setup guide") {
+                    vm.restartOnboarding()
+                }
+                .buttonStyle(CTAButton(primary: false))
+
                 Text(vm.healthStatus)
                     .font(AppFont.bodySemi(12))
                     .foregroundStyle(vm.healthStatus == "Healthy" ? .green : (vm.healthStatus == "Critical" ? .red : .orange))
@@ -3305,16 +3415,27 @@ struct ContentView: View {
                 case .faq:
                     ScrollView {
                         VStack(alignment: .leading, spacing: 10) {
-                            faqRow(question: "Where do I put my API key?", answer: "Go to Install, pick your AI provider, paste the key in API Key, then click Verify.")
+                            Text("Critical setup blockers")
+                                .font(AppFont.bodySemi(12))
+                                .foregroundStyle(UI.accent)
                             faqRow(question: "Terminal asks for Password. Which password is this?", answer: "Your Mac user password. Nothing is shown while typing, this is normal on macOS.")
-                            faqRow(question: "Do I need credits to use Cloud mode?", answer: "Yes. API key mode needs active credits. OpenAI OAuth mode can work without manually pasting a key.")
                             faqRow(question: "Install says complete, but I get no replies.", answer: "Open Install again, verify provider and key, then run Help > Health commands > Run Health Check.")
+                            faqRow(question: "I clicked Update LocalClaw but UI did not change.", answer: "Make sure you are on app version 1.0.1 or newer. Older builds could update repo code without replacing the running app bundle.")
+
+                            Text("Common beginner questions")
+                                .font(AppFont.bodySemi(12))
+                                .foregroundStyle(UI.accent)
+                            faqRow(question: "Where do I put my API key?", answer: "Go to Install, pick your AI provider, paste the key in API Key, then click Verify.")
+                            faqRow(question: "Do I need credits to use Cloud mode?", answer: "Yes. API key mode needs active credits. OpenAI OAuth mode can work without manually pasting a key.")
                             faqRow(question: "Cloud or Local: what should I choose first?", answer: "Start with Cloud for fastest setup. Use Local if you want offline and private inference.")
                             faqRow(question: "Can I use Kimi with OAuth?", answer: "Not at the moment in LocalClaw. Use OpenRouter API key mode and choose a Kimi model in the OpenRouter catalog.")
+                            faqRow(question: "Can I switch modes after installation?", answer: "Yes. Use the Cloud/Local switch and click Apply. You can switch anytime.")
+
+                            Text("Performance and monitoring")
+                                .font(AppFont.bodySemi(12))
+                                .foregroundStyle(UI.accent)
                             faqRow(question: "How can I confirm Local mode is really active?", answer: "In top bar, mode should display LOCAL. In Command Center, apply Local mode and run a quick test message.")
                             faqRow(question: "Why is Local mode slower on my machine?", answer: "Large models use more RAM and swap. Pick a smaller model and run Fix My Speed in Command Center.")
-                            faqRow(question: "Can I switch modes after installation?", answer: "Yes. Use the Cloud/Local switch and click Apply. You can switch anytime.")
-                            faqRow(question: "I clicked Update LocalClaw but UI did not change.", answer: "Make sure you are on app version 1.0.1 or newer. Older builds could update repo code without replacing the running app bundle.")
                             faqRow(question: "How do I reset safely without losing everything?", answer: "Use Backup Config first in Help > Health commands, then run Quick Repair.")
                         }
                         .padding(.vertical, 2)
