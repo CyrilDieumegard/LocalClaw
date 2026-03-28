@@ -3313,6 +3313,18 @@ struct ContentView: View {
                 Spacer()
             }
 
+            VStack(alignment: .leading, spacing: 8) {
+                Text("What is this?")
+                    .font(AppFont.bodySemi(13))
+                    .foregroundStyle(UI.text)
+                Text("Templates are shortcuts that auto-configure mode + model for a specific goal. Use one if you want a fast default. You can still change everything manually after.")
+                    .font(AppFont.body(12))
+                    .foregroundStyle(UI.muted)
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+
             HStack(spacing: 10) {
                 Button("Founder mode") { vm.applyAgentTemplate("founder") }
                     .buttonStyle(CTAButton(primary: true))
@@ -3323,6 +3335,16 @@ struct ContentView: View {
                 Button("Dev mode") { vm.applyAgentTemplate("dev") }
                     .buttonStyle(CTAButton(primary: false))
             }
+
+            VStack(alignment: .leading, spacing: 8) {
+                templateHintRow(title: "Founder mode", detail: "Best for strategy, business decisions, and product direction.")
+                templateHintRow(title: "Support mode", detail: "Best for quick, clear answers and customer help.")
+                templateHintRow(title: "Growth mode", detail: "Best for marketing, content, and audience growth tasks.")
+                templateHintRow(title: "Dev mode", detail: "Best for coding, debugging, and technical implementation.")
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
 
             Text("Applied template log")
                 .font(AppFont.bodySemi(14))
@@ -3345,6 +3367,24 @@ struct ContentView: View {
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
+    }
+
+    private func templateHintRow(title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "info.circle.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(UI.accent)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(UI.text)
+                Text(detail)
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+            }
+            Spacer()
+        }
     }
 
     @ViewBuilder
