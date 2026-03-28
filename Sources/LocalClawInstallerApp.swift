@@ -231,7 +231,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var brewVersion = "Checking..."
     @Published var nodeVersion = "Checking..."
     @Published var lmStudioVersion = "Checking..."
-    @Published var installerCurrentVersion = "1.0.0"
+    @Published var installerCurrentVersion = InstallerViewModel.detectAppVersion()
     @Published var installerLatestVersion = "Checking..."
     @Published var installerUpdateStatus = "Checking..."
     @Published var installerDownloadURL = ""
@@ -392,6 +392,14 @@ final class InstallerViewModel: ObservableObject {
         let states = [statusHomebrew, statusLMStudio, statusNode, statusOpenClaw, statusOpenClawCheck, statusModel]
         let done = states.filter { $0 == "OK" || $0 == "SKIP" }.count
         return Double(done) / 6.0
+    }
+
+    private static func detectAppVersion() -> String {
+        if let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+           !short.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return short
+        }
+        return "1.0.1"
     }
 
     private func refreshLocalClawBuildLabel() {
@@ -938,7 +946,7 @@ final class InstallerViewModel: ObservableObject {
 
         isActivating = true
         activationStatus = "Activating..."
-        let payload = LicenseActivationPayload(email: email, licenseKey: key, machineId: machineId, appVersion: "1.0.0")
+        let payload = LicenseActivationPayload(email: email, licenseKey: key, machineId: machineId, appVersion: installerCurrentVersion)
 
         Task.detached {
             do {
@@ -2451,7 +2459,7 @@ struct ContentView: View {
                 Text("LocalClaw")
                     .font(AppFont.bodySemi(18))
                     .foregroundStyle(UI.text)
-                Text("Version \(vm.installerCurrentVersion) • \(vm.localClawBuildLabel)")
+                Text("Version \(vm.installerCurrentVersion)")
                     .font(AppFont.body(10))
                     .foregroundStyle(UI.muted)
             }
@@ -3091,7 +3099,7 @@ struct ContentView: View {
                 versionRow("Homebrew", vm.brewVersion, "latest via brew update", isUpToDate: vm.brewUpToDate)
                 versionRow("Node", vm.nodeVersion, "latest via brew upgrade", isUpToDate: vm.nodeUpToDate)
                 versionRow("LM Studio", vm.lmStudioVersion, "latest via brew cask", isUpToDate: vm.lmStudioUpToDate)
-                versionRow("LocalClaw", "\(vm.installerCurrentVersion) (\(vm.localClawBuildLabel))", vm.installerLatestVersion, isUpToDate: vm.installerUpdateStatus == "Up to date")
+                versionRow("LocalClaw", vm.installerCurrentVersion, vm.installerLatestVersion, isUpToDate: vm.installerUpdateStatus == "Up to date")
             }
 
             HStack(spacing: 10) {
