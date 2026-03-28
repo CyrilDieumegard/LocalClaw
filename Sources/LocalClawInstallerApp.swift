@@ -2841,9 +2841,14 @@ struct ContentView: View {
             .disabled(vm.selectedCloudAuthMode == .oauth)
 
             if vm.selectedCloudAuthMode == .oauth {
-                Text("OAuth currently uses OpenAI (Codex / ChatGPT).")
-                    .font(AppFont.body(11))
-                    .foregroundStyle(UI.muted)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("OAuth currently uses OpenAI (Codex / ChatGPT).")
+                        .font(AppFont.body(11))
+                        .foregroundStyle(UI.muted)
+                    Text("Kimi (Moonshot) is available via OpenRouter API key mode, not OAuth.")
+                        .font(AppFont.body(11))
+                        .foregroundStyle(UI.muted)
+                }
             }
 
             openRouterModelPicker
@@ -3305,6 +3310,7 @@ struct ContentView: View {
                             faqRow(question: "Do I need credits to use Cloud mode?", answer: "Yes. API key mode needs active credits. OpenAI OAuth mode can work without manually pasting a key.")
                             faqRow(question: "Install says complete, but I get no replies.", answer: "Open Install again, verify provider and key, then run Help > Health commands > Run Health Check.")
                             faqRow(question: "Cloud or Local: what should I choose first?", answer: "Start with Cloud for fastest setup. Use Local if you want offline and private inference.")
+                            faqRow(question: "Can I use Kimi with OAuth?", answer: "Not at the moment in LocalClaw. Use OpenRouter API key mode and choose a Kimi model in the OpenRouter catalog.")
                             faqRow(question: "How can I confirm Local mode is really active?", answer: "In top bar, mode should display LOCAL. In Command Center, apply Local mode and run a quick test message.")
                             faqRow(question: "Why is Local mode slower on my machine?", answer: "Large models use more RAM and swap. Pick a smaller model and run Fix My Speed in Command Center.")
                             faqRow(question: "Can I switch modes after installation?", answer: "Yes. Use the Cloud/Local switch and click Apply. You can switch anytime.")
