@@ -3185,6 +3185,50 @@ struct ContentView: View {
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
     }
 
+    @ViewBuilder
+    private func helpStepCard(number: Int, title: String, detail: String, icon: String, tint: Color) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(tint.opacity(0.15))
+                    .frame(width: 28, height: 28)
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(tint)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Step \(number) - \(title)")
+                    .font(AppFont.bodySemi(13))
+                    .foregroundStyle(UI.text)
+                Text(detail)
+                    .font(AppFont.body(12))
+                    .foregroundStyle(UI.muted)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+    }
+
+    @ViewBuilder
+    private func faqRow(question: String, answer: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(question, systemImage: "questionmark.circle.fill")
+                .font(AppFont.bodySemi(13))
+                .foregroundStyle(UI.text)
+            Text(answer)
+                .font(AppFont.body(12))
+                .foregroundStyle(UI.muted)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+    }
+
     var healthCenter: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
@@ -3215,49 +3259,52 @@ struct ContentView: View {
             Group {
                 switch helpTab {
                 case .stepByStep:
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("STEP BY STEP")
-                            .font(AppFont.bodySemi(14))
-                            .foregroundStyle(UI.text)
-                        Text("1. Open Install")
-                        Text("2. Choose mode: Cloud (simple) or Local")
-                        Text("3. Cloud: pick OAuth (no API key) or API key mode")
-                        Text("4. If API key mode, paste key before install")
-                        Text("5. Click Install Everything")
-                        Text("6. In Terminal, if asked for Password, type your Mac password (nothing will appear) then press Enter")
-                        Text("7. Wait for Installation Complete")
-                        Text("8. Open Dashboard and send a first test message")
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Recommended flow")
+                                .font(AppFont.bodySemi(14))
+                                .foregroundStyle(UI.text)
+
+                            Group {
+                                helpStepCard(number: 1, title: "Open Install", detail: "Go to Install in the left sidebar.", icon: "play.circle.fill", tint: UI.accent)
+                                helpStepCard(number: 2, title: "Choose your mode", detail: "Cloud for fastest setup, Local for offline usage.", icon: "slider.horizontal.3", tint: .blue)
+                                helpStepCard(number: 3, title: "Set provider auth", detail: "Cloud mode: choose OpenAI OAuth or API key.", icon: "key.fill", tint: .purple)
+                                helpStepCard(number: 4, title: "If API key mode", detail: "Paste key first, then click Verify.", icon: "checkmark.shield.fill", tint: .green)
+                                helpStepCard(number: 5, title: "Run installation", detail: "Click Install Everything and keep Terminal open.", icon: "gearshape.2.fill", tint: .orange)
+                                helpStepCard(number: 6, title: "Mac password prompt", detail: "If Terminal asks Password, type your Mac password. Input is hidden by macOS.", icon: "lock.fill", tint: .red)
+                                helpStepCard(number: 7, title: "Wait for completion", detail: "Stop only when Installation Complete appears.", icon: "hourglass.circle.fill", tint: .mint)
+                                helpStepCard(number: 8, title: "Final test", detail: "Open Dashboard and send one test message.", icon: "message.fill", tint: .indigo)
+                            }
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                Label("Pro tip", systemImage: "lightbulb.fill")
+                                    .font(AppFont.bodySemi(13))
+                                    .foregroundStyle(.yellow)
+                                Text("If something fails, go to Help > Health commands and run Run Health Check before retrying full install.")
+                                    .font(AppFont.body(12))
+                                    .foregroundStyle(UI.muted)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+                        }
+                        .padding(.vertical, 2)
                     }
-                    .font(AppFont.body(13))
-                    .foregroundStyle(UI.text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+                    .scrollIndicators(.hidden)
 
                 case .faq:
-                    VStack(alignment: .leading, spacing: 10) {
-                        Group {
-                            Text("Q: Where do I put my API key?")
-                                .font(AppFont.bodySemi(13))
-                            Text("A: Install > AI Provider > API Key field > Verify.")
-                            Text("Q: It asks for Password in Terminal. What password?")
-                                .font(AppFont.bodySemi(13))
-                            Text("A: Your Mac user password. Input is hidden by macOS.")
-                            Text("Q: Do I need API credits?")
-                                .font(AppFont.bodySemi(13))
-                            Text("A: Yes for API key mode. No for OpenAI OAuth mode.")
-                            Text("Q: Install completed but no replies?")
-                                .font(AppFont.bodySemi(13))
-                            Text("A: Reopen Install, verify provider/key, then run Health commands.")
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 10) {
+                            faqRow(question: "Where do I put my API key?", answer: "Install > AI Provider > API Key field, then click Verify.")
+                            faqRow(question: "Terminal asks for Password. Which one?", answer: "Your Mac user password. Input is hidden, this is normal.")
+                            faqRow(question: "Do I need credits?", answer: "Yes for API key mode. No for OpenAI OAuth mode.")
+                            faqRow(question: "Install says complete but no replies?", answer: "Reopen Install, verify provider and key, then run Run Health Check.")
+                            faqRow(question: "Cloud or Local, what should I choose?", answer: "Cloud is easier and faster to start. Local is private and offline but needs model setup.")
                         }
+                        .padding(.vertical, 2)
                     }
-                    .font(AppFont.body(13))
-                    .foregroundStyle(UI.text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+                    .scrollIndicators(.hidden)
 
                 case .healthCommands:
                     VStack(alignment: .leading, spacing: 10) {
