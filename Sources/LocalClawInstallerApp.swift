@@ -1219,13 +1219,39 @@ final class InstallerViewModel: ObservableObject {
         fi
 
         echo ""
-        echo "Rebuilding..."
-        swift build || exit 1
+        echo "Building app bundle..."
+        bash scripts/build-dmg.sh || exit 1
+
+        APP_SOURCE="$REPO_DIR/dist/LocalClaw.app"
+        if [ ! -d "$APP_SOURCE" ]; then
+          echo "Build did not produce LocalClaw.app"
+          exit 1
+        fi
+
+        TARGET_APP="$HOME/Applications/LocalClaw.app"
+        if [ -d "/Applications/LocalClaw.app" ]; then
+          TARGET_APP="/Applications/LocalClaw.app"
+        fi
 
         echo ""
-        echo "Done."
-        echo "Run LocalClaw with:"
-        echo "cd $REPO_DIR && swift run"
+        echo "Installing updated app to: $TARGET_APP"
+        if [ "$TARGET_APP" = "/Applications/LocalClaw.app" ]; then
+          sudo rm -rf "$TARGET_APP" || exit 1
+          sudo cp -R "$APP_SOURCE" "$TARGET_APP" || exit 1
+        else
+          mkdir -p "$HOME/Applications"
+          rm -rf "$TARGET_APP"
+          cp -R "$APP_SOURCE" "$TARGET_APP" || exit 1
+        fi
+
+        echo ""
+        echo "Restarting LocalClaw..."
+        osascript -e 'tell application "LocalClaw" to quit' >/dev/null 2>&1 || true
+        sleep 1
+        open "$TARGET_APP" || true
+
+        echo ""
+        echo "Done. LocalClaw was rebuilt and reinstalled."
         echo ""
         read -r "REPLY?Press Enter to close..."
         """
