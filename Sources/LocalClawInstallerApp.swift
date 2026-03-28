@@ -2555,7 +2555,7 @@ struct ContentView: View {
             sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup) { vm.screen = .channelSetup }
             sidebarButton("Templates", icon: "square.grid.2x2", isActive: vm.screen == .templates) { vm.screen = .templates }
             sidebarButton("Help", icon: "cross.case", isActive: vm.screen == .healthCenter) { vm.screen = .healthCenter }
-            sidebarButton("Usage & Cost", icon: "dollarsign.circle", isActive: vm.screen == .usageCenter) { vm.screen = .usageCenter }
+            sidebarButton("Budget (optional)", icon: "dollarsign.circle", isActive: vm.screen == .usageCenter) { vm.screen = .usageCenter }
             sidebarButton("Uninstall", icon: "trash", isActive: vm.screen == .uninstallCenter) { vm.screen = .uninstallCenter }
 
             Spacer()
@@ -2734,7 +2734,7 @@ struct ContentView: View {
                     HomeTile(label: "Help", icon: "cross.case", selected: false) {
                         vm.screen = .healthCenter
                     }
-                    HomeTile(label: "Usage & Cost", icon: "dollarsign.circle", selected: false) {
+                    HomeTile(label: "Budget (optional)", icon: "dollarsign.circle", selected: false) {
                         vm.screen = .usageCenter
                     }
                     HomeTile(label: "Uninstall Center", icon: "trash", selected: false) {
@@ -3572,10 +3572,10 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("USAGE & COST")
+                    Text("BUDGET ESTIMATOR (OPTIONAL)")
                         .font(AppFont.heading(28))
                         .foregroundStyle(UI.text)
-                    Text("Estimate token costs and optimize model spend.")
+                    Text("Use this only if you pay for cloud API usage and want a rough monthly estimate.")
                         .font(AppFont.body(13))
                         .foregroundStyle(UI.muted)
                 }
@@ -3587,6 +3587,21 @@ struct ContentView: View {
                     .padding(.vertical, 6)
                     .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
             }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("When to use this")
+                    .font(AppFont.bodySemi(13))
+                    .foregroundStyle(UI.text)
+                Text("• You use paid cloud models (OpenRouter/OpenAI/Anthropic/etc.)\n• You want a rough monthly budget\n• You want to compare cheap vs expensive model usage")
+                    .font(AppFont.body(12))
+                    .foregroundStyle(UI.muted)
+                Text("If you run local-only models, you can ignore this page.")
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(UI.accent)
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Estimated monthly tokens: \(String(format: "%.1f", vm.estimatedMonthlyTokensM))M")
