@@ -3300,11 +3300,16 @@ struct ContentView: View {
                 case .faq:
                     ScrollView {
                         VStack(alignment: .leading, spacing: 10) {
-                            faqRow(question: "Where do I put my API key?", answer: "Install > AI Provider > API Key field, then click Verify.")
-                            faqRow(question: "Terminal asks for Password. Which one?", answer: "Your Mac user password. Input is hidden, this is normal.")
-                            faqRow(question: "Do I need credits?", answer: "Yes for API key mode. No for OpenAI OAuth mode.")
-                            faqRow(question: "Install says complete but no replies?", answer: "Reopen Install, verify provider and key, then run Run Health Check.")
-                            faqRow(question: "Cloud or Local, what should I choose?", answer: "Cloud is easier and faster to start. Local is private and offline but needs model setup.")
+                            faqRow(question: "Where do I put my API key?", answer: "Go to Install, pick your AI provider, paste the key in API Key, then click Verify.")
+                            faqRow(question: "Terminal asks for Password. Which password is this?", answer: "Your Mac user password. Nothing is shown while typing, this is normal on macOS.")
+                            faqRow(question: "Do I need credits to use Cloud mode?", answer: "Yes. API key mode needs active credits. OpenAI OAuth mode can work without manually pasting a key.")
+                            faqRow(question: "Install says complete, but I get no replies.", answer: "Open Install again, verify provider and key, then run Help > Health commands > Run Health Check.")
+                            faqRow(question: "Cloud or Local: what should I choose first?", answer: "Start with Cloud for fastest setup. Use Local if you want offline and private inference.")
+                            faqRow(question: "How can I confirm Local mode is really active?", answer: "In top bar, mode should display LOCAL. In Command Center, apply Local mode and run a quick test message.")
+                            faqRow(question: "Why is Local mode slower on my machine?", answer: "Large models use more RAM and swap. Pick a smaller model and run Fix My Speed in Command Center.")
+                            faqRow(question: "Can I switch modes after installation?", answer: "Yes. Use the Cloud/Local switch and click Apply. You can switch anytime.")
+                            faqRow(question: "I clicked Update LocalClaw but UI did not change.", answer: "Make sure you are on app version 1.0.1 or newer. Older builds could update repo code without replacing the running app bundle.")
+                            faqRow(question: "How do I reset safely without losing everything?", answer: "Use Backup Config first in Help > Health commands, then run Quick Repair.")
                         }
                         .padding(.vertical, 2)
                     }
