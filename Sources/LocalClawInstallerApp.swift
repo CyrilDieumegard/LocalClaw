@@ -2935,6 +2935,8 @@ struct ContentView: View {
 
             providerAuthMatrix
 
+            providerQuickHelp
+
             openRouterModelPicker
             apiKeySection
             
@@ -2964,6 +2966,44 @@ struct ContentView: View {
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.06), lineWidth: 1))
+    }
+
+    @ViewBuilder
+    private var providerQuickHelp: some View {
+        if vm.selectedCloudAuthMode == .api {
+            VStack(alignment: .leading, spacing: 6) {
+                if vm.selectedProvider == .openRouter {
+                    Text("What is OpenRouter?")
+                        .font(AppFont.bodySemi(11))
+                        .foregroundStyle(UI.text)
+                    Text("OpenRouter is a single API gateway that gives access to many models (including Kimi, Claude, GPT, Gemini) with one API key.")
+                        .font(AppFont.body(11))
+                        .foregroundStyle(UI.muted)
+                } else {
+                    Text("Need an API key?")
+                        .font(AppFont.bodySemi(11))
+                        .foregroundStyle(UI.text)
+                    Text("Create your key on the provider website, then paste it here and verify.")
+                        .font(AppFont.body(11))
+                        .foregroundStyle(UI.muted)
+                }
+
+                HStack(spacing: 8) {
+                    Button(vm.selectedProvider == .openRouter ? "Open OpenRouter" : "Open Provider Site") {
+                        vm.openProviderURL()
+                    }
+                    .buttonStyle(CTAButton(primary: false))
+
+                    Button("Open docs") {
+                        vm.openOpenClawDocs()
+                    }
+                    .buttonStyle(CTAButton(primary: false))
+                }
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.06), lineWidth: 1))
+        }
     }
 
     private func authMatrixRow(provider: String, auth: String) -> some View {
