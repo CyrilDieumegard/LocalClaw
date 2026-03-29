@@ -2625,7 +2625,7 @@ struct ContentView: View {
                 vm.chooseMode(.fullInstall)
             }
             sidebarButton("Updates", icon: "arrow.clockwise", isActive: vm.screen == .updates) { vm.screen = .updates }
-            sidebarButton("Command Center", icon: "slider.horizontal.3", isActive: vm.screen == .commandCenter) { vm.screen = .commandCenter }
+            sidebarButton("Control Center", icon: "slider.horizontal.3", isActive: vm.screen == .commandCenter) { vm.screen = .commandCenter }
             sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup) { vm.screen = .channelSetup }
             sidebarButton("Templates", icon: "square.grid.2x2", isActive: vm.screen == .templates) { vm.screen = .templates }
             sidebarButton("Help", icon: "cross.case", isActive: vm.screen == .healthCenter) { vm.screen = .healthCenter }
@@ -3620,8 +3620,8 @@ struct ContentView: View {
                             Text("Performance and monitoring")
                                 .font(AppFont.bodySemi(12))
                                 .foregroundStyle(UI.accent)
-                            faqRow(question: "How can I confirm Local mode is really active?", answer: "In top bar, mode should display LOCAL. In Command Center, apply Local mode and run a quick test message.")
-                            faqRow(question: "Why is Local mode slower on my machine?", answer: "Large models use more RAM and swap. Pick a smaller model and run Fix My Speed in Command Center.")
+                            faqRow(question: "How can I confirm Local mode is really active?", answer: "In top bar, mode should display LOCAL. In Control Center, apply Local mode and run a quick test message.")
+                            faqRow(question: "Why is Local mode slower on my machine?", answer: "Large models use more RAM and swap. Pick a smaller model and run Fix My Speed in Control Center.")
                             faqRow(question: "How do I reset safely without losing everything?", answer: "Use Backup Config first in Help > Health commands, then run Quick Repair.")
                         }
                         .padding(.vertical, 2)
