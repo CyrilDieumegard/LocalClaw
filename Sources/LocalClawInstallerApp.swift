@@ -2309,6 +2309,27 @@ struct CTAButton: ButtonStyle {
     }
 }
 
+struct CompactGhostButton: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(AppFont.bodySemi(12))
+            .foregroundStyle(UI.text)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.white.opacity(0.9))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.black.opacity(0.10), lineWidth: 1)
+            )
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .opacity(configuration.isPressed ? 0.92 : 1)
+    }
+}
+
 struct ChoiceCard: View {
     let title: String
     let subtitle: String
@@ -2633,10 +2654,21 @@ struct ContentView: View {
                 }
 
                 HStack(spacing: 8) {
-                    Button("Refresh") { vm.refreshMachineDetails() }
-                        .buttonStyle(CTAButton(primary: false))
-                    Button("Copy") { vm.copyMachineDetails() }
-                        .buttonStyle(CTAButton(primary: false))
+                    Button {
+                        vm.refreshMachineDetails()
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(CompactGhostButton())
+
+                    Button {
+                        vm.copyMachineDetails()
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(CompactGhostButton())
                 }
                 .padding(.top, 4)
             }
