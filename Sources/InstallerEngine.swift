@@ -731,13 +731,27 @@ final class InstallerEngine: @unchecked Sendable {
         return (code == 0 && !out.isEmpty) ? out : "Unknown"
     }
 
+    private func normalizeVersion(_ value: String) -> String {
+        let cleaned = value
+            .replacingOccurrences(of: "OpenClaw ", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let range = cleaned.range(of: #"\d+(?:\.\d+)+"#, options: .regularExpression) {
+            return String(cleaned[range])
+        }
+        return cleaned
+    }
+
     func openClawVersionInfo() -> VersionInfo {
         let installedRaw = installedVersion(for: "openclaw")
-        let installed = installedRaw.replacingOccurrences(of: "OpenClaw ", with: "")
-        let latest = latestOpenClawVersion()
+        let installed = normalizeVersion(installedRaw)
+        let latestRaw = latestOpenClawVersion()
+        let latest = normalizeVersion(latestRaw)
+
         if installed == "Not installed" || latest == "Unknown" {
             return VersionInfo(installed: installed, latest: latest, updateAvailable: false)
         }
+
         return VersionInfo(installed: installed, latest: latest, updateAvailable: installed != latest)
     }
 

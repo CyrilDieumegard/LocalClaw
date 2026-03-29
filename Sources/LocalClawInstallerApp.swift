@@ -191,6 +191,7 @@ final class InstallerViewModel: ObservableObject {
 
     @Published var chip: String = ""
     @Published var ram: String = ""
+    @Published var machineDetails: String = ""
     @Published var recommendation: String = ""
 
     @Published var selectedModel: String = ""
@@ -443,6 +444,7 @@ final class InstallerViewModel: ObservableObject {
 
         chip = profile.chip
         ram = "\(profile.memoryGB) GB"
+        refreshMachineDetails()
         recommendation = "\(reco.model) \(reco.quant)"
         selectedModel = recommendation
 
@@ -490,6 +492,37 @@ final class InstallerViewModel: ObservableObject {
 
     func hasCompletedOnboarding() -> Bool {
         UserDefaults.standard.bool(forKey: onboardingCompletedKey)
+    }
+
+    func refreshMachineDetails() {
+        let modelName = engine.shell("/usr/sbin/system_profiler SPHardwareDataType 2>/dev/null | /usr/bin/awk -F': ' '/Model Name/{print $2; exit}'").1
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let modelIdentifier = engine.shell("/usr/sbin/system_profiler SPHardwareDataType 2>/dev/null | /usr/bin/awk -F': ' '/Model Identifier/{print $2; exit}'").1
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let macos = engine.shell("/usr/bin/sw_vers -productVersion").1.trimmingCharacters(in: .whitespacesAndNewlines)
+        let build = engine.shell("/usr/bin/sw_vers -buildVersion").1.trimmingCharacters(in: .whitespacesAndNewlines)
+        let boot = engine.shell("/usr/sbin/sysctl -n kern.boottime | /usr/bin/awk -F'\\} ' '{print $2}'").1
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let year = String(Calendar.current.component(.year, from: Date()))
+
+        var lines: [String] = []
+        if !modelName.isEmpty { lines.append("Model: \(modelName)") }
+        if !modelIdentifier.isEmpty { lines.append("ID: \(modelIdentifier)") }
+        if !macos.isEmpty { lines.append("macOS \(macos) (\(build))") }
+        if !boot.isEmpty { lines.append("Boot: \(boot)") }
+        lines.append("Year: \(year)")
+
+        machineDetails = lines.joined(separator: "\n")
+    }
+
+    func copyMachineDetails() {
+        let payload = machineDetails.isEmpty
+            ? "Machine\n\(chip)\n\(ram)"
+            : "Machine\n\(chip)\n\(ram)\n\n\(machineDetails)"
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(payload, forType: .string)
+        modeSwitchStatus = "Machine info copied"
     }
 
     func markOnboardingCompleted() {
@@ -1252,6 +1285,9 @@ final class InstallerViewModel: ObservableObject {
         echo "Fetching remote..."
         git fetch origin main || exit 1
 
+        # Client-safe update path: always align local repo to origin/main
+        git checkout main >/dev/null 2>&1 || git checkout -B main origin/main || exit 1
+
         LOCAL_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
         REMOTE_SHA=$(git rev-parse origin/main 2>/dev/null || echo "")
 
@@ -1259,7 +1295,7 @@ final class InstallerViewModel: ObservableObject {
           echo "Already up to date."
         else
           echo "Updating to latest main..."
-          git pull --ff-only origin main || exit 1
+          git reset --hard origin/main || exit 1
         fi
 
         echo ""
@@ -1272,49 +1308,66 @@ final class InstallerViewModel: ObservableObject {
           exit 1
         fi
 
-        TARGET_APP="$HOME/Applications/LocalClaw.app"
-        if [ -d "/Applications/LocalClaw.app" ]; then
+        TARGET_APP=""
+        RUNNING_APP="\(runningAppPath)"
+
+        # Never target transient paths (DMG mount, AppTranslocation, tmp copies)
+        if [ -n "$RUNNING_APP" ] && [ -d "$RUNNING_APP" ]; then
+          case "$RUNNING_APP" in
+            /Applications/LocalClaw.app|$HOME/Applications/LocalClaw.app)
+              TARGET_APP="$RUNNING_APP"
+              ;;
+            *)
+              echo "Running app path is transient: $RUNNING_APP"
+              echo "Will install to a stable Applications location instead."
+              ;;
+          esac
+        fi
+
+        if [ -z "$TARGET_APP" ] && [ -d "/Applications/LocalClaw.app" ]; then
           TARGET_APP="/Applications/LocalClaw.app"
+        fi
+        if [ -z "$TARGET_APP" ]; then
+          TARGET_APP="$HOME/Applications/LocalClaw.app"
         fi
 
         echo ""
         echo "Installing updated app..."
         INSTALLED_TO=""
-        TARGET_APP="\(runningAppPath)"
 
-        if [ -n "$TARGET_APP" ] && [ -d "$TARGET_APP" ]; then
-          echo "Updating currently running app: $TARGET_APP"
-          if [[ "$TARGET_APP" == /Applications/* ]]; then
-            if sudo rm -rf "$TARGET_APP" && sudo cp -R "$APP_SOURCE" "$TARGET_APP"; then
-              INSTALLED_TO="$TARGET_APP"
-            else
-              echo "Could not write running app in /Applications."
-            fi
+        if [[ "$TARGET_APP" == /Applications/* ]]; then
+          echo "Target: $TARGET_APP (admin)"
+          if sudo rm -rf "$TARGET_APP" && sudo cp -R "$APP_SOURCE" "$TARGET_APP"; then
+            INSTALLED_TO="$TARGET_APP"
           else
-            if rm -rf "$TARGET_APP" && cp -R "$APP_SOURCE" "$TARGET_APP"; then
-              INSTALLED_TO="$TARGET_APP"
-            fi
+            echo "Could not write $TARGET_APP (permission denied or sudo cancelled)."
+          fi
+        else
+          echo "Target: $TARGET_APP (user)"
+          mkdir -p "$(dirname "$TARGET_APP")"
+          if rm -rf "$TARGET_APP" && cp -R "$APP_SOURCE" "$TARGET_APP"; then
+            INSTALLED_TO="$TARGET_APP"
           fi
         fi
 
-        if [ -z "$INSTALLED_TO" ] && [ -d "/Applications/LocalClaw.app" ]; then
-          echo "Trying /Applications install..."
-          if sudo rm -rf "/Applications/LocalClaw.app" && sudo cp -R "$APP_SOURCE" "/Applications/LocalClaw.app"; then
-            INSTALLED_TO="/Applications/LocalClaw.app"
-          else
-            echo "Could not write /Applications (permission denied or sudo cancelled)."
-            echo "Falling back to user install."
-          fi
-        fi
-
-        if [ -z "$INSTALLED_TO" ]; then
+        if [ -z "$INSTALLED_TO" ] && [ "$TARGET_APP" != "$HOME/Applications/LocalClaw.app" ]; then
+          echo "Falling back to user install..."
           mkdir -p "$HOME/Applications"
           rm -rf "$HOME/Applications/LocalClaw.app"
           cp -R "$APP_SOURCE" "$HOME/Applications/LocalClaw.app" || exit 1
           INSTALLED_TO="$HOME/Applications/LocalClaw.app"
         fi
 
+        if [ -z "$INSTALLED_TO" ] || [ ! -d "$INSTALLED_TO" ]; then
+          echo "Install failed: no destination app bundle found"
+          exit 1
+        fi
+
+        INSTALLED_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INSTALLED_TO/Contents/Info.plist" 2>/dev/null || echo "?")
+        INSTALLED_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INSTALLED_TO/Contents/Info.plist" 2>/dev/null || echo "?")
+
         echo "Installed to: $INSTALLED_TO"
+        echo "Installed version: $INSTALLED_VERSION (build $INSTALLED_BUILD)"
 
         echo ""
         echo "Restarting LocalClaw..."
@@ -2570,6 +2623,22 @@ struct ContentView: View {
                 Text(vm.ram)
                     .font(AppFont.body(11))
                     .foregroundStyle(UI.muted)
+
+                if !vm.machineDetails.isEmpty {
+                    Divider().padding(.vertical, 3)
+                    Text(vm.machineDetails)
+                        .font(AppFont.body(10))
+                        .foregroundStyle(UI.muted)
+                        .lineSpacing(2)
+                }
+
+                HStack(spacing: 8) {
+                    Button("Refresh") { vm.refreshMachineDetails() }
+                        .buttonStyle(CTAButton(primary: false))
+                    Button("Copy") { vm.copyMachineDetails() }
+                        .buttonStyle(CTAButton(primary: false))
+                }
+                .padding(.top, 4)
             }
             .padding(10)
             .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
