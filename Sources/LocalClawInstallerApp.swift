@@ -1455,19 +1455,20 @@ final class InstallerViewModel: ObservableObject {
             echo "WhatsApp setup opens QR login."
             echo "In WhatsApp mobile: Settings > Linked Devices > Link a Device."
             echo ""
+
+            WHATSAPP_PLUGIN_PATH="/opt/homebrew/lib/node_modules/openclaw/dist/extensions/whatsapp"
+            if [ -d "$WHATSAPP_PLUGIN_PATH" ]; then
+                echo "Installing WhatsApp plugin from local path (non-interactive)..."
+                "$OPENCLAW_BIN" plugins install "$WHATSAPP_PLUGIN_PATH" >/dev/null 2>&1 || true
+                echo ""
+            fi
+
+            echo "Running: $OPENCLAW_BIN channels add --channel whatsapp"
+            "$OPENCLAW_BIN" channels add --channel whatsapp >/dev/null 2>&1 || true
+            echo ""
             echo "Running: $OPENCLAW_BIN channels login --channel whatsapp"
             echo ""
-            WA_LOGIN_OUTPUT=$("$OPENCLAW_BIN" channels login --channel whatsapp 2>&1)
-            WA_LOGIN_STATUS=$?
-            echo "$WA_LOGIN_OUTPUT"
-
-            if [ $WA_LOGIN_STATUS -ne 0 ] && echo "$WA_LOGIN_OUTPUT" | grep -qi "does not support login"; then
-                echo ""
-                echo "Fallback detected for this OpenClaw build."
-                echo "Running: $OPENCLAW_BIN channels add --channel whatsapp"
-                echo ""
-                "$OPENCLAW_BIN" channels add --channel whatsapp
-            fi
+            "$OPENCLAW_BIN" channels login --channel whatsapp
             """
         } else {
             setupFlow = """
