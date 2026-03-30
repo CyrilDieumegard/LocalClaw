@@ -1435,6 +1435,30 @@ final class InstallerViewModel: ObservableObject {
                 "$OPENCLAW_BIN" channels add --channel telegram --token "$TELEGRAM_TOKEN"
             fi
             """
+        } else if channel == "discord" {
+            setupFlow = """
+            echo "Discord setup requires your bot token (from Discord Developer Portal)."
+            echo ""
+            read -r "DISCORD_TOKEN?Paste Discord bot token: "
+            echo ""
+
+            if [ -z "$DISCORD_TOKEN" ]; then
+                echo "[ERROR] No token provided. Setup canceled."
+            else
+                echo "Running: $OPENCLAW_BIN channels add --channel discord --token <hidden>"
+                echo ""
+                "$OPENCLAW_BIN" channels add --channel discord --token "$DISCORD_TOKEN"
+            fi
+            """
+        } else if channel == "whatsapp" {
+            setupFlow = """
+            echo "WhatsApp setup opens QR login."
+            echo "In WhatsApp mobile: Settings > Linked Devices > Link a Device."
+            echo ""
+            echo "Running: $OPENCLAW_BIN channels login --channel whatsapp"
+            echo ""
+            "$OPENCLAW_BIN" channels login --channel whatsapp
+            """
         } else {
             setupFlow = """
             echo "Running: $OPENCLAW_BIN channels login --channel \(channel)"
