@@ -1418,6 +1418,31 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func openTerminalChannelLogin(_ channel: String) {
+        let setupFlow: String
+
+        if channel == "telegram" {
+            setupFlow = """
+            echo "Telegram setup requires your bot token (from @BotFather)."
+            echo ""
+            read -r "TELEGRAM_TOKEN?Paste Telegram bot token: "
+            echo ""
+
+            if [ -z "$TELEGRAM_TOKEN" ]; then
+                echo "[ERROR] No token provided. Setup canceled."
+            else
+                echo "Running: $OPENCLAW_BIN channels add --channel telegram --token <hidden>"
+                echo ""
+                "$OPENCLAW_BIN" channels add --channel telegram --token "$TELEGRAM_TOKEN"
+            fi
+            """
+        } else {
+            setupFlow = """
+            echo "Running: $OPENCLAW_BIN channels login --channel \(channel)"
+            echo ""
+            "$OPENCLAW_BIN" channels login --channel \(channel)
+            """
+        }
+
         let script = """
         #!/bin/zsh
         clear
@@ -1437,11 +1462,9 @@ final class InstallerViewModel: ObservableObject {
             echo "Try restarting Terminal or reinstalling OpenClaw from Install tab."
             echo ""
         else
-            echo "Running: $OPENCLAW_BIN channels login --channel \(channel)"
+        \(setupFlow)
             echo ""
-            "$OPENCLAW_BIN" channels login --channel \(channel)
-            echo ""
-            echo "If login is done, test with:"
+            echo "If setup is done, test with:"
             echo "$OPENCLAW_BIN message send --channel \(channel) --message \"LocalClaw test\""
             echo ""
         fi
@@ -1454,7 +1477,7 @@ final class InstallerViewModel: ObservableObject {
         _ = engine.shell("chmod +x \(path)")
         _ = engine.shell("open -a Terminal \(path)")
 
-        channelSetupLogs = channelSetupLogs.isEmpty ? "Started \(channel) login in Terminal" : channelSetupLogs + "\nStarted \(channel) login in Terminal"
+        channelSetupLogs = channelSetupLogs.isEmpty ? "Started \(channel) setup in Terminal" : channelSetupLogs + "\nStarted \(channel) setup in Terminal"
     }
 
     func applyAgentTemplate(_ template: String) {
