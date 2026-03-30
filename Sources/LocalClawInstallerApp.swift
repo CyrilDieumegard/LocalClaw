@@ -1457,7 +1457,17 @@ final class InstallerViewModel: ObservableObject {
             echo ""
             echo "Running: $OPENCLAW_BIN channels login --channel whatsapp"
             echo ""
-            "$OPENCLAW_BIN" channels login --channel whatsapp
+            WA_LOGIN_OUTPUT=$("$OPENCLAW_BIN" channels login --channel whatsapp 2>&1)
+            WA_LOGIN_STATUS=$?
+            echo "$WA_LOGIN_OUTPUT"
+
+            if [ $WA_LOGIN_STATUS -ne 0 ] && echo "$WA_LOGIN_OUTPUT" | grep -qi "does not support login"; then
+                echo ""
+                echo "Fallback detected for this OpenClaw build."
+                echo "Running: $OPENCLAW_BIN channels add --channel whatsapp"
+                echo ""
+                "$OPENCLAW_BIN" channels add --channel whatsapp
+            fi
             """
         } else {
             setupFlow = """
