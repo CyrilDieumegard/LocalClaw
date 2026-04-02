@@ -125,6 +125,39 @@ final class InstallerEngine: @unchecked Sendable {
         return code == 0 && !out.isEmpty
     }
 
+    func ensureXcodeCLITools() -> StepResult {
+        let (checkCode, checkOut) = shell("xcode-select -p 2>/dev/null || true")
+        if checkCode == 0 && !checkOut.isEmpty {
+            return StepResult(state: .skip, message: "Xcode CLI Tools already installed")
+        }
+
+        _ = shell("xcode-select --install >/dev/null 2>&1 || true")
+
+        // Wait for install completion (user may need to confirm in macOS popup)
+        let timeout: TimeInterval = 20 * 60
+        let start = Date()
+        while Date().timeIntervalSince(start) < timeout {
+            let (code, out) = shell("xcode-select -p 2>/dev/null || true")
+            if code == 0 && !out.isEmpty {
+                return StepResult(state: .ok, message: "Xcode CLI Tools installed")
+            }
+            Thread.sleep(forTimeInterval: 5)
+        }
+
+        return StepResult(state: .fail, message: "Xcode CLI Tools not ready yet. Confirm macOS installation popup, then retry Install.")
+    }
+
+    func runBrewDoctorCheck() -> StepResult {
+        if !hasCommand("brew") {
+            return StepResult(state: .fail, message: "Homebrew missing, brew doctor skipped")
+        }
+        let (code, out) = shell("brew doctor 2>&1")
+        if code == 0 {
+            return StepResult(state: .ok, message: "brew doctor OK")
+        }
+        return StepResult(state: .fail, message: "brew doctor failed:\n\(out)")
+    }
+
     func hasLMStudioApp() -> Bool {
         FileManager.default.fileExists(atPath: "/Applications/LM Studio.app")
     }

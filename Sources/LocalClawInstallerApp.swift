@@ -13,7 +13,7 @@ final class InstallerViewModel: ObservableObject {
     }
 
     enum InferenceMode: String, CaseIterable, Identifiable {
-        case cloud = "Cloud"
+        case cloud = "Cloud LLM"
         case local = "Local LLM"
 
         var id: String { rawValue }
@@ -1130,9 +1130,38 @@ final class InstallerViewModel: ObservableObject {
         let modelId = self.effectiveModelIdentifier()
 
         Task.detached {
-            await self.runStep(name: "Homebrew") { engine.installHomebrewIfNeeded() }
+            let clt = await self.runStep(name: "Xcode CLI Tools") { engine.ensureXcodeCLITools() }
+            if clt.state == .fail {
+                await MainActor.run {
+                    self.isRunning = false
+                    self.screen = .install
+                    self.append("Preflight bloqué: Xcode CLI Tools requis avant l'installation.")
+                }
+                return
+            }
+
+            let brew = await self.runStep(name: "Homebrew") { engine.installHomebrewIfNeeded() }
+            if brew.state == .fail {
+                await MainActor.run {
+                    self.isRunning = false
+                    self.screen = .install
+                    self.append("Preflight bloqué: Homebrew doit être installé avant la suite.")
+                }
+                return
+            }
+
+            let brewDoctor = await self.runStep(name: "Brew Doctor") { engine.runBrewDoctorCheck() }
+            if brewDoctor.state == .fail {
+                await MainActor.run {
+                    self.isRunning = false
+                    self.screen = .install
+                    self.append("Preflight bloqué: corrige brew doctor avant OpenClaw/OAuth.")
+                }
+                return
+            }
+
             if installLMStudio {
-                await self.runStep(name: "LM Studio") { engine.installLMStudioIfNeeded() }
+                _ = await self.runStep(name: "LM Studio") { engine.installLMStudioIfNeeded() }
             } else {
                 await MainActor.run { self.statusLMStudio = "SKIP" }
             }
@@ -1143,18 +1172,26 @@ final class InstallerViewModel: ObservableObject {
                 await MainActor.run { self.statusModel = "SKIP" }
             }
 
-            await self.runStep(name: "Node") { engine.installNodeIfNeeded() }
+            _ = await self.runStep(name: "Node") { engine.installNodeIfNeeded() }
             if installOpenClaw {
-                await self.runStep(name: "OpenClaw") { engine.installOpenClawIfNeeded() }
+                let openclawInstall = await self.runStep(name: "OpenClaw") { engine.installOpenClawIfNeeded() }
+                if openclawInstall.state == .fail {
+                    await MainActor.run {
+                        self.isRunning = false
+                        self.screen = .install
+                        self.append("Installation OpenClaw échouée. OAuth bloqué tant que OpenClaw n'est pas installé.")
+                    }
+                    return
+                }
                 // Bug 5: Write gateway config before verify
-                await self.runStep(name: "Config") { engine.writeOpenClawConfig(gatewayToken: token) }
+                _ = await self.runStep(name: "Config") { engine.writeOpenClawConfig(gatewayToken: token) }
                 // Bug 6: Write model config
-                await self.runStep(name: "Model Config") { engine.writeModelToConfig(modelIdentifier: modelId) }
+                _ = await self.runStep(name: "Model Config") { engine.writeModelToConfig(modelIdentifier: modelId) }
                 // Install gateway service and create agent
-                await self.runStep(name: "Gateway Service") { engine.installGatewayService() }
-                await self.runStep(name: "Default Agent") { engine.createDefaultAgent() }
-                await self.runStep(name: "Start Gateway") { engine.startGateway() }
-                await self.runStep(name: "OpenClaw Check") { engine.verifyOpenClawSetup() }
+                _ = await self.runStep(name: "Gateway Service") { engine.installGatewayService() }
+                _ = await self.runStep(name: "Default Agent") { engine.createDefaultAgent() }
+                _ = await self.runStep(name: "Start Gateway") { engine.startGateway() }
+                _ = await self.runStep(name: "OpenClaw Check") { engine.verifyOpenClawSetup() }
             } else {
                 await MainActor.run {
                     self.statusOpenClaw = "SKIP"
@@ -1522,19 +1559,19 @@ final class InstallerViewModel: ObservableObject {
             selectedProvider = .openRouter
             selectedOpenRouterModel = "openrouter/moonshotai/kimi-k2.5"
             _ = engine.writeModelToConfig(modelIdentifier: selectedOpenRouterModel)
-            templateLogs = "Applied Founder mode: Kimi K2.5 + cloud"
+            templateLogs = "Applied Founder mode: Kimi K2.5 + Cloud LLM"
         case "support":
             inferenceMode = .cloud
             selectedProvider = .openRouter
             selectedOpenRouterModel = "openrouter/google/gemini-2.5-flash-preview"
             _ = engine.writeModelToConfig(modelIdentifier: selectedOpenRouterModel)
-            templateLogs = "Applied Support mode: Gemini 2.5 Flash + cloud"
+            templateLogs = "Applied Support mode: Gemini 2.5 Flash + Cloud LLM"
         case "growth":
             inferenceMode = .cloud
             selectedProvider = .openRouter
             selectedOpenRouterModel = "openrouter/openai/gpt-4o-mini"
             _ = engine.writeModelToConfig(modelIdentifier: selectedOpenRouterModel)
-            templateLogs = "Applied Growth mode: GPT-4o Mini + cloud"
+            templateLogs = "Applied Growth mode: GPT-4o Mini + Cloud LLM"
         case "dev":
             inferenceMode = .local
             selectedModel = !recommendation.isEmpty ? recommendation : (modelOptions.first ?? "")
@@ -1634,7 +1671,7 @@ final class InstallerViewModel: ObservableObject {
 
             if !localId.isEmpty {
                 writePrimaryAndSecondaryModel(primary: "lmstudio/\(localId)", secondary: nil)
-                controlCenterLogs += "[OK] Switched to Local: lmstudio/\(localId)\n"
+                controlCenterLogs += "[OK] Switched to Local LLM: lmstudio/\(localId)\n"
             } else {
                 controlCenterLogs += "[FAIL] Local switch failed: no model found in LM Studio\n"
             }
@@ -1644,7 +1681,7 @@ final class InstallerViewModel: ObservableObject {
                 selectedOpenRouterModel = "openrouter/moonshotai/kimi-k2.5"
             }
             writePrimaryAndSecondaryModel(primary: selectedOpenRouterModel, secondary: nil)
-            controlCenterLogs += "[OK] Switched to Cloud: \(selectedOpenRouterModel)\n"
+            controlCenterLogs += "[OK] Switched to Cloud LLM: \(selectedOpenRouterModel)\n"
         }
 
         resetMainAgentSessions()
@@ -1654,7 +1691,7 @@ final class InstallerViewModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             self.refreshControlCenter()
             self.modeSwitchInProgress = false
-            self.modeSwitchStatus = self.inferenceMode == .local ? "Switched to Local" : "Switched to Cloud"
+            self.modeSwitchStatus = self.inferenceMode == .local ? "Switched to Local LLM" : "Switched to Cloud LLM"
         }
     }
 
@@ -1905,11 +1942,11 @@ final class InstallerViewModel: ObservableObject {
         } else {
             lines.append("")
             lines.append("echo \"\"")
-            lines.append("echo \"[2/7] Skipping LM Studio (cloud only)\"")
+            lines.append("echo \"[2/7] Skipping LM Studio (Cloud LLM only)\"")
             lines.append("echo \"lmstudio:SKIP\" >> /tmp/localclaw_status")
             lines.append("")
             lines.append("echo \"\"")
-            lines.append("echo \"[3/7] Skipping local model (cloud only)\"")
+            lines.append("echo \"[3/7] Skipping local model (Cloud LLM only)\"")
             lines.append("echo \"model:SKIP\" >> /tmp/localclaw_status")
         }
         
@@ -2197,7 +2234,7 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
-    private func runStep(name: String, action: @escaping () -> StepResult) async {
+    private func runStep(name: String, action: @escaping () -> StepResult) async -> StepResult {
         let result = action()
         await MainActor.run {
             switch name {
@@ -2214,6 +2251,7 @@ final class InstallerViewModel: ObservableObject {
                 self.append("  ↳ \(result.message)")
             }
         }
+        return result
     }
 
     private func runModelStep(engine: InstallerEngine, query: String) async {
@@ -2636,7 +2674,7 @@ struct ContentView: View {
                     .foregroundStyle(UI.muted)
             }
 
-            Text(vm.inferenceMode == .local ? "LOCAL" : "CLOUD")
+            Text(vm.inferenceMode == .local ? "LOCAL LLM" : "CLOUD LLM")
                 .font(AppFont.bodySemi(10))
                 .foregroundStyle(vm.inferenceMode == .local ? Color(NSColor.systemGreen) : UI.accent)
                 .padding(.horizontal, 8)
@@ -2647,8 +2685,8 @@ struct ContentView: View {
 
             VStack(alignment: .trailing, spacing: 4) {
                 Picker("", selection: $vm.inferenceMode) {
-                    Text("Cloud").tag(InstallerViewModel.InferenceMode.cloud)
-                    Text("Local").tag(InstallerViewModel.InferenceMode.local)
+                    Text("Cloud LLM").tag(InstallerViewModel.InferenceMode.cloud)
+                    Text("Local LLM").tag(InstallerViewModel.InferenceMode.local)
                 }
                 .pickerStyle(.segmented)
                 .tint(UI.accent)
@@ -2813,7 +2851,7 @@ struct ContentView: View {
                     .foregroundStyle(UI.muted)
 
                 VStack(alignment: .leading, spacing: 10) {
-                    helpStepCard(number: 1, title: "Choose your mode", detail: "Use Cloud for fastest setup. Use Local for offline usage.", icon: "slider.horizontal.3", tint: UI.accent)
+                    helpStepCard(number: 1, title: "Choose your mode", detail: "Use Cloud LLM for fastest setup. Use Local LLM for offline usage.", icon: "slider.horizontal.3", tint: UI.accent)
                     helpStepCard(number: 2, title: "Pick provider auth", detail: "OpenAI can use OAuth or API key. Other providers use API key.", icon: "person.badge.key", tint: .orange)
                     helpStepCard(number: 3, title: "Run installation", detail: "Go to Install and click Install Everything.", icon: "gearshape.2.fill", tint: .red)
                     helpStepCard(number: 4, title: "Verify success", detail: "Send one test message from Dashboard.", icon: "checkmark.message.fill", tint: .green)
@@ -2863,7 +2901,7 @@ struct ContentView: View {
                         }
                         .buttonStyle(CTAButton(primary: vm.inferenceMode == .local))
 
-                        Button("Use Cloud") {
+                        Button("Use Cloud LLM") {
                             vm.inferenceMode = .cloud
                             vm.selectedModel = ""
                             vm.screen = .options
@@ -2957,7 +2995,7 @@ struct ContentView: View {
                         }
                     }
 
-                    Text(vm.inferenceMode == .local ? "Run fully local with LM Studio" : "Use cloud models via provider API")
+                    Text(vm.inferenceMode == .local ? "Run fully local with LM Studio" : "Use Cloud LLM models via provider API")
                         .font(AppFont.body(12))
                         .foregroundStyle(UI.muted)
                 }
@@ -3053,7 +3091,7 @@ struct ContentView: View {
                 .font(AppFont.bodySemi(14))
                 .foregroundStyle(UI.text)
 
-            Picker("Cloud auth", selection: $vm.selectedCloudAuthMode) {
+            Picker("Cloud LLM auth", selection: $vm.selectedCloudAuthMode) {
                 ForEach(InstallerViewModel.CloudAuthMode.allCases) { mode in
                     Text(mode.rawValue).tag(mode)
                 }
@@ -3079,10 +3117,7 @@ struct ContentView: View {
 
             if vm.selectedCloudAuthMode == .oauth {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("OAuth currently uses OpenAI (Codex / ChatGPT).")
-                        .font(AppFont.body(11))
-                        .foregroundStyle(UI.muted)
-                    Text("Kimi (Moonshot) is available via OpenRouter API key mode, not OAuth.")
+                    Text("OAuth utilise OpenAI (ChatGPT/Codex).")
                         .font(AppFont.body(11))
                         .foregroundStyle(UI.muted)
                 }
@@ -3113,7 +3148,6 @@ struct ContentView: View {
 
             authMatrixRow(provider: "OpenAI", auth: "OAuth available + API key")
             authMatrixRow(provider: "OpenRouter", auth: "API key required")
-            authMatrixRow(provider: "Kimi (via OpenRouter)", auth: "API key required")
             authMatrixRow(provider: "Anthropic", auth: "API key required")
             authMatrixRow(provider: "Gemini", auth: "API key required")
             authMatrixRow(provider: "xAI", auth: "API key required")
@@ -3131,7 +3165,7 @@ struct ContentView: View {
                     Text("What is OpenRouter?")
                         .font(AppFont.bodySemi(11))
                         .foregroundStyle(UI.text)
-                    Text("OpenRouter is a single API gateway that gives access to many models (including Kimi, Claude, GPT, Gemini) with one API key.")
+                    Text("OpenRouter is a single API gateway that gives access to many models with one API key.")
                         .font(AppFont.body(11))
                         .foregroundStyle(UI.muted)
                 } else {
@@ -3630,8 +3664,8 @@ struct ContentView: View {
 
                             Group {
                                 helpStepCard(number: 1, title: "Open Install", detail: "Go to Install in the left sidebar.", icon: "play.circle.fill", tint: UI.accent)
-                                helpStepCard(number: 2, title: "Choose your mode", detail: "Cloud for fastest setup, Local for offline usage.", icon: "slider.horizontal.3", tint: .blue)
-                                helpStepCard(number: 3, title: "Set provider auth", detail: "Cloud mode: choose OpenAI OAuth or API key.", icon: "key.fill", tint: .purple)
+                                helpStepCard(number: 2, title: "Choose your mode", detail: "Cloud LLM for fastest setup, Local LLM for offline usage.", icon: "slider.horizontal.3", tint: .blue)
+                                helpStepCard(number: 3, title: "Set provider auth", detail: "Cloud LLM mode: choose OpenAI OAuth or API key.", icon: "key.fill", tint: .purple)
                                 helpStepCard(number: 4, title: "If API key mode", detail: "Paste key first, then click Verify.", icon: "checkmark.shield.fill", tint: .green)
                                 helpStepCard(number: 5, title: "Run installation", detail: "Click Install Everything and keep Terminal open.", icon: "gearshape.2.fill", tint: .orange)
                                 helpStepCard(number: 6, title: "Mac password prompt", detail: "If Terminal asks Password, type your Mac password. Input is hidden by macOS.", icon: "lock.fill", tint: .red)
@@ -3670,15 +3704,14 @@ struct ContentView: View {
                                 .font(AppFont.bodySemi(12))
                                 .foregroundStyle(UI.accent)
                             faqRow(question: "Where do I put my API key?", answer: "Go to Install, pick your AI provider, paste the key in API Key, then click Verify.")
-                            faqRow(question: "Do I need credits to use Cloud mode?", answer: "Yes. API key mode needs active credits. OpenAI OAuth mode can work without manually pasting a key.")
-                            faqRow(question: "Cloud or Local: what should I choose first?", answer: "Start with Cloud for fastest setup. Use Local if you want offline and private inference.")
-                            faqRow(question: "Can I use Kimi with OAuth?", answer: "Not at the moment in LocalClaw. Use OpenRouter API key mode and choose a Kimi model in the OpenRouter catalog.")
-                            faqRow(question: "Can I switch modes after installation?", answer: "Yes. Use the Cloud/Local switch and click Apply. You can switch anytime.")
+                            faqRow(question: "Do I need credits to use Cloud LLM mode?", answer: "Yes. API key mode needs active credits. OpenAI OAuth mode can work without manually pasting a key.")
+                            faqRow(question: "Cloud LLM or Local LLM: what should I choose first?", answer: "Start with Cloud LLM for fastest setup. Use Local LLM if you want offline and private inference.")
+                            faqRow(question: "Can I switch modes after installation?", answer: "Yes. Use the Cloud LLM/Local LLM switch and click Apply. You can switch anytime.")
 
                             Text("Performance and monitoring")
                                 .font(AppFont.bodySemi(12))
                                 .foregroundStyle(UI.accent)
-                            faqRow(question: "How can I confirm Local mode is really active?", answer: "In top bar, mode should display LOCAL. In Control Center, apply Local mode and run a quick test message.")
+                            faqRow(question: "How can I confirm Local LLM mode is really active?", answer: "In top bar, mode should display LOCAL LLM. In Control Center, apply Local LLM mode and run a quick test message.")
                             faqRow(question: "Why is Local mode slower on my machine?", answer: "Large models use more RAM and swap. Pick a smaller model and run Fix My Speed in Control Center.")
                             faqRow(question: "How do I reset safely without losing everything?", answer: "Use Backup Config first in Help > Health commands, then run Quick Repair.")
                         }
@@ -3730,7 +3763,7 @@ struct ContentView: View {
                     Text("BUDGET ESTIMATOR (OPTIONAL)")
                         .font(AppFont.heading(28))
                         .foregroundStyle(UI.text)
-                    Text("Use this only if you pay for cloud API usage and want a rough monthly estimate.")
+                    Text("Use this only if you pay for Cloud LLM API usage and want a rough monthly estimate.")
                         .font(AppFont.body(13))
                         .foregroundStyle(UI.muted)
                 }
@@ -3747,7 +3780,7 @@ struct ContentView: View {
                 Text("When to use this")
                     .font(AppFont.bodySemi(13))
                     .foregroundStyle(UI.text)
-                Text("• You use paid cloud models (OpenRouter/OpenAI/Anthropic/etc.)\n• You want a rough monthly budget\n• You want to compare cheap vs expensive model usage")
+                Text("• You use paid Cloud LLM models (OpenRouter/OpenAI/Anthropic/etc.)\n• You want a rough monthly budget\n• You want to compare cheap vs expensive model usage")
                     .font(AppFont.body(12))
                     .foregroundStyle(UI.muted)
                 Text("If you run local-only models, you can ignore this page.")
