@@ -1435,10 +1435,10 @@ final class InstallerViewModel: ObservableObject {
         append("Running update all")
         let engine = self.engine
         Task.detached {
-            await self.runStep(name: "Homebrew") { engine.updateHomebrew() }
-            await self.runStep(name: "LM Studio") { engine.upgradeLMStudioIfInstalled() }
-            await self.runStep(name: "Node") { engine.upgradeNodeIfInstalled() }
-            await self.runStep(name: "OpenClaw") { engine.updateOpenClawIfInstalled() }
+            _ = await self.runStep(name: "Homebrew") { engine.updateHomebrew() }
+            _ = await self.runStep(name: "LM Studio") { engine.upgradeLMStudioIfInstalled() }
+            _ = await self.runStep(name: "Node") { engine.upgradeNodeIfInstalled() }
+            _ = await self.runStep(name: "OpenClaw") { engine.updateOpenClawIfInstalled() }
             await MainActor.run {
                 self.isRunning = false
                 self.refreshVersions()
