@@ -1093,7 +1093,11 @@ final class InstallerViewModel: ObservableObject {
         licenseEmail = record.email
         licenseKey = record.licenseKey
 
-        if isValidOfflineKey(record.licenseKey) || (record.expiresAt != nil) {
+        // Keep activation valid when we have either:
+        // - a valid offline key format, or
+        // - an API activation token (even if backend does not return expiresAt), or
+        // - an explicit expiresAt value
+        if isValidOfflineKey(record.licenseKey) || !record.token.isEmpty || (record.expiresAt != nil) {
             isActivated = true
             activationStatus = "Activated on this Mac"
         } else {
