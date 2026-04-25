@@ -1078,27 +1078,37 @@ final class InstallerEngine: @unchecked Sendable {
         let lms = lmsCommandPath()
         _ = shell("open -a 'LM Studio' >/dev/null 2>&1 || true")
         _ = shell("\(lms) server stop >/dev/null 2>&1 || true")
+        _ = hardResetLMStudioWorkers()
+
         let (updateCode, updateOut) = shell("\(lms) runtime update --all -y 2>&1")
-        _ = shell("\(lms) server start >/dev/null 2>&1 || true")
-        if updateCode == 0 {
-            let rollback = rollbackLMStudioRuntime()
-            if rollback.state == .ok {
-                return StepResult(state: .ok, message: "LM Studio runtime updated and selected stable fallback. Retry Auto Setup.")
-            }
-            return StepResult(state: .ok, message: "LM Studio runtime updated. Retry Auto Setup.")
+        if updateCode != 0 {
+            _ = shell("\(lms) server start >/dev/null 2>&1 || true")
+            return StepResult(state: .fail, message: updateOut.isEmpty ? "LM Studio runtime update failed" : cleanLMStudioError(updateOut))
         }
-        return StepResult(state: .fail, message: updateOut.isEmpty ? "LM Studio runtime update failed" : updateOut)
+
+        let rollback = rollbackLMStudioRuntime()
+        _ = hardResetLMStudioWorkers()
+        if rollback.state == .ok {
+            return StepResult(state: .ok, message: "LM Studio runtime updated, stable fallback selected, and worker processes reset. Retry Auto Setup once.")
+        }
+        return StepResult(state: .ok, message: "LM Studio runtime updated and worker processes reset. Retry Auto Setup once. If it still fails, reinstall LM Studio because its runtime schema is corrupted.")
+    }
+
+    private func cleanLMStudioError(_ value: String) -> String {
+        let noAnsi = value.replacingOccurrences(of: #"\u{001B}\[[0-9;]*[A-Za-z]"#, with: "", options: .regularExpression)
+        return noAnsi.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func friendlyLMStudioLoadError(modelId: String, error: String) -> String {
-        let lower = error.lowercased()
+        let cleanError = cleanLMStudioError(error)
+        let lower = cleanError.lowercased()
         if lower.contains("insufficient system resources") || lower.contains("overload") {
             return "LM Studio refused to load \(modelId) with enough context for OpenClaw because of memory guardrails. Try a smaller local model, for example nvidia/nemotron-3-nano-4b or google/gemma-4-e2b, or switch to Cloud LLM."
         }
         if lower.contains("invalid load message") || lower.contains("runtimedeps") {
-            return "LM Studio rejected the local model runtime. I tried the available fallback models too, but LM Studio still refused to load one cleanly. Update LM Studio/runtime, then retry Auto Setup. Details: \(error)"
+            return "LM Studio runtime is corrupted: it rejects both API and CLI model loading with an invalid internal runtime schema. Click Repair LM Studio once, then retry Auto Setup. If it still fails, reinstall LM Studio. Details: \(cleanError)"
         }
-        return error
+        return cleanError
     }
 
     func installedVersion(for command: String) -> String {
