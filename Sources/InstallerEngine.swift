@@ -785,11 +785,17 @@ final class InstallerEngine: @unchecked Sendable {
         return nil
     }
 
+    private func unloadAllLMStudioModels() {
+        let lms = lmsCommandPath()
+        _ = shell("\(lms) unload --all >/dev/null 2>&1 || true")
+    }
+
     func autoSetupLMStudioModel(modelId: String, contextLength: Int = 32768) -> StepResult {
         if modelId.isEmpty { return StepResult(state: .fail, message: "No local model selected") }
         let lms = lmsCommandPath()
         _ = shell("open -a 'LM Studio' >/dev/null 2>&1 || true")
         _ = shell("\(lms) server start >/dev/null 2>&1 || true")
+        unloadAllLMStudioModels()
 
         let available = listLMStudioLLMModelIds()
         let candidates = orderedLMStudioSetupCandidates(preferred: modelId, available: available)
@@ -809,6 +815,7 @@ final class InstallerEngine: @unchecked Sendable {
         for candidate in candidates {
             attempted.append(candidate)
             for ctx in candidateContexts {
+                unloadAllLMStudioModels()
                 let result = loadLMStudioModelViaAPI(modelId: candidate, contextLength: ctx)
                 if result.state == .ok {
                     let config = writeModelToConfig(modelIdentifier: "lmstudio/\(candidate)")
@@ -832,8 +839,10 @@ final class InstallerEngine: @unchecked Sendable {
         if combinedError.lowercased().contains("invalid load message") || combinedError.lowercased().contains("runtimedeps") {
             let rollback = rollbackLMStudioRuntime()
             if rollback.state == .ok {
+                unloadAllLMStudioModels()
                 for candidate in candidates {
                     for ctx in candidateContexts {
+                        unloadAllLMStudioModels()
                         let result = loadLMStudioModelViaAPI(modelId: candidate, contextLength: ctx)
                         if result.state == .ok {
                             let config = writeModelToConfig(modelIdentifier: "lmstudio/\(candidate)")
@@ -944,6 +953,7 @@ final class InstallerEngine: @unchecked Sendable {
         _ = shell("\(lms) server stop >/dev/null 2>&1 || true")
         let (selectCode, selectOut) = shell("\(lms) runtime select '\(fallback)' 2>&1")
         _ = shell("\(lms) server start >/dev/null 2>&1 || true")
+        unloadAllLMStudioModels()
         if selectCode == 0 {
             return StepResult(state: .ok, message: "Selected LM Studio runtime \(fallback)")
         }
