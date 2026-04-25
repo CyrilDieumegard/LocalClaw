@@ -1871,6 +1871,18 @@ final class InstallerViewModel: ObservableObject {
         _ = engine.openDashboard() 
     }
 
+    func openOpenClawChat() {
+        append("Opening OpenClaw Chat")
+        openDashboard()
+    }
+
+    var openClawChatStatus: String {
+        if openclawInstalledVersion == "Checking..." { return "Checking..." }
+        if openclawInstalledVersion == "Not installed" { return "Setup needed" }
+        if openclawUpdateStatus == "Not installed" { return "Setup needed" }
+        return "Ready"
+    }
+
     func openTerminalOpenAIOAuth() {
         let script = """
         #!/bin/zsh
@@ -2577,6 +2589,8 @@ struct HomeTile: View {
     let label: String
     let icon: String
     let selected: Bool
+    var subtitle: String? = nil
+    var status: String? = nil
     let action: () -> Void
 
     private var iconColor: Color {
@@ -2610,11 +2624,25 @@ struct HomeTile: View {
                 .overlay(RoundedRectangle(cornerRadius: 22).stroke(cardStroke, lineWidth: selected ? 1.5 : 1))
                 .shadow(color: selected ? UI.accent.opacity(0.10) : Color.black.opacity(0.06), radius: selected ? 12 : 8, x: 0, y: 6)
 
-                Text(label)
-                    .font(AppFont.bodySemi(18))
-                    .foregroundStyle(Color.black.opacity(0.86))
-                    .multilineTextAlignment(.center)
-                    .frame(width: 180)
+                VStack(spacing: 5) {
+                    Text(label)
+                        .font(AppFont.bodySemi(18))
+                        .foregroundStyle(Color.black.opacity(0.86))
+                        .multilineTextAlignment(.center)
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(AppFont.body(12))
+                            .foregroundStyle(UI.muted)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                    }
+                    if let status {
+                        Label(status, systemImage: status == "Ready" ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                            .font(AppFont.bodySemi(11))
+                            .foregroundStyle(status == "Ready" ? Color(NSColor.systemGreen) : Color(NSColor.systemOrange))
+                    }
+                }
+                .frame(width: 180)
             }
             .frame(width: 190)
         }
@@ -3043,6 +3071,15 @@ struct ContentView: View {
                     }
                     HomeTile(label: "Uninstall Center", icon: "trash", selected: false) {
                         vm.screen = .uninstallCenter
+                    }
+                    HomeTile(
+                        label: "OpenClaw Chat",
+                        icon: "message.badge.waveform",
+                        selected: true,
+                        subtitle: "Talk directly with your AI",
+                        status: vm.openClawChatStatus
+                    ) {
+                        vm.openOpenClawChat()
                     }
                 }
                 .frame(maxWidth: .infinity)
