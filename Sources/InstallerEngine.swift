@@ -863,7 +863,30 @@ final class InstallerEngine: @unchecked Sendable {
                         }
                     }
                 }
-                lastError = "\(combinedError). Runtime rollback was applied but model loading still failed."
+                onProgress?("Runtime rollback was not enough. Resetting LM Studio worker processes")
+                let hardReset = hardResetLMStudioWorkers()
+                onProgress?(hardReset.message)
+                if hardReset.state == .ok {
+                    for candidate in candidates {
+                        for ctx in candidateContexts {
+                            onProgress?("Retrying \(candidate) with \(ctx) context after worker reset")
+                            unloadAllLMStudioModels()
+                            let result = loadLMStudioModelViaAPI(modelId: candidate, contextLength: ctx)
+                            if result.state == .ok {
+                                onProgress?("Loaded \(candidate) after worker reset. Writing OpenClaw config and restarting gateway")
+                                let config = writeModelToConfig(modelIdentifier: "lmstudio/\(candidate)")
+                                if config.state == .fail { return config }
+                                _ = restartGateway()
+                                let fallbackNote = candidate == modelId ? "" : " (fallback from \(modelId))"
+                                return StepResult(state: .ok, message: "LM Studio ready with \(candidate), context \(ctx) after worker reset\(fallbackNote)")
+                            }
+                            lastError = result.message
+                        }
+                    }
+                    lastError = "\(combinedError). Runtime rollback and worker reset were applied but model loading still failed. Last error: \(lastError)"
+                } else {
+                    lastError = "\(combinedError). Runtime rollback was applied but model loading still failed. Worker reset failed: \(hardReset.message)"
+                }
             } else {
                 lastError = "\(combinedError). Runtime rollback failed: \(rollback.message)"
             }
@@ -987,6 +1010,30 @@ final class InstallerEngine: @unchecked Sendable {
             return StepResult(state: .ok, message: "Selected LM Studio runtime \(fallback)")
         }
         return StepResult(state: .fail, message: selectOut)
+    }
+
+    func hardResetLMStudioWorkers() -> StepResult {
+        let lms = lmsCommandPath()
+        _ = shell("\(lms) server stop >/dev/null 2>&1 || true")
+        unloadAllLMStudioModels()
+
+        let killScript = """
+        ps ax -o pid= -o command= | awk '/LM Studio.app/ && /llmworker/ {print $1}' | while read -r pid; do
+            kill "$pid" 2>/dev/null || true
+        done
+        ps ax -o pid= -o command= | awk '/\\.lmstudio/ && /llmworker/ {print $1}' | while read -r pid; do
+            kill "$pid" 2>/dev/null || true
+        done
+        """
+        _ = shell(killScript)
+        Thread.sleep(forTimeInterval: 1.0)
+        _ = shell("\(lms) server start >/dev/null 2>&1 || true")
+        Thread.sleep(forTimeInterval: 1.0)
+        let (code, out) = shell("\(lms) ps 2>&1")
+        if code == 0 {
+            return StepResult(state: .ok, message: "LM Studio server restarted and stale worker processes cleared")
+        }
+        return StepResult(state: .fail, message: out.isEmpty ? "LM Studio worker reset failed" : out)
     }
 
     func repairLMStudioRuntime() -> StepResult {
