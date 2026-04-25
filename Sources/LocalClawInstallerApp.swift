@@ -23,7 +23,14 @@ final class InstallerViewModel: ObservableObject {
         let id = UUID()
         let role: String
         let text: String
+        let metadata: String?
         let createdAt = Date()
+
+        init(role: String, text: String, metadata: String? = nil) {
+            self.role = role
+            self.text = text
+            self.metadata = metadata
+        }
     }
 
     enum CloudAuthMode: String, CaseIterable, Identifiable {
@@ -1926,6 +1933,7 @@ final class InstallerViewModel: ObservableObject {
             defer { try? FileManager.default.removeItem(atPath: tempMessagePath) }
 
             let command = "MESSAGE_FILE=\(quote(tempMessagePath)); openclaw agent --session-id localclaw-ui-chat --message \"$(cat \"$MESSAGE_FILE\")\" --json --timeout 180 2>&1"
+            let startedAt = Date()
             var result = engine.shell(command)
             var repairedPlugin = false
             if result.0 != 0 && Self.isBrokenGlobalWhatsAppPluginError(result.1) {
@@ -1935,9 +1943,11 @@ final class InstallerViewModel: ObservableObject {
                     result = engine.shell(command)
                 }
             }
+            let elapsed = Date().timeIntervalSince(startedAt)
             let knownDiagnostic = Self.friendlyChatDiagnostic(from: result.1)
             let reply = knownDiagnostic ?? Self.extractAgentReply(from: result.1)
             let runtimeModel = Self.extractAgentRuntimeModel(from: result.1)
+            let metrics = Self.extractAgentMetrics(from: result.1, elapsedSeconds: elapsed)
             await MainActor.run {
                 if let runtimeModel, !runtimeModel.isEmpty {
                     self.currentModel = runtimeModel
@@ -1946,7 +1956,7 @@ final class InstallerViewModel: ObservableObject {
                     self.chatMessages.append(ChatMessage(role: "assistant", text: "I found and disabled an outdated global WhatsApp plugin that was blocking OpenClaw, then retried automatically."))
                 }
                 let role = (result.0 == 0 || knownDiagnostic != nil) ? "assistant" : "error"
-                self.chatMessages.append(ChatMessage(role: role, text: reply))
+                self.chatMessages.append(ChatMessage(role: role, text: reply, metadata: metrics))
                 self.chatStatus = result.0 == 0 ? "Ready" : (knownDiagnostic == nil ? "Error" : "Needs setup")
                 self.chatIsSending = false
             }
@@ -2021,6 +2031,49 @@ final class InstallerViewModel: ObservableObject {
             return value.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         return clean.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+
+    nonisolated private static func extractAgentMetrics(from raw: String, elapsedSeconds: TimeInterval) -> String {
+        let clean = stripANSI(raw)
+        var parts = [String(format: "%.1fs", elapsedSeconds)]
+        guard let data = clean.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return parts.joined(separator: " • ")
+        }
+
+        func findNumber(_ object: Any, keys: Set<String>) -> Int? {
+            if let dict = object as? [String: Any] {
+                for (key, value) in dict {
+                    if keys.contains(key.lowercased()) {
+                        if let int = value as? Int { return int }
+                        if let double = value as? Double { return Int(double) }
+                        if let string = value as? String, let int = Int(string) { return int }
+                    }
+                }
+                for value in dict.values {
+                    if let found = findNumber(value, keys: keys) { return found }
+                }
+            } else if let array = object as? [Any] {
+                for value in array {
+                    if let found = findNumber(value, keys: keys) { return found }
+                }
+            }
+            return nil
+        }
+
+        let input = findNumber(json, keys: ["inputtokens", "input_tokens", "prompttokens", "prompt_tokens"])
+        let output = findNumber(json, keys: ["outputtokens", "output_tokens", "completiontokens", "completion_tokens"])
+        let total = findNumber(json, keys: ["totaltokens", "total_tokens"])
+
+        if let input { parts.append("in \(input)t") }
+        if let output { parts.append("out \(output)t") }
+        if total == nil, input == nil, output == nil {
+            parts.append("tokens n/a")
+        } else if let total {
+            parts.append("total \(total)t")
+        }
+        return parts.joined(separator: " • ")
     }
 
     nonisolated private static func extractAgentRuntimeModel(from raw: String) -> String? {
@@ -3398,17 +3451,21 @@ struct ContentView: View {
                                 .lineLimit(2)
                         }
                         if !vm.localLMStudioSetupLog.isEmpty {
-                            ScrollView {
-                                Text(vm.localLMStudioSetupLog)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundStyle(UI.text)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(10)
+                            DisclosureGroup("Setup details") {
+                                ScrollView {
+                                    Text(vm.localLMStudioSetupLog)
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundStyle(UI.muted)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(8)
+                                }
+                                .scrollIndicators(.hidden)
+                                .frame(maxWidth: 520, maxHeight: 80)
+                                .background(RoundedRectangle(cornerRadius: 9).fill(UI.cardSoft))
                             }
-                            .scrollIndicators(.hidden)
-                            .frame(maxWidth: 520, maxHeight: 110)
-                            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.07), lineWidth: 1))
+                            .font(AppFont.body(11))
+                            .foregroundStyle(UI.muted)
+                            .frame(maxWidth: 520, alignment: .leading)
                         }
                     }
                 }
@@ -3490,6 +3547,11 @@ struct ContentView: View {
                     .font(AppFont.body(14))
                     .foregroundStyle(isError ? Color(NSColor.systemRed) : UI.text)
                     .textSelection(.enabled)
+                if let metadata = message.metadata, !metadata.isEmpty {
+                    Label(metadata, systemImage: "speedometer")
+                        .font(AppFont.body(10))
+                        .foregroundStyle(UI.muted)
+                }
             }
             .padding(11)
             .background(RoundedRectangle(cornerRadius: 13).fill(isUser ? UI.accent.opacity(0.13) : UI.card))
