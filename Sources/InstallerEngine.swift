@@ -821,7 +821,7 @@ final class InstallerEngine: @unchecked Sendable {
             for ctx in candidateContexts {
                 onProgress?("Trying \(candidate) with \(ctx) context")
                 unloadAllLMStudioModels()
-                let result = loadLMStudioModelViaAPI(modelId: candidate, contextLength: ctx)
+                let result = loadLMStudioModel(modelId: candidate, contextLength: ctx)
                 if result.state == .ok {
                     onProgress?("Loaded \(candidate). Writing OpenClaw config and restarting gateway")
                     let config = writeModelToConfig(modelIdentifier: "lmstudio/\(candidate)")
@@ -852,7 +852,7 @@ final class InstallerEngine: @unchecked Sendable {
                     for ctx in candidateContexts {
                         onProgress?("Retrying \(candidate) with \(ctx) context after rollback")
                         unloadAllLMStudioModels()
-                        let result = loadLMStudioModelViaAPI(modelId: candidate, contextLength: ctx)
+                        let result = loadLMStudioModel(modelId: candidate, contextLength: ctx)
                         if result.state == .ok {
                             onProgress?("Loaded \(candidate) after runtime rollback. Writing OpenClaw config and restarting gateway")
                             let config = writeModelToConfig(modelIdentifier: "lmstudio/\(candidate)")
@@ -871,7 +871,7 @@ final class InstallerEngine: @unchecked Sendable {
                         for ctx in candidateContexts {
                             onProgress?("Retrying \(candidate) with \(ctx) context after worker reset")
                             unloadAllLMStudioModels()
-                            let result = loadLMStudioModelViaAPI(modelId: candidate, contextLength: ctx)
+                            let result = loadLMStudioModel(modelId: candidate, contextLength: ctx)
                             if result.state == .ok {
                                 onProgress?("Loaded \(candidate) after worker reset. Writing OpenClaw config and restarting gateway")
                                 let config = writeModelToConfig(modelIdentifier: "lmstudio/\(candidate)")
@@ -920,6 +920,44 @@ final class InstallerEngine: @unchecked Sendable {
             return (loaded.model, ctx)
         }
         return nil
+    }
+
+    private func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\''") + "'"
+    }
+
+    private func loadLMStudioModel(modelId: String, contextLength: Int) -> StepResult {
+        let api = loadLMStudioModelViaAPI(modelId: modelId, contextLength: contextLength)
+        if api.state == .ok { return api }
+
+        let lower = api.message.lowercased()
+        guard lower.contains("invalid load message") || lower.contains("runtimedeps") || lower.contains("model_load_failed") else {
+            return api
+        }
+
+        let lms = lmsCommandPath()
+        let quotedModel = shellQuote(modelId)
+        let attempts = [
+            "\(lms) load \(quotedModel) --context-length \(contextLength) 2>&1",
+            "\(lms) load \(quotedModel) --context \(contextLength) 2>&1",
+            "\(lms) load \(quotedModel) 2>&1"
+        ]
+
+        var last = api.message
+        for command in attempts {
+            let (code, out) = shell(command)
+            if code == 0 {
+                return StepResult(state: .ok, message: "Loaded \(modelId) through LM Studio CLI with context \(contextLength)")
+            }
+            let clean = out.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !clean.isEmpty { last = clean }
+            let unsupported = clean.lowercased().contains("unknown option") || clean.lowercased().contains("unknown argument")
+            if !unsupported && !clean.lowercased().contains("invalid load message") {
+                break
+            }
+        }
+
+        return StepResult(state: .fail, message: last)
     }
 
     private func loadLMStudioModelViaAPI(modelId: String, contextLength: Int) -> StepResult {
