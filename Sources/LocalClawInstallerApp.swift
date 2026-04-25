@@ -1904,7 +1904,21 @@ final class InstallerViewModel: ObservableObject {
             }
             let engine = InstallerEngine()
             _ = engine.shell("openclaw gateway start >/dev/null 2>&1 || true")
-            let command = "openclaw agent --session-id localclaw-ui-chat --message \(quote(text)) --json --timeout 180 2>&1"
+
+            let tempMessagePath = NSTemporaryDirectory() + "localclaw-chat-message-\(UUID().uuidString).txt"
+            do {
+                try text.write(toFile: tempMessagePath, atomically: true, encoding: .utf8)
+            } catch {
+                await MainActor.run {
+                    self.chatMessages.append(ChatMessage(role: "error", text: "I couldn’t prepare the message for OpenClaw: \(error.localizedDescription)"))
+                    self.chatStatus = "Error"
+                    self.chatIsSending = false
+                }
+                return
+            }
+            defer { try? FileManager.default.removeItem(atPath: tempMessagePath) }
+
+            let command = "MESSAGE_FILE=\(quote(tempMessagePath)); openclaw agent --session-id localclaw-ui-chat --message \"$(cat \"$MESSAGE_FILE\")\" --json --timeout 180 2>&1"
             var result = engine.shell(command)
             var repairedPlugin = false
             if result.0 != 0 && Self.isBrokenGlobalWhatsAppPluginError(result.1) {
@@ -1914,7 +1928,8 @@ final class InstallerViewModel: ObservableObject {
                     result = engine.shell(command)
                 }
             }
-            let reply = Self.extractAgentReply(from: result.1)
+            let knownDiagnostic = Self.friendlyChatDiagnostic(from: result.1)
+            let reply = knownDiagnostic ?? Self.extractAgentReply(from: result.1)
             let runtimeModel = Self.extractAgentRuntimeModel(from: result.1)
             await MainActor.run {
                 if let runtimeModel, !runtimeModel.isEmpty {
@@ -1923,8 +1938,9 @@ final class InstallerViewModel: ObservableObject {
                 if repairedPlugin && result.0 == 0 {
                     self.chatMessages.append(ChatMessage(role: "assistant", text: "I found and disabled an outdated global WhatsApp plugin that was blocking OpenClaw, then retried automatically."))
                 }
-                self.chatMessages.append(ChatMessage(role: result.0 == 0 ? "assistant" : "error", text: reply))
-                self.chatStatus = result.0 == 0 ? "Ready" : "Error"
+                let role = (result.0 == 0 || knownDiagnostic != nil) ? "assistant" : "error"
+                self.chatMessages.append(ChatMessage(role: role, text: reply))
+                self.chatStatus = result.0 == 0 ? "Ready" : (knownDiagnostic == nil ? "Error" : "Needs setup")
                 self.chatIsSending = false
             }
         }
@@ -1936,6 +1952,31 @@ final class InstallerViewModel: ObservableObject {
 
     nonisolated private static func stripANSI(_ raw: String) -> String {
         raw.replacingOccurrences(of: "\u{001B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
+    }
+
+    nonisolated private static func friendlyChatDiagnostic(from raw: String) -> String? {
+        let clean = stripANSI(raw)
+        if clean.contains("Model context window too small") || clean.contains("context window too small") {
+            let model = clean.range(of: #"lmstudio/[^\s;"]+"#, options: .regularExpression)
+                .map { String(clean[$0]) } ?? "your local LM Studio model"
+            let ctx = clean.range(of: #"ctx=[0-9]+"#, options: .regularExpression)
+                .map { String(clean[$0].dropFirst(4)) } ?? "4096"
+            return """
+            Local mode is not ready yet. The selected model (\(model)) is loaded with a context window of \(ctx) tokens, but OpenClaw needs at least 16,000 tokens and works best at 32,000+.
+
+            What to do:
+            1. Open LM Studio.
+            2. Load a model with 16k/32k context, or increase Context Length to 16384+ for this model.
+            3. Reload the model/server.
+            4. Come back here and retry.
+
+            Fast workaround: switch back to Cloud LLM in the top-right toggle.
+            """
+        }
+        if clean.contains("required option '-m, --message <text>' not specified") {
+            return "I couldn’t pass your message to OpenClaw correctly. I’ve patched the chat sender so messages are now handed off safely, including accents and apostrophes. Please retry after updating LocalClaw."
+        }
+        return nil
     }
 
     nonisolated private static func extractAgentReply(from raw: String) -> String {
