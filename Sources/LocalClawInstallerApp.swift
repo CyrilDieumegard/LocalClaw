@@ -2048,7 +2048,7 @@ final class InstallerViewModel: ObservableObject {
 
     var openClawChatModelLabel: String {
         let current = currentModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !current.isEmpty && current != "Unknown" {
+        if !current.isEmpty && current != "Unknown" && !current.lowercased().hasPrefix("error:") {
             return current
         }
         if inferenceMode == .cloud {
@@ -2099,7 +2099,7 @@ final class InstallerViewModel: ObservableObject {
                 self.chatStatus = result.state == .ok ? "Ready" : "Needs setup"
                 if result.state == .ok {
                     self.currentModel = "lmstudio/\(modelId)"
-                    self.chatMessages.append(ChatMessage(role: "assistant", text: "Local model ready: \(modelId) with 32k context. You can chat now."))
+                    self.chatMessages.append(ChatMessage(role: "assistant", text: "Local model ready: \(result.message.replacingOccurrences(of: "LM Studio ready with ", with: "")). You can chat now."))
                 } else {
                     self.chatMessages.append(ChatMessage(role: "assistant", text: "I couldn’t auto-setup LM Studio yet: \(result.message)"))
                 }

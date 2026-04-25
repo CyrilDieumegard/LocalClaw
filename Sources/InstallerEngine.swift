@@ -790,15 +790,88 @@ final class InstallerEngine: @unchecked Sendable {
         let lms = lmsCommandPath()
         _ = shell("open -a 'LM Studio' >/dev/null 2>&1 || true")
         _ = shell("\(lms) server start >/dev/null 2>&1 || true")
-        _ = shell("\(lms) unload --all >/dev/null 2>&1 || true")
-        let (code, out) = shell("\(lms) load '\(modelId.replacingOccurrences(of: "'", with: "'\''"))' --context-length \(contextLength) --gpu max --identifier '\(modelId.replacingOccurrences(of: "'", with: "'\''"))' -y 2>&1")
-        if code != 0 {
-            return StepResult(state: .fail, message: out)
+
+        let candidateContexts = [contextLength, 24576, 20000, 16384]
+            .filter { $0 >= 16000 }
+            .reduce(into: [Int]()) { acc, value in if !acc.contains(value) { acc.append(value) } }
+
+        var lastError = "Unknown LM Studio load error"
+        for ctx in candidateContexts {
+            let result = loadLMStudioModelViaAPI(modelId: modelId, contextLength: ctx)
+            if result.state == .ok {
+                let config = writeModelToConfig(modelIdentifier: "lmstudio/\(modelId)")
+                if config.state == .fail { return config }
+                _ = restartGateway()
+                return StepResult(state: .ok, message: "LM Studio ready with \(modelId), context \(ctx)")
+            }
+            lastError = result.message
+            if !result.message.lowercased().contains("insufficient system resources") && !result.message.lowercased().contains("overload") {
+                break
+            }
         }
-        let config = writeModelToConfig(modelIdentifier: "lmstudio/\(modelId)")
-        if config.state == .fail { return config }
-        _ = restartGateway()
-        return StepResult(state: .ok, message: "LM Studio ready with \(modelId), context \(contextLength)")
+
+        return StepResult(state: .fail, message: friendlyLMStudioLoadError(modelId: modelId, error: lastError))
+    }
+
+    private func loadLMStudioModelViaAPI(modelId: String, contextLength: Int) -> StepResult {
+        guard let url = URL(string: "http://127.0.0.1:1234/api/v1/models/load") else {
+            return StepResult(state: .fail, message: "LM Studio API URL invalid")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 180
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "model": modelId,
+            "context_length": contextLength
+        ])
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var responseData: Data?
+        var response: URLResponse?
+        var requestError: Error?
+
+        URLSession.shared.dataTask(with: request) { data, resp, error in
+            responseData = data
+            response = resp
+            requestError = error
+            semaphore.signal()
+        }.resume()
+
+        _ = semaphore.wait(timeout: .now() + 180)
+
+        if let requestError {
+            return StepResult(state: .fail, message: requestError.localizedDescription)
+        }
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let body = responseData.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        if (200...299).contains(statusCode) {
+            return StepResult(state: .ok, message: "Loaded \(modelId) with context \(contextLength)")
+        }
+        return StepResult(state: .fail, message: extractLMStudioAPIError(body).isEmpty ? body : extractLMStudioAPIError(body))
+    }
+
+    private func extractLMStudioAPIError(_ body: String) -> String {
+        guard let data = body.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return body.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let error = json["error"] as? [String: Any] {
+            return (error["message"] as? String) ?? body
+        }
+        return body
+    }
+
+    private func friendlyLMStudioLoadError(modelId: String, error: String) -> String {
+        let lower = error.lowercased()
+        if lower.contains("insufficient system resources") || lower.contains("overload") {
+            return "LM Studio refused to load \(modelId) with enough context for OpenClaw because of memory guardrails. Try a smaller local model, for example nvidia/nemotron-3-nano-4b or google/gemma-4-e2b, or switch to Cloud LLM."
+        }
+        if lower.contains("invalid load message") || lower.contains("runtimedeps") {
+            return "LM Studio rejected the model runtime for \(modelId). Update LM Studio/runtime or choose another local model, then retry Auto Setup."
+        }
+        return error
     }
 
     func installedVersion(for command: String) -> String {
