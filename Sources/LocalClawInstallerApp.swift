@@ -265,6 +265,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var localLMStudioModels: [String] = []
     @Published var selectedLocalLMStudioModel: String = ""
     @Published var localLMStudioSetupStatus = ""
+    @Published var localLMStudioSetupLog = ""
     @Published var localLMStudioSetupInProgress = false
     @Published var localLMStudioRepairInProgress = false
 
@@ -2090,10 +2091,17 @@ final class InstallerViewModel: ObservableObject {
         }
         localLMStudioSetupInProgress = true
         localLMStudioSetupStatus = "Setting up LM Studio..."
+        localLMStudioSetupLog = ""
         chatStatus = "Setting up local model..."
         let modelId = selectedLocalLMStudioModel
         Task.detached {
-            let result = InstallerEngine().autoSetupLMStudioModel(modelId: modelId, contextLength: 32768)
+            let result = InstallerEngine().autoSetupLMStudioModel(modelId: modelId, contextLength: 32768) { message in
+                DispatchQueue.main.async {
+                    let line = "• \(message)"
+                    self.localLMStudioSetupStatus = message
+                    self.localLMStudioSetupLog = self.localLMStudioSetupLog.isEmpty ? line : self.localLMStudioSetupLog + "\n" + line
+                }
+            }
             await MainActor.run {
                 self.localLMStudioSetupInProgress = false
                 self.localLMStudioSetupStatus = result.message
@@ -3388,6 +3396,19 @@ struct ContentView: View {
                                 .font(AppFont.body(11))
                                 .foregroundStyle(UI.muted)
                                 .lineLimit(2)
+                        }
+                        if !vm.localLMStudioSetupLog.isEmpty {
+                            ScrollView {
+                                Text(vm.localLMStudioSetupLog)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(UI.text)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(10)
+                            }
+                            .scrollIndicators(.hidden)
+                            .frame(maxWidth: 520, maxHeight: 110)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.07), lineWidth: 1))
                         }
                     }
                 }

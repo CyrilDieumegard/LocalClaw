@@ -790,16 +790,20 @@ final class InstallerEngine: @unchecked Sendable {
         _ = shell("\(lms) unload --all >/dev/null 2>&1 || true")
     }
 
-    func autoSetupLMStudioModel(modelId: String, contextLength: Int = 32768) -> StepResult {
+    func autoSetupLMStudioModel(modelId: String, contextLength: Int = 32768, onProgress: ((String) -> Void)? = nil) -> StepResult {
         if modelId.isEmpty { return StepResult(state: .fail, message: "No local model selected") }
         let lms = lmsCommandPath()
+        onProgress?("Opening LM Studio and starting local server")
         _ = shell("open -a 'LM Studio' >/dev/null 2>&1 || true")
         _ = shell("\(lms) server start >/dev/null 2>&1 || true")
+        onProgress?("Unloading stale LM Studio models")
         unloadAllLMStudioModels()
 
         let available = listLMStudioLLMModelIds()
         let candidates = orderedLMStudioSetupCandidates(preferred: modelId, available: available)
+        onProgress?("Found \(available.count) local LLM model(s)")
         if let already = usableLoadedLMStudioModel(preferred: modelId, minimumContext: 16000) {
+            onProgress?("Model already loaded with usable context: \(already.model), \(already.context)")
             let config = writeModelToConfig(modelIdentifier: "lmstudio/\(already.model)")
             if config.state == .fail { return config }
             _ = restartGateway()
@@ -815,9 +819,11 @@ final class InstallerEngine: @unchecked Sendable {
         for candidate in candidates {
             attempted.append(candidate)
             for ctx in candidateContexts {
+                onProgress?("Trying \(candidate) with \(ctx) context")
                 unloadAllLMStudioModels()
                 let result = loadLMStudioModelViaAPI(modelId: candidate, contextLength: ctx)
                 if result.state == .ok {
+                    onProgress?("Loaded \(candidate). Writing OpenClaw config and restarting gateway")
                     let config = writeModelToConfig(modelIdentifier: "lmstudio/\(candidate)")
                     if config.state == .fail { return config }
                     _ = restartGateway()
@@ -837,14 +843,18 @@ final class InstallerEngine: @unchecked Sendable {
 
         let combinedError = "Tried \(attempted.joined(separator: ", ")). Last error: \(lastError)"
         if combinedError.lowercased().contains("invalid load message") || combinedError.lowercased().contains("runtimedeps") {
+            onProgress?("LM Studio runtime looks broken. Trying runtime rollback")
             let rollback = rollbackLMStudioRuntime()
             if rollback.state == .ok {
+                onProgress?(rollback.message)
                 unloadAllLMStudioModels()
                 for candidate in candidates {
                     for ctx in candidateContexts {
+                        onProgress?("Retrying \(candidate) with \(ctx) context after rollback")
                         unloadAllLMStudioModels()
                         let result = loadLMStudioModelViaAPI(modelId: candidate, contextLength: ctx)
                         if result.state == .ok {
+                            onProgress?("Loaded \(candidate) after runtime rollback. Writing OpenClaw config and restarting gateway")
                             let config = writeModelToConfig(modelIdentifier: "lmstudio/\(candidate)")
                             if config.state == .fail { return config }
                             _ = restartGateway()
@@ -903,19 +913,38 @@ final class InstallerEngine: @unchecked Sendable {
             "context_length": contextLength
         ])
 
+        final class ResponseBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var storedData: Data?
+            private var storedResponse: URLResponse?
+            private var storedError: Error?
+
+            func store(data: Data?, response: URLResponse?, error: Error?) {
+                lock.lock()
+                storedData = data
+                storedResponse = response
+                storedError = error
+                lock.unlock()
+            }
+
+            func snapshot() -> (Data?, URLResponse?, Error?) {
+                lock.lock()
+                defer { lock.unlock() }
+                return (storedData, storedResponse, storedError)
+            }
+        }
+
         let semaphore = DispatchSemaphore(value: 0)
-        var responseData: Data?
-        var response: URLResponse?
-        var requestError: Error?
+        let box = ResponseBox()
 
         URLSession.shared.dataTask(with: request) { data, resp, error in
-            responseData = data
-            response = resp
-            requestError = error
+            box.store(data: data, response: resp, error: error)
             semaphore.signal()
         }.resume()
 
         _ = semaphore.wait(timeout: .now() + 180)
+
+        let (responseData, response, requestError) = box.snapshot()
 
         if let requestError {
             return StepResult(state: .fail, message: requestError.localizedDescription)
