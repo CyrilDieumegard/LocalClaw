@@ -4,7 +4,7 @@ import AppKit
 
 @MainActor
 final class InstallerViewModel: ObservableObject {
-    enum Screen { case license, onboarding, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, templates, healthCenter, usageCenter }
+    enum Screen { case license, onboarding, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, templates, healthCenter, usageCenter, chat }
     enum InstallMode: String {
         case llmOnly = "Install Local LLM only"
         case openClawOnly = "Install OpenClaw only"
@@ -17,6 +17,13 @@ final class InstallerViewModel: ObservableObject {
         case local = "Local LLM"
 
         var id: String { rawValue }
+    }
+
+    struct ChatMessage: Identifiable {
+        let id = UUID()
+        let role: String
+        let text: String
+        let createdAt = Date()
     }
 
     enum CloudAuthMode: String, CaseIterable, Identifiable {
@@ -248,6 +255,13 @@ final class InstallerViewModel: ObservableObject {
     @Published var downloadProgress: Double = 0
     @Published var currentDownloadFile: String = ""
     @Published var isRunning = false
+
+    @Published var chatInput = ""
+    @Published var chatMessages: [ChatMessage] = [
+        ChatMessage(role: "assistant", text: "Hi, I’m OpenClaw inside LocalClaw. Ask me anything about your setup.")
+    ]
+    @Published var chatIsSending = false
+    @Published var chatStatus = "Ready"
 
     // Uninstall Center
     @Published var isUninstalling = false
@@ -1872,8 +1886,55 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func openOpenClawChat() {
-        append("Opening OpenClaw Chat")
-        openDashboard()
+        screen = .chat
+    }
+
+    func sendChatMessage() {
+        let text = chatInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty || chatIsSending { return }
+
+        chatInput = ""
+        chatMessages.append(ChatMessage(role: "user", text: text))
+        chatIsSending = true
+        chatStatus = "Thinking..."
+
+        Task.detached {
+            let quote: (String) -> String = { value in
+                "'" + value.replacingOccurrences(of: "'", with: "'\''") + "'"
+            }
+            let engine = InstallerEngine()
+            _ = engine.shell("openclaw gateway start >/dev/null 2>&1 || true")
+            let command = "openclaw agent --session-id localclaw-ui-chat --message \(quote(text)) --json --timeout 180 2>&1"
+            let result = engine.shell(command)
+            let reply = Self.extractAgentReply(from: result.1)
+            await MainActor.run {
+                self.chatMessages.append(ChatMessage(role: result.0 == 0 ? "assistant" : "error", text: reply))
+                self.chatStatus = result.0 == 0 ? "Ready" : "Error"
+                self.chatIsSending = false
+            }
+        }
+    }
+
+    nonisolated private static func extractAgentReply(from raw: String) -> String {
+        guard let data = raw.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "No response from OpenClaw." : trimmed
+        }
+
+        for key in ["reply", "text", "message", "content", "output", "summary"] {
+            if let value = json[key] as? String, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return value.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        if let result = json["result"] as? [String: Any] {
+            for key in ["reply", "text", "message", "content", "output", "summary"] {
+                if let value = result[key] as? String, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return value.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+        }
+        return raw.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     var openClawChatStatus: String {
@@ -2669,6 +2730,7 @@ struct ProgressSteps: View {
         case .templates: return 0
         case .healthCenter: return 0
         case .usageCenter: return 0
+        case .chat: return 0
         }
     }
 
@@ -2777,6 +2839,7 @@ struct ContentView: View {
                             case .templates: templates
                             case .healthCenter: healthCenter
                             case .usageCenter: usageCenter
+                            case .chat: openClawChat
                             }
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -2861,6 +2924,7 @@ struct ContentView: View {
             }
             sidebarButton("Updates", icon: "arrow.clockwise", isActive: vm.screen == .updates) { vm.screen = .updates }
             sidebarButton("Control Center", icon: "slider.horizontal.3", isActive: vm.screen == .commandCenter) { vm.screen = .commandCenter }
+            sidebarButton("OpenClaw Chat", icon: "message.badge.waveform", isActive: vm.screen == .chat) { vm.screen = .chat }
             sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup) { vm.screen = .channelSetup }
             sidebarButton("Templates", icon: "square.grid.2x2", isActive: vm.screen == .templates) { vm.screen = .templates }
             sidebarButton("Help", icon: "cross.case", isActive: vm.screen == .healthCenter) { vm.screen = .healthCenter }
@@ -3022,8 +3086,7 @@ struct ContentView: View {
     }
 
     var home: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("LocalClaw")
                         .font(AppFont.heading(40))
@@ -3087,9 +3150,94 @@ struct ContentView: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 10)
             .frame(maxWidth: 940, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .center)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    var openClawChat: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: "message.badge.waveform")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(UI.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("OpenClaw Chat")
+                        .font(AppFont.heading(34))
+                        .foregroundStyle(UI.text)
+                    Text("Talk directly with your OpenClaw assistant inside LocalClaw.")
+                        .font(AppFont.body(14))
+                        .foregroundStyle(UI.muted)
+                }
+                Spacer()
+                Label(vm.chatStatus, systemImage: vm.chatStatus == "Ready" ? "checkmark.circle.fill" : "circle.fill")
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(vm.chatStatus == "Ready" ? Color(NSColor.systemGreen) : UI.accent)
+            }
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(vm.chatMessages) { message in
+                            chatBubble(message)
+                                .id(message.id)
+                        }
+                        if vm.chatIsSending {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .scaleEffect(0.7)
+                                Text("OpenClaw is thinking...")
+                                    .font(AppFont.body(12))
+                                    .foregroundStyle(UI.muted)
+                            }
+                            .padding(.horizontal, 10)
+                        }
+                    }
+                    .padding(14)
+                }
+                .background(RoundedRectangle(cornerRadius: 16).fill(UI.cardSoft))
+                .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.black.opacity(0.07), lineWidth: 1))
+                .onChange(of: vm.chatMessages.count) { _ in
+                    if let last = vm.chatMessages.last?.id {
+                        withAnimation { proxy.scrollTo(last, anchor: .bottom) }
+                    }
+                }
+            }
+
+            HStack(spacing: 10) {
+                TextField("Message OpenClaw...", text: $vm.chatInput, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1...4)
+                    .onSubmit { vm.sendChatMessage() }
+                Button(vm.chatIsSending ? "SENDING..." : "SEND") { vm.sendChatMessage() }
+                    .buttonStyle(CTAButton(primary: true))
+                    .disabled(vm.chatIsSending || vm.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
         }
-        .scrollIndicators(.hidden)
+        .padding(22)
+        .frame(maxWidth: 940, maxHeight: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .shadow(color: Color.black.opacity(0.06), radius: 6, x: 0, y: 2)
+    }
+
+    func chatBubble(_ message: InstallerViewModel.ChatMessage) -> some View {
+        let isUser = message.role == "user"
+        let isError = message.role == "error"
+        return HStack {
+            if isUser { Spacer(minLength: 80) }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(isUser ? "You" : (isError ? "Error" : "OpenClaw"))
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(isError ? Color(NSColor.systemRed) : UI.muted)
+                Text(message.text)
+                    .font(AppFont.body(14))
+                    .foregroundStyle(isError ? Color(NSColor.systemRed) : UI.text)
+                    .textSelection(.enabled)
+            }
+            .padding(11)
+            .background(RoundedRectangle(cornerRadius: 13).fill(isUser ? UI.accent.opacity(0.13) : UI.card))
+            .overlay(RoundedRectangle(cornerRadius: 13).stroke(isError ? Color(NSColor.systemRed).opacity(0.3) : Color.black.opacity(0.06), lineWidth: 1))
+            if !isUser { Spacer(minLength: 80) }
+        }
     }
 
     var options: some View {
