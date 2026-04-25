@@ -791,26 +791,69 @@ final class InstallerEngine: @unchecked Sendable {
         _ = shell("open -a 'LM Studio' >/dev/null 2>&1 || true")
         _ = shell("\(lms) server start >/dev/null 2>&1 || true")
 
+        let available = listLMStudioLLMModelIds()
+        let candidates = orderedLMStudioSetupCandidates(preferred: modelId, available: available)
+        if let already = usableLoadedLMStudioModel(preferred: modelId, minimumContext: 16000) {
+            let config = writeModelToConfig(modelIdentifier: "lmstudio/\(already.model)")
+            if config.state == .fail { return config }
+            _ = restartGateway()
+            return StepResult(state: .ok, message: "LM Studio already ready with \(already.model), context \(already.context)")
+        }
+
         let candidateContexts = [contextLength, 24576, 20000, 16384]
             .filter { $0 >= 16000 }
             .reduce(into: [Int]()) { acc, value in if !acc.contains(value) { acc.append(value) } }
 
         var lastError = "Unknown LM Studio load error"
-        for ctx in candidateContexts {
-            let result = loadLMStudioModelViaAPI(modelId: modelId, contextLength: ctx)
-            if result.state == .ok {
-                let config = writeModelToConfig(modelIdentifier: "lmstudio/\(modelId)")
-                if config.state == .fail { return config }
-                _ = restartGateway()
-                return StepResult(state: .ok, message: "LM Studio ready with \(modelId), context \(ctx)")
-            }
-            lastError = result.message
-            if !result.message.lowercased().contains("insufficient system resources") && !result.message.lowercased().contains("overload") {
-                break
+        var attempted: [String] = []
+        for candidate in candidates {
+            attempted.append(candidate)
+            for ctx in candidateContexts {
+                let result = loadLMStudioModelViaAPI(modelId: candidate, contextLength: ctx)
+                if result.state == .ok {
+                    let config = writeModelToConfig(modelIdentifier: "lmstudio/\(candidate)")
+                    if config.state == .fail { return config }
+                    _ = restartGateway()
+                    let fallbackNote = candidate == modelId ? "" : " (fallback from \(modelId))"
+                    return StepResult(state: .ok, message: "LM Studio ready with \(candidate), context \(ctx)\(fallbackNote)")
+                }
+                lastError = result.message
+                let lower = result.message.lowercased()
+                if lower.contains("invalid load message") || lower.contains("runtimedeps") {
+                    break
+                }
+                if !lower.contains("insufficient system resources") && !lower.contains("overload") {
+                    break
+                }
             }
         }
 
-        return StepResult(state: .fail, message: friendlyLMStudioLoadError(modelId: modelId, error: lastError))
+        return StepResult(state: .fail, message: friendlyLMStudioLoadError(modelId: modelId, error: "Tried \(attempted.joined(separator: ", ")). Last error: \(lastError)"))
+    }
+
+    private func orderedLMStudioSetupCandidates(preferred: String, available: [String]) -> [String] {
+        let preferredOrder = [
+            preferred,
+            "nvidia/nemotron-3-nano-4b",
+            "google/gemma-4-e2b",
+            "qwen/qwen3-4b",
+            "mistralai/ministral-3-3b",
+            "google/gemma-4-e4b"
+        ]
+        var result: [String] = []
+        for id in preferredOrder + available {
+            if id.isEmpty || id.contains("embedding") || id.contains("qianfan-ocr") { continue }
+            if available.contains(id) && !result.contains(id) { result.append(id) }
+        }
+        return result
+    }
+
+    private func usableLoadedLMStudioModel(preferred: String, minimumContext: Int) -> (model: String, context: Int)? {
+        guard let loaded = loadedLMStudioModelInfo(), let ctx = loaded.context, ctx >= minimumContext else { return nil }
+        if loaded.model == preferred || loaded.identifier == preferred {
+            return (loaded.model, ctx)
+        }
+        return nil
     }
 
     private func loadLMStudioModelViaAPI(modelId: String, contextLength: Int) -> StepResult {
@@ -869,7 +912,7 @@ final class InstallerEngine: @unchecked Sendable {
             return "LM Studio refused to load \(modelId) with enough context for OpenClaw because of memory guardrails. Try a smaller local model, for example nvidia/nemotron-3-nano-4b or google/gemma-4-e2b, or switch to Cloud LLM."
         }
         if lower.contains("invalid load message") || lower.contains("runtimedeps") {
-            return "LM Studio rejected the model runtime for \(modelId). Update LM Studio/runtime or choose another local model, then retry Auto Setup."
+            return "LM Studio rejected the local model runtime. I tried the available fallback models too, but LM Studio still refused to load one cleanly. Update LM Studio/runtime, then retry Auto Setup. Details: \(error)"
         }
         return error
     }
