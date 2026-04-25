@@ -2384,9 +2384,9 @@ enum UI {
 }
 
 enum AppFont {
-    static func heading(_ size: CGFloat) -> Font { .custom("SpaceGrotesk-Bold", size: size) }
-    static func body(_ size: CGFloat) -> Font { .custom("Inter-Regular", size: size) }
-    static func bodySemi(_ size: CGFloat) -> Font { .custom("Inter-SemiBold", size: size) }
+    static func heading(_ size: CGFloat) -> Font { .system(size: size, weight: .bold, design: .rounded) }
+    static func body(_ size: CGFloat) -> Font { .system(size: size, weight: .regular, design: .default) }
+    static func bodySemi(_ size: CGFloat) -> Font { .system(size: size, weight: .semibold, design: .default) }
 }
 
 struct CTAButton: ButtonStyle {

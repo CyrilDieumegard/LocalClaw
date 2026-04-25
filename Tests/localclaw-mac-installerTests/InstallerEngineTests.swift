@@ -8,7 +8,7 @@ struct InstallerEngineTests {
 
         let reco = engine.recommend(for: profile)
 
-        #expect(reco.model == "Qwen 3 8B")
+        #expect(reco.model == "Nemotron 3 Nano 4B")
         #expect(reco.quant == "Q4_K_M")
     }
 
@@ -18,7 +18,7 @@ struct InstallerEngineTests {
 
         let reco = engine.recommend(for: profile)
 
-        #expect(reco.model == "Qwen 3 14B")
+        #expect(reco.model == "Nemotron 3 Nano 4B")
         #expect(reco.quant == "Q4_K_M")
     }
 

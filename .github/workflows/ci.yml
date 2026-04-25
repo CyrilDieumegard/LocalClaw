@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  swift:
+    name: Swift build and tests
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Validate update manifest JSON
+        run: python3 -m json.tool site-handoff/localclaw-installer-latest.json >/dev/null
+
+      - name: Build release
+        run: swift build -c release
+
+      - name: Run tests
+        run: swift test
