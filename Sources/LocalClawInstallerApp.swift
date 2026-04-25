@@ -343,6 +343,7 @@ final class InstallerViewModel: ObservableObject {
         let latestVersion: String
         let dmgUrl: String
         let notesUrl: String?
+        let sha256: String?
     }
 
     private var licenseEndpoint: String {
@@ -1295,6 +1296,112 @@ final class InstallerViewModel: ObservableObject {
         append("Opened installer download: \(installerDownloadURL)")
     }
 
+    private func shellSingleQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\''") + "'"
+    }
+
+    func updateLocalClawFromDMG() {
+        if isRunning { return }
+        guard let url = URL(string: installerDownloadURL), !installerDownloadURL.isEmpty else {
+            append("No installer download URL found in manifest. Click CHECK, then retry.")
+            return
+        }
+
+        isRunning = true
+        installerUpdateStatus = "Downloading update..."
+        append("Starting LocalClaw app update from DMG")
+
+        let runningBundlePath = Bundle.main.bundlePath
+        let runningAppPath = runningBundlePath.hasSuffix(".app") ? runningBundlePath : ""
+        let targetApp: String = {
+            if runningAppPath == "/Applications/LocalClaw.app" || runningAppPath == NSHomeDirectory() + "/Applications/LocalClaw.app" {
+                return runningAppPath
+            }
+            if FileManager.default.fileExists(atPath: "/Applications/LocalClaw.app") {
+                return "/Applications/LocalClaw.app"
+            }
+            return NSHomeDirectory() + "/Applications/LocalClaw.app"
+        }()
+
+        Task.detached {
+            do {
+                let (downloadedURL, response) = try await URLSession.shared.download(from: url)
+                guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                    throw NSError(domain: "LocalClawUpdate", code: 1, userInfo: [NSLocalizedDescriptionKey: "Download failed"])
+                }
+
+                let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("localclaw-update-\(UUID().uuidString)", isDirectory: true)
+                try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+                let dmgPath = tempDir.appendingPathComponent("localclaw.dmg")
+                try? FileManager.default.removeItem(at: dmgPath)
+                try FileManager.default.moveItem(at: downloadedURL, to: dmgPath)
+
+                let scriptPath = tempDir.appendingPathComponent("install-localclaw-update.sh")
+                let quotedDMG = await MainActor.run { self.shellSingleQuote(dmgPath.path) }
+                let quotedTarget = await MainActor.run { self.shellSingleQuote(targetApp) }
+                let script = """
+                #!/bin/zsh
+                set -euo pipefail
+                DMG=\(quotedDMG)
+                TARGET=\(quotedTarget)
+                MOUNT_DIR="$(dirname "$DMG")/mount"
+
+                cleanup() {
+                  hdiutil detach "$MOUNT_DIR" -quiet || true
+                }
+                trap cleanup EXIT
+
+                rm -rf "$MOUNT_DIR"
+                mkdir -p "$MOUNT_DIR"
+                hdiutil attach "$DMG" -nobrowse -quiet -mountpoint "$MOUNT_DIR"
+                APP_SOURCE="$MOUNT_DIR/LocalClaw.app"
+                if [ ! -d "$APP_SOURCE" ]; then
+                  echo "LocalClaw.app not found in DMG"
+                  exit 1
+                fi
+
+                if [[ "$TARGET" == /Applications/* ]]; then
+                  /usr/bin/osascript -e "do shell script \"rm -rf '$TARGET' && cp -R '$APP_SOURCE' '$TARGET'\" with administrator privileges"
+                else
+                  mkdir -p "$(dirname "$TARGET")"
+                  rm -rf "$TARGET"
+                  cp -R "$APP_SOURCE" "$TARGET"
+                fi
+
+                /usr/bin/osascript -e 'tell application "LocalClaw" to quit' >/dev/null 2>&1 || true
+                sleep 1
+                /usr/bin/open "$TARGET" || true
+                """
+                try script.write(to: scriptPath, atomically: true, encoding: .utf8)
+                _ = await MainActor.run { self.engine.shell("chmod +x \(self.shellSingleQuote(scriptPath.path))") }
+
+                await MainActor.run {
+                    self.append("Downloaded update DMG. Installing LocalClaw to \(targetApp)...")
+                    self.installerUpdateStatus = "Installing update..."
+                }
+
+                let result = await MainActor.run { self.engine.shell("nohup \(self.shellSingleQuote(scriptPath.path)) >/tmp/localclaw-update.log 2>&1 &") }
+                await MainActor.run {
+                    if result.0 == 0 {
+                        self.append("Installer started in background. LocalClaw will restart automatically.")
+                        self.installerUpdateStatus = "Restarting..."
+                    } else {
+                        self.append("Failed to start background installer: \(result.1)")
+                        self.installerUpdateStatus = "Update failed"
+                        self.isRunning = false
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.append("LocalClaw DMG update failed: \(error.localizedDescription)")
+                    self.append("Fallback available: use ADVANCED GIT UPDATE.")
+                    self.installerUpdateStatus = "Update failed"
+                    self.isRunning = false
+                }
+            }
+        }
+    }
+
     func updateLocalClaw() {
         let defaultRepoDir = NSHomeDirectory() + "/LocalClaw"
         let repoDir = ProcessInfo.processInfo.environment["LOCALCLAW_REPO_DIR"] ?? defaultRepoDir
@@ -1427,7 +1534,7 @@ final class InstallerViewModel: ObservableObject {
             try script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
             _ = engine.shell("chmod +x \(scriptPath)")
             _ = engine.shell("osascript -e 'tell application \"Terminal\" to do script \"\(scriptPath)\"'")
-            append("Opened Terminal for LocalClaw update")
+            append("Opened Terminal for advanced Git update fallback")
         } catch {
             append("Failed to start GitHub update flow: \(error.localizedDescription)")
         }
@@ -3462,8 +3569,12 @@ struct ContentView: View {
                     .buttonStyle(CTAButton(primary: true))
                     .disabled(vm.isRunning)
                 Button("CHECK") { vm.refreshVersions() }.buttonStyle(CTAButton(primary: false))
-                Button("UPDATE LOCALCLAW") { vm.updateLocalClaw() }
+                Button("UPDATE LOCALCLAW") { vm.updateLocalClawFromDMG() }
                     .buttonStyle(CTAButton(primary: false))
+                    .disabled(vm.isRunning || vm.installerUpdateStatus == "Up to date")
+                Button("ADVANCED GIT UPDATE") { vm.updateLocalClaw() }
+                    .buttonStyle(CTAButton(primary: false))
+                    .disabled(vm.isRunning)
                 Button("BACK") { vm.screen = .home }.buttonStyle(CTAButton(primary: false))
             }
 
