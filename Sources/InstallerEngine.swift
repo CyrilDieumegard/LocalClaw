@@ -755,6 +755,52 @@ final class InstallerEngine: @unchecked Sendable {
         return StepResult(state: .fail, message: fullOutput.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
+
+    func listLMStudioLLMModelIds() -> [String] {
+        let lms = lmsCommandPath()
+        let (code, out) = shell("\(lms) ls 2>&1")
+        guard code == 0 else { return [] }
+        var ids: [String] = []
+        for raw in out.components(separatedBy: .newlines) {
+            let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.isEmpty || line.hasPrefix("You have") || line.hasPrefix("LLM") || line.hasPrefix("EMBEDDING") { continue }
+            guard line.contains("Local") else { continue }
+            guard let first = line.components(separatedBy: .whitespaces).first, first.contains("/") else { continue }
+            if !ids.contains(first) { ids.append(first) }
+        }
+        return ids.sorted()
+    }
+
+    func loadedLMStudioModelInfo() -> (identifier: String, model: String, context: Int?)? {
+        let lms = lmsCommandPath()
+        let (code, out) = shell("\(lms) ps 2>&1")
+        guard code == 0 else { return nil }
+        for raw in out.components(separatedBy: .newlines).dropFirst() {
+            let cols = raw.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            if cols.count >= 5, cols[0].contains("/") || cols[1].contains("/") {
+                let ctx = Int(cols[4])
+                return (identifier: cols[0], model: cols[1], context: ctx)
+            }
+        }
+        return nil
+    }
+
+    func autoSetupLMStudioModel(modelId: String, contextLength: Int = 32768) -> StepResult {
+        if modelId.isEmpty { return StepResult(state: .fail, message: "No local model selected") }
+        let lms = lmsCommandPath()
+        _ = shell("open -a 'LM Studio' >/dev/null 2>&1 || true")
+        _ = shell("\(lms) server start >/dev/null 2>&1 || true")
+        _ = shell("\(lms) unload --all >/dev/null 2>&1 || true")
+        let (code, out) = shell("\(lms) load '\(modelId.replacingOccurrences(of: "'", with: "'\''"))' --context-length \(contextLength) --gpu max --identifier '\(modelId.replacingOccurrences(of: "'", with: "'\''"))' -y 2>&1")
+        if code != 0 {
+            return StepResult(state: .fail, message: out)
+        }
+        let config = writeModelToConfig(modelIdentifier: "lmstudio/\(modelId)")
+        if config.state == .fail { return config }
+        _ = restartGateway()
+        return StepResult(state: .ok, message: "LM Studio ready with \(modelId), context \(contextLength)")
+    }
+
     func installedVersion(for command: String) -> String {
         let (code, out) = shell("\(command) --version")
         if code != 0 || out.isEmpty { return "Not installed" }

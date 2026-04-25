@@ -262,6 +262,10 @@ final class InstallerViewModel: ObservableObject {
     ]
     @Published var chatIsSending = false
     @Published var chatStatus = "Ready"
+    @Published var localLMStudioModels: [String] = []
+    @Published var selectedLocalLMStudioModel: String = ""
+    @Published var localLMStudioSetupStatus = ""
+    @Published var localLMStudioSetupInProgress = false
 
     // Uninstall Center
     @Published var isUninstalling = false
@@ -572,6 +576,7 @@ final class InstallerViewModel: ObservableObject {
         } else if primary.hasPrefix("lmstudio/") {
             inferenceMode = .local
             let localId = primary.replacingOccurrences(of: "lmstudio/", with: "")
+            selectedLocalLMStudioModel = localId
             if let mapped = localProviderModelIds.first(where: { $0.value == localId })?.key {
                 selectedModel = mapped
             }
@@ -2058,6 +2063,48 @@ final class InstallerViewModel: ObservableObject {
     func refreshOpenClawChatInfo() {
         refreshVersions()
         currentModel = engine.getCurrentModel()
+        refreshLocalLMStudioModels()
+    }
+
+    func refreshLocalLMStudioModels() {
+        let models = engine.listLMStudioLLMModelIds()
+        localLMStudioModels = models
+        if selectedLocalLMStudioModel.isEmpty {
+            if let loaded = engine.loadedLMStudioModelInfo()?.model, models.contains(loaded) {
+                selectedLocalLMStudioModel = loaded
+            } else if currentModel.hasPrefix("lmstudio/") {
+                let configured = String(currentModel.dropFirst("lmstudio/".count))
+                if models.contains(configured) { selectedLocalLMStudioModel = configured }
+            } else if let first = models.first {
+                selectedLocalLMStudioModel = first
+            }
+        }
+    }
+
+    func autoSetupSelectedLocalLMStudioModel() {
+        if localLMStudioSetupInProgress { return }
+        if selectedLocalLMStudioModel.isEmpty {
+            localLMStudioSetupStatus = "No local model found in LM Studio"
+            return
+        }
+        localLMStudioSetupInProgress = true
+        localLMStudioSetupStatus = "Setting up LM Studio..."
+        chatStatus = "Setting up local model..."
+        let modelId = selectedLocalLMStudioModel
+        Task.detached {
+            let result = InstallerEngine().autoSetupLMStudioModel(modelId: modelId, contextLength: 32768)
+            await MainActor.run {
+                self.localLMStudioSetupInProgress = false
+                self.localLMStudioSetupStatus = result.message
+                self.chatStatus = result.state == .ok ? "Ready" : "Needs setup"
+                if result.state == .ok {
+                    self.currentModel = "lmstudio/\(modelId)"
+                    self.chatMessages.append(ChatMessage(role: "assistant", text: "Local model ready: \(modelId) with 32k context. You can chat now."))
+                } else {
+                    self.chatMessages.append(ChatMessage(role: "assistant", text: "I couldn’t auto-setup LM Studio yet: \(result.message)"))
+                }
+            }
+        }
     }
 
     func openTerminalOpenAIOAuth() {
@@ -3285,6 +3332,33 @@ struct ContentView: View {
                     HStack(spacing: 8) {
                         chatInfoPill(vm.openClawChatModeLabel, icon: vm.inferenceMode == .local ? "desktopcomputer" : "cloud.fill")
                         chatInfoPill(vm.openClawChatModelLabel, icon: "cpu")
+                    }
+                    if vm.inferenceMode == .local {
+                        HStack(spacing: 8) {
+                            Picker("Local model", selection: $vm.selectedLocalLMStudioModel) {
+                                if vm.localLMStudioModels.isEmpty {
+                                    Text("No LM Studio model found").tag("")
+                                } else {
+                                    ForEach(vm.localLMStudioModels, id: \.self) { model in
+                                        Text(model).tag(model)
+                                    }
+                                }
+                            }
+                            .frame(maxWidth: 360)
+                            Button(vm.localLMStudioSetupInProgress ? "SETTING UP..." : "AUTO SETUP") {
+                                vm.autoSetupSelectedLocalLMStudioModel()
+                            }
+                            .buttonStyle(CTAButton(primary: true))
+                            .disabled(vm.localLMStudioSetupInProgress || vm.selectedLocalLMStudioModel.isEmpty)
+                            Button("SCAN") { vm.refreshLocalLMStudioModels() }
+                                .buttonStyle(CTAButton(primary: false))
+                        }
+                        if !vm.localLMStudioSetupStatus.isEmpty {
+                            Text(vm.localLMStudioSetupStatus)
+                                .font(AppFont.body(11))
+                                .foregroundStyle(UI.muted)
+                                .lineLimit(2)
+                        }
                     }
                 }
                 Spacer()
