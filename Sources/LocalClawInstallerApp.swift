@@ -1915,7 +1915,11 @@ final class InstallerViewModel: ObservableObject {
                 }
             }
             let reply = Self.extractAgentReply(from: result.1)
+            let runtimeModel = Self.extractAgentRuntimeModel(from: result.1)
             await MainActor.run {
+                if let runtimeModel, !runtimeModel.isEmpty {
+                    self.currentModel = runtimeModel
+                }
                 if repairedPlugin && result.0 == 0 {
                     self.chatMessages.append(ChatMessage(role: "assistant", text: "I found and disabled an outdated global WhatsApp plugin that was blocking OpenClaw, then retried automatically."))
                 }
@@ -1942,19 +1946,47 @@ final class InstallerViewModel: ObservableObject {
             return trimmed.isEmpty ? "No response from OpenClaw." : trimmed
         }
 
-        for key in ["reply", "text", "message", "content", "output", "summary"] {
-            if let value = json[key] as? String, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if let result = json["result"] as? [String: Any] {
+            if let value = result["finalAssistantVisibleText"] as? String, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return value.trimmingCharacters(in: .whitespacesAndNewlines)
             }
-        }
-        if let result = json["result"] as? [String: Any] {
-            for key in ["reply", "text", "message", "content", "output", "summary"] {
+            if let value = result["finalAssistantRawText"] as? String, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return value.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if let payloads = result["payloads"] as? [[String: Any]],
+               let value = payloads.compactMap({ $0["text"] as? String }).first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
+                return value.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            for key in ["reply", "text", "message", "content", "output"] {
                 if let value = result[key] as? String, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     return value.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
             }
         }
+
+        for key in ["reply", "text", "message", "content", "output"] {
+            if let value = json[key] as? String, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return value.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        if let value = json["summary"] as? String, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return value.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         return clean.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    nonisolated private static func extractAgentRuntimeModel(from raw: String) -> String? {
+        let clean = stripANSI(raw)
+        guard let data = clean.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = json["result"] as? [String: Any],
+              let meta = result["meta"] as? [String: Any],
+              let agentMeta = meta["agentMeta"] as? [String: Any] else { return nil }
+        let provider = (agentMeta["provider"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let model = (agentMeta["model"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if provider.isEmpty { return model.isEmpty ? nil : model }
+        if model.isEmpty { return provider }
+        return "\(provider)/\(model)"
     }
 
     var openClawChatStatus: String {
@@ -1962,6 +1994,29 @@ final class InstallerViewModel: ObservableObject {
         if openclawInstalledVersion == "Not installed" { return "Setup needed" }
         if openclawUpdateStatus == "Not installed" { return "Setup needed" }
         return "Ready"
+    }
+
+    var openClawChatModeLabel: String {
+        inferenceMode == .local ? "Local LLM" : "Cloud LLM"
+    }
+
+    var openClawChatModelLabel: String {
+        let current = currentModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !current.isEmpty && current != "Unknown" {
+            return current
+        }
+        if inferenceMode == .cloud {
+            return selectedOpenRouterModel.isEmpty ? "Cloud model not configured" : selectedOpenRouterModel
+        }
+        if !selectedModel.isEmpty {
+            return selectedModel
+        }
+        return recommendation.isEmpty ? "Local model not configured" : recommendation
+    }
+
+    func refreshOpenClawChatInfo() {
+        refreshVersions()
+        currentModel = engine.getCurrentModel()
     }
 
     func openTerminalOpenAIOAuth() {
@@ -3179,13 +3234,17 @@ struct ContentView: View {
                 Image(systemName: "message.badge.waveform")
                     .font(.system(size: 28, weight: .semibold))
                     .foregroundStyle(UI.accent)
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 8) {
                     Text("OpenClaw Chat")
                         .font(AppFont.heading(34))
                         .foregroundStyle(UI.text)
                     Text("Talk directly with your OpenClaw assistant inside LocalClaw.")
                         .font(AppFont.body(14))
                         .foregroundStyle(UI.muted)
+                    HStack(spacing: 8) {
+                        chatInfoPill(vm.openClawChatModeLabel, icon: vm.inferenceMode == .local ? "desktopcomputer" : "cloud.fill")
+                        chatInfoPill(vm.openClawChatModelLabel, icon: "cpu")
+                    }
                 }
                 Spacer()
                 Label(vm.chatStatus, systemImage: vm.chatStatus == "Ready" ? "checkmark.circle.fill" : "circle.fill")
@@ -3237,6 +3296,19 @@ struct ContentView: View {
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
         .shadow(color: Color.black.opacity(0.06), radius: 6, x: 0, y: 2)
+        .onAppear { vm.refreshOpenClawChatInfo() }
+    }
+
+    func chatInfoPill(_ text: String, icon: String) -> some View {
+        Label(text, systemImage: icon)
+            .font(AppFont.bodySemi(11))
+            .foregroundStyle(UI.text)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 999).stroke(Color.black.opacity(0.06), lineWidth: 1))
     }
 
     func chatBubble(_ message: InstallerViewModel.ChatMessage) -> some View {
