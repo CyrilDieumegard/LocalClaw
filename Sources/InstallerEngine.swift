@@ -906,6 +906,19 @@ final class InstallerEngine: @unchecked Sendable {
         return body
     }
 
+
+    func repairLMStudioRuntime() -> StepResult {
+        let lms = lmsCommandPath()
+        _ = shell("open -a 'LM Studio' >/dev/null 2>&1 || true")
+        _ = shell("\(lms) server stop >/dev/null 2>&1 || true")
+        let (updateCode, updateOut) = shell("\(lms) runtime update --all -y 2>&1")
+        _ = shell("\(lms) server start >/dev/null 2>&1 || true")
+        if updateCode == 0 {
+            return StepResult(state: .ok, message: "LM Studio runtime updated. Retry Auto Setup.")
+        }
+        return StepResult(state: .fail, message: updateOut.isEmpty ? "LM Studio runtime update failed" : updateOut)
+    }
+
     private func friendlyLMStudioLoadError(modelId: String, error: String) -> String {
         let lower = error.lowercased()
         if lower.contains("insufficient system resources") || lower.contains("overload") {

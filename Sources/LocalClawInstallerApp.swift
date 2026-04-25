@@ -266,6 +266,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var selectedLocalLMStudioModel: String = ""
     @Published var localLMStudioSetupStatus = ""
     @Published var localLMStudioSetupInProgress = false
+    @Published var localLMStudioRepairInProgress = false
 
     // Uninstall Center
     @Published var isUninstalling = false
@@ -2099,12 +2100,36 @@ final class InstallerViewModel: ObservableObject {
                 self.chatStatus = result.state == .ok ? "Ready" : "Needs setup"
                 if result.state == .ok {
                     self.currentModel = "lmstudio/\(modelId)"
-                    self.chatMessages.append(ChatMessage(role: "assistant", text: "Local model ready: \(result.message.replacingOccurrences(of: "LM Studio ready with ", with: "")). You can chat now."))
+                    self.appendChatSystemMessageOnce("Local model ready: \(result.message.replacingOccurrences(of: "LM Studio ready with ", with: "")). You can chat now.")
                 } else {
-                    self.chatMessages.append(ChatMessage(role: "assistant", text: "I couldn’t auto-setup LM Studio yet: \(result.message)"))
+                    self.appendChatSystemMessageOnce("I couldn’t auto-setup LM Studio yet: \(result.message)")
                 }
             }
         }
+    }
+
+    func repairLMStudioRuntimeFromChat() {
+        if localLMStudioRepairInProgress { return }
+        localLMStudioRepairInProgress = true
+        localLMStudioSetupStatus = "Updating LM Studio runtime..."
+        chatStatus = "Repairing LM Studio..."
+        Task.detached {
+            let result = InstallerEngine().repairLMStudioRuntime()
+            await MainActor.run {
+                self.localLMStudioRepairInProgress = false
+                self.localLMStudioSetupStatus = result.message
+                self.chatStatus = result.state == .ok ? "Needs setup" : "Error"
+                self.appendChatSystemMessageOnce(result.state == .ok
+                    ? "LM Studio runtime repair finished. Click AUTO SETUP again to load a compatible local model."
+                    : "I couldn’t repair LM Studio automatically: \(result.message)")
+                self.refreshLocalLMStudioModels()
+            }
+        }
+    }
+
+    func appendChatSystemMessageOnce(_ text: String) {
+        if chatMessages.last?.text == text { return }
+        chatMessages.append(ChatMessage(role: "assistant", text: text))
     }
 
     func openTerminalOpenAIOAuth() {
@@ -3352,6 +3377,11 @@ struct ContentView: View {
                             .disabled(vm.localLMStudioSetupInProgress || vm.selectedLocalLMStudioModel.isEmpty)
                             Button("SCAN") { vm.refreshLocalLMStudioModels() }
                                 .buttonStyle(CTAButton(primary: false))
+                            Button(vm.localLMStudioRepairInProgress ? "REPAIRING..." : "REPAIR LM STUDIO") {
+                                vm.repairLMStudioRuntimeFromChat()
+                            }
+                            .buttonStyle(CTAButton(primary: false))
+                            .disabled(vm.localLMStudioRepairInProgress || vm.localLMStudioSetupInProgress)
                         }
                         if !vm.localLMStudioSetupStatus.isEmpty {
                             Text(vm.localLMStudioSetupStatus)
