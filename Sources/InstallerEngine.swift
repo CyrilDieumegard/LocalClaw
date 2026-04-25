@@ -440,6 +440,24 @@ final class InstallerEngine: @unchecked Sendable {
         return StepResult(state: result.state, message: "Model set to \(modelId). Gateway restarted to apply changes.")
     }
 
+
+    /// Disable a stale user-installed plugin that overrides a bundled plugin and breaks CLI startup.
+    func disableBrokenGlobalPlugin(id: String) -> StepResult {
+        let safeId = id.replacingOccurrences(of: "'", with: "")
+        let pluginPath = NSHomeDirectory() + "/.openclaw/extensions/\(safeId)"
+        if !FileManager.default.fileExists(atPath: pluginPath) {
+            return StepResult(state: .skip, message: "No global \(safeId) plugin found")
+        }
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let disabledPath = pluginPath + ".disabled.\(timestamp)"
+        do {
+            try FileManager.default.moveItem(atPath: pluginPath, toPath: disabledPath)
+            return StepResult(state: .ok, message: "Disabled broken global plugin: \(disabledPath)")
+        } catch {
+            return StepResult(state: .fail, message: "Could not disable global plugin \(safeId): \(error.localizedDescription)")
+        }
+    }
+
     /// Get gateway status
     func getGatewayStatus() -> (isRunning: Bool, message: String) {
         let (code, out) = shell("openclaw gateway status --no-color 2>&1 | head -5")

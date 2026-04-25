@@ -1905,9 +1905,20 @@ final class InstallerViewModel: ObservableObject {
             let engine = InstallerEngine()
             _ = engine.shell("openclaw gateway start >/dev/null 2>&1 || true")
             let command = "openclaw agent --session-id localclaw-ui-chat --message \(quote(text)) --json --timeout 180 2>&1"
-            let result = engine.shell(command)
+            var result = engine.shell(command)
+            var repairedPlugin = false
+            if result.0 != 0 && Self.isBrokenGlobalWhatsAppPluginError(result.1) {
+                let repair = engine.disableBrokenGlobalPlugin(id: "whatsapp")
+                repairedPlugin = repair.state == .ok
+                if repairedPlugin {
+                    result = engine.shell(command)
+                }
+            }
             let reply = Self.extractAgentReply(from: result.1)
             await MainActor.run {
+                if repairedPlugin && result.0 == 0 {
+                    self.chatMessages.append(ChatMessage(role: "assistant", text: "I found and disabled an outdated global WhatsApp plugin that was blocking OpenClaw, then retried automatically."))
+                }
                 self.chatMessages.append(ChatMessage(role: result.0 == 0 ? "assistant" : "error", text: reply))
                 self.chatStatus = result.0 == 0 ? "Ready" : "Error"
                 self.chatIsSending = false
@@ -1915,10 +1926,19 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    nonisolated private static func isBrokenGlobalWhatsAppPluginError(_ raw: String) -> Bool {
+        raw.contains("plugin load failed: whatsapp") && raw.contains(".openclaw/extensions/whatsapp")
+    }
+
+    nonisolated private static func stripANSI(_ raw: String) -> String {
+        raw.replacingOccurrences(of: "\u{001B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
+    }
+
     nonisolated private static func extractAgentReply(from raw: String) -> String {
-        guard let data = raw.data(using: .utf8),
+        let clean = stripANSI(raw)
+        guard let data = clean.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmed = clean.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? "No response from OpenClaw." : trimmed
         }
 
@@ -1934,7 +1954,7 @@ final class InstallerViewModel: ObservableObject {
                 }
             }
         }
-        return raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return clean.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     var openClawChatStatus: String {
