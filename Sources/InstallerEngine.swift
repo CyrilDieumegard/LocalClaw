@@ -828,7 +828,31 @@ final class InstallerEngine: @unchecked Sendable {
             }
         }
 
-        return StepResult(state: .fail, message: friendlyLMStudioLoadError(modelId: modelId, error: "Tried \(attempted.joined(separator: ", ")). Last error: \(lastError)"))
+        let combinedError = "Tried \(attempted.joined(separator: ", ")). Last error: \(lastError)"
+        if combinedError.lowercased().contains("invalid load message") || combinedError.lowercased().contains("runtimedeps") {
+            let rollback = rollbackLMStudioRuntime()
+            if rollback.state == .ok {
+                for candidate in candidates {
+                    for ctx in candidateContexts {
+                        let result = loadLMStudioModelViaAPI(modelId: candidate, contextLength: ctx)
+                        if result.state == .ok {
+                            let config = writeModelToConfig(modelIdentifier: "lmstudio/\(candidate)")
+                            if config.state == .fail { return config }
+                            _ = restartGateway()
+                            let fallbackNote = candidate == modelId ? "" : " (fallback from \(modelId))"
+                            return StepResult(state: .ok, message: "LM Studio ready with \(candidate), context \(ctx) after runtime rollback\(fallbackNote)")
+                        }
+                    }
+                }
+                lastError = "\(combinedError). Runtime rollback was applied but model loading still failed."
+            } else {
+                lastError = "\(combinedError). Runtime rollback failed: \(rollback.message)"
+            }
+        } else {
+            lastError = combinedError
+        }
+
+        return StepResult(state: .fail, message: friendlyLMStudioLoadError(modelId: modelId, error: lastError))
     }
 
     private func orderedLMStudioSetupCandidates(preferred: String, available: [String]) -> [String] {
@@ -907,6 +931,25 @@ final class InstallerEngine: @unchecked Sendable {
     }
 
 
+    func rollbackLMStudioRuntime() -> StepResult {
+        let lms = lmsCommandPath()
+        let (code, out) = shell("\(lms) runtime ls 2>&1")
+        guard code == 0 else { return StepResult(state: .fail, message: out) }
+        let runtimes = out.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.hasPrefix("llama.cpp") }
+            .compactMap { $0.components(separatedBy: .whitespaces).first }
+        let fallback = runtimes.first { !$0.contains("@2.10.1") }
+        guard let fallback else { return StepResult(state: .fail, message: "No older llama.cpp runtime installed") }
+        _ = shell("\(lms) server stop >/dev/null 2>&1 || true")
+        let (selectCode, selectOut) = shell("\(lms) runtime select '\(fallback)' 2>&1")
+        _ = shell("\(lms) server start >/dev/null 2>&1 || true")
+        if selectCode == 0 {
+            return StepResult(state: .ok, message: "Selected LM Studio runtime \(fallback)")
+        }
+        return StepResult(state: .fail, message: selectOut)
+    }
+
     func repairLMStudioRuntime() -> StepResult {
         let lms = lmsCommandPath()
         _ = shell("open -a 'LM Studio' >/dev/null 2>&1 || true")
@@ -914,6 +957,10 @@ final class InstallerEngine: @unchecked Sendable {
         let (updateCode, updateOut) = shell("\(lms) runtime update --all -y 2>&1")
         _ = shell("\(lms) server start >/dev/null 2>&1 || true")
         if updateCode == 0 {
+            let rollback = rollbackLMStudioRuntime()
+            if rollback.state == .ok {
+                return StepResult(state: .ok, message: "LM Studio runtime updated and selected stable fallback. Retry Auto Setup.")
+            }
             return StepResult(state: .ok, message: "LM Studio runtime updated. Retry Auto Setup.")
         }
         return StepResult(state: .fail, message: updateOut.isEmpty ? "LM Studio runtime update failed" : updateOut)
