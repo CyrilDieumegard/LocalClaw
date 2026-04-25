@@ -816,6 +816,7 @@ final class InstallerEngine: @unchecked Sendable {
 
         var lastError = "Unknown LM Studio load error"
         var attempted: [String] = []
+        var runtimeSchemaFailure = false
         for candidate in candidates {
             attempted.append(candidate)
             for ctx in candidateContexts {
@@ -833,12 +834,14 @@ final class InstallerEngine: @unchecked Sendable {
                 lastError = result.message
                 let lower = result.message.lowercased()
                 if lower.contains("invalid load message") || lower.contains("runtimedeps") {
+                    runtimeSchemaFailure = true
                     break
                 }
                 if !lower.contains("insufficient system resources") && !lower.contains("overload") {
                     break
                 }
             }
+            if runtimeSchemaFailure { break }
         }
 
         let combinedError = "Tried \(attempted.joined(separator: ", ")). Last error: \(lastError)"
@@ -867,23 +870,20 @@ final class InstallerEngine: @unchecked Sendable {
                 let hardReset = hardResetLMStudioWorkers()
                 onProgress?(hardReset.message)
                 if hardReset.state == .ok {
-                    for candidate in candidates {
-                        for ctx in candidateContexts {
-                            onProgress?("Retrying \(candidate) with \(ctx) context after worker reset")
-                            unloadAllLMStudioModels()
-                            let result = loadLMStudioModel(modelId: candidate, contextLength: ctx)
-                            if result.state == .ok {
-                                onProgress?("Loaded \(candidate) after worker reset. Writing OpenClaw config and restarting gateway")
-                                let config = writeModelToConfig(modelIdentifier: "lmstudio/\(candidate)")
-                                if config.state == .fail { return config }
-                                _ = restartGateway()
-                                let fallbackNote = candidate == modelId ? "" : " (fallback from \(modelId))"
-                                return StepResult(state: .ok, message: "LM Studio ready with \(candidate), context \(ctx) after worker reset\(fallbackNote)")
-                            }
-                            lastError = result.message
-                        }
+                    let retryCandidate = candidates.first ?? modelId
+                    let retryContext = candidateContexts.last ?? 16384
+                    onProgress?("Retrying \(retryCandidate) with \(retryContext) context after worker reset")
+                    unloadAllLMStudioModels()
+                    let result = loadLMStudioModel(modelId: retryCandidate, contextLength: retryContext)
+                    if result.state == .ok {
+                        onProgress?("Loaded \(retryCandidate) after worker reset. Writing OpenClaw config and restarting gateway")
+                        let config = writeModelToConfig(modelIdentifier: "lmstudio/\(retryCandidate)")
+                        if config.state == .fail { return config }
+                        _ = restartGateway()
+                        let fallbackNote = retryCandidate == modelId ? "" : " (fallback from \(modelId))"
+                        return StepResult(state: .ok, message: "LM Studio ready with \(retryCandidate), context \(retryContext) after worker reset\(fallbackNote)")
                     }
-                    lastError = "\(combinedError). Runtime rollback and worker reset were applied but model loading still failed. Last error: \(lastError)"
+                    lastError = "\(combinedError). Runtime rollback and worker reset were applied but LM Studio still rejected model loading. Last error: \(result.message)"
                 } else {
                     lastError = "\(combinedError). Runtime rollback was applied but model loading still failed. Worker reset failed: \(hardReset.message)"
                 }
