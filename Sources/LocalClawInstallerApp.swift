@@ -4,7 +4,7 @@ import AppKit
 
 @MainActor
 final class InstallerViewModel: ObservableObject {
-    enum Screen { case license, onboarding, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, templates, healthCenter, usageCenter, chat }
+    enum Screen { case license, onboarding, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, templates, healthCenter, usageCenter, chat, models }
     enum InstallMode: String {
         case llmOnly = "Install Local LLM only"
         case openClawOnly = "Install OpenClaw only"
@@ -3122,6 +3122,7 @@ struct ProgressSteps: View {
         case .healthCenter: return 0
         case .usageCenter: return 0
         case .chat: return 0
+        case .models: return 0
         }
     }
 
@@ -3231,6 +3232,7 @@ struct ContentView: View {
                             case .healthCenter: healthCenter
                             case .usageCenter: usageCenter
                             case .chat: openClawChat
+                            case .models: modelsCenter
                             }
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -3316,6 +3318,7 @@ struct ContentView: View {
             sidebarButton("Updates", icon: "arrow.clockwise", isActive: vm.screen == .updates) { vm.screen = .updates }
             sidebarButton("Control Center", icon: "slider.horizontal.3", isActive: vm.screen == .commandCenter) { vm.screen = .commandCenter }
             sidebarButton("OpenClaw Chat", icon: "message.badge.waveform", isActive: vm.screen == .chat) { vm.screen = .chat }
+            sidebarButton("Models", icon: "cpu", isActive: vm.screen == .models) { vm.screen = .models }
             sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup) { vm.screen = .channelSetup }
             sidebarButton("Templates", icon: "square.grid.2x2", isActive: vm.screen == .templates) { vm.screen = .templates }
             sidebarButton("Help", icon: "cross.case", isActive: vm.screen == .healthCenter) { vm.screen = .healthCenter }
@@ -4657,6 +4660,135 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
         .onAppear { vm.refreshUsageCostEstimate() }
+    }
+
+    var modelsCenter: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            modelsHeader
+            modelsSummaryRow
+            modelsConfigAndEstimator
+            modelsRecentUsage
+            Spacer()
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
+        .onAppear {
+            vm.refreshOpenRouterModels()
+            vm.refreshLocalLMStudioModels()
+            vm.refreshUsageCostEstimate()
+        }
+    }
+
+    var modelsHeader: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("MODELS").font(AppFont.heading(28)).foregroundStyle(UI.text)
+                Text("Manage local/cloud models and estimate token usage.").font(AppFont.body(13)).foregroundStyle(UI.muted)
+            }
+            Spacer()
+            Button("Refresh") {
+                vm.refreshOpenRouterModels(); vm.refreshLocalLMStudioModels(); vm.refreshUsageCostEstimate()
+            }
+            .buttonStyle(CTAButton(primary: true))
+        }
+    }
+
+    var modelsSummaryRow: some View {
+        HStack(spacing: 12) {
+            modelSummaryCard("Active model", value: vm.openClawChatModelLabel, icon: "cpu")
+            modelSummaryCard("Mode", value: vm.openClawChatModeLabel, icon: vm.inferenceMode == .local ? "desktopcomputer" : "cloud.fill")
+            modelSummaryCard("Budget estimate", value: String(format: "$%.2f/mo", vm.estimatedMonthlyCostUSD), icon: "chart.bar.xaxis")
+        }
+    }
+
+    var modelsConfigAndEstimator: some View {
+        HStack(alignment: .top, spacing: 12) {
+            configuredModelsCard
+            tokenEstimatorCard
+        }
+    }
+
+    var configuredModelsCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Configured models").font(AppFont.bodySemi(14)).foregroundStyle(UI.text)
+            modelConfigRow(title: "Cloud", subtitle: vm.selectedOpenRouterModel.isEmpty ? "No cloud model selected" : vm.selectedOpenRouterModel, icon: "cloud.fill", status: vm.openRouterApiKey.isEmpty ? "API key missing" : "Configured")
+            modelConfigRow(title: "Local", subtitle: vm.selectedLocalLMStudioModel.isEmpty ? "No LM Studio model selected" : vm.selectedLocalLMStudioModel, icon: "desktopcomputer", status: vm.localLMStudioModels.isEmpty ? "Scan needed" : "Available")
+            if !vm.openRouterModelsLive.isEmpty {
+                Text("OpenRouter catalog: \(vm.openRouterModelsLive.count) models").font(AppFont.body(11)).foregroundStyle(UI.muted)
+            }
+        }
+        .padding(12).frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.08), lineWidth: 1))
+    }
+
+    var tokenEstimatorCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Token usage estimator").font(AppFont.bodySemi(14)).foregroundStyle(UI.text)
+            Text("Estimated monthly tokens: \(String(format: "%.1f", vm.estimatedMonthlyTokensM))M").font(AppFont.bodySemi(12)).foregroundStyle(UI.text)
+            Slider(value: $vm.estimatedMonthlyTokensM, in: 0.1...50, step: 0.1)
+            Text(vm.costAdvice.isEmpty ? "Move the slider to estimate cloud spend." : vm.costAdvice).font(AppFont.body(11)).foregroundStyle(UI.muted)
+            Text(vm.usageLogs.isEmpty ? "No estimate yet." : vm.usageLogs).font(.system(size: 11, design: .monospaced)).foregroundStyle(UI.muted).lineLimit(3)
+        }
+        .padding(12).frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.08), lineWidth: 1))
+    }
+
+    var modelsRecentUsage: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Recent token usage").font(AppFont.bodySemi(14)).foregroundStyle(UI.text)
+            Text("Live OpenClaw usage history will go here next. For now this gives the user the model/cost picture without opening ClawX.").font(AppFont.body(12)).foregroundStyle(UI.muted)
+            HStack(spacing: 8) {
+                usageLegend("Input", color: Color.blue); usageLegend("Output", color: Color.purple); usageLegend("Cache", color: Color.orange)
+            }
+            RoundedRectangle(cornerRadius: 999)
+                .fill(LinearGradient(colors: [Color.blue, Color.blue, Color.orange], startPoint: .leading, endPoint: .trailing))
+                .frame(height: 14).opacity(0.85)
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.08), lineWidth: 1))
+    }
+
+    func modelSummaryCard(_ title: String, value: String, icon: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .foregroundStyle(UI.accent)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(AppFont.body(11)).foregroundStyle(UI.muted)
+                Text(value).font(AppFont.bodySemi(12)).foregroundStyle(UI.text).lineLimit(1).truncationMode(.middle)
+            }
+            Spacer()
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity)
+        .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.08), lineWidth: 1))
+    }
+
+    func modelConfigRow(title: String, subtitle: String, icon: String, status: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon).foregroundStyle(UI.accent).frame(width: 22)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(AppFont.bodySemi(13)).foregroundStyle(UI.text)
+                Text(subtitle).font(AppFont.body(11)).foregroundStyle(UI.muted).lineLimit(1).truncationMode(.middle)
+            }
+            Spacer()
+            Text(status).font(AppFont.bodySemi(10)).foregroundStyle(UI.muted)
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
+    }
+
+    func usageLegend(_ text: String, color: Color) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 8, height: 8)
+            Text(text).font(AppFont.body(11)).foregroundStyle(UI.muted)
+        }
     }
 
     var channelSetup: some View {
