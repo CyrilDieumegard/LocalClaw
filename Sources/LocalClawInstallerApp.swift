@@ -338,6 +338,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var estimatedMonthlyTokensM: Double = 2.0
     @Published var estimatedMonthlyCostUSD: Double = 0
     @Published var costAdvice: String = ""
+    @Published var tokenMonitoringEnabled: Bool = false
     @Published var modeSwitchInProgress: Bool = false
     @Published var modeSwitchStatus: String = ""
 
@@ -4746,14 +4747,31 @@ struct ContentView: View {
 
     var modelsRecentUsage: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Recent token usage").font(AppFont.bodySemi(14)).foregroundStyle(UI.text)
-            Text("Live OpenClaw usage history will go here next. For now this gives the user the model/cost picture without opening ClawX.").font(AppFont.body(12)).foregroundStyle(UI.muted)
-            HStack(spacing: 8) {
-                usageLegend("Input", color: Color.blue); usageLegend("Output", color: Color.purple); usageLegend("Cache", color: Color.orange)
+            HStack {
+                Text("Usage monitoring").font(AppFont.bodySemi(14)).foregroundStyle(UI.text)
+                Spacer()
+                Toggle("Enable", isOn: $vm.tokenMonitoringEnabled)
+                    .toggleStyle(.switch)
+                    .font(AppFont.body(11))
             }
-            RoundedRectangle(cornerRadius: 999)
-                .fill(LinearGradient(colors: [Color.blue, Color.blue, Color.orange], startPoint: .leading, endPoint: .trailing))
-                .frame(height: 14).opacity(0.85)
+            Text("Off by default to keep LocalClaw light. Enable only if you explicitly want token monitoring.")
+                .font(AppFont.body(12))
+                .foregroundStyle(UI.muted)
+            if vm.tokenMonitoringEnabled {
+                HStack(spacing: 8) {
+                    usageLegend("Input", color: Color.blue); usageLegend("Output", color: Color.purple); usageLegend("Cache", color: Color.orange)
+                }
+                RoundedRectangle(cornerRadius: 999)
+                    .fill(LinearGradient(colors: [Color.blue, Color.blue, Color.orange], startPoint: .leading, endPoint: .trailing))
+                    .frame(height: 14).opacity(0.85)
+                Text("Monitoring UI is enabled. Live history collection will be added as an explicit opt-in action.")
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+            } else {
+                Text("No background polling running.")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(UI.muted)
+            }
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
