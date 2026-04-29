@@ -305,6 +305,7 @@ final class InstallerViewModel: ObservableObject {
     }
     @Published var chatIsSending = false
     @Published var chatStatus = "Ready"
+    private var chatGatewayPrepared = false
     @Published var localLMStudioModels: [String] = []
     @Published var selectedLocalLMStudioModel: String = ""
     @Published var localLMStudioSetupStatus = ""
@@ -2017,13 +2018,17 @@ final class InstallerViewModel: ObservableObject {
         chatIsSending = true
         chatStatus = "Thinking..."
         let sessionID = activeChatSessionID
+        let shouldPrepareGateway = !chatGatewayPrepared
+        chatGatewayPrepared = true
 
         Task.detached {
             let quote: (String) -> String = { value in
                 "'" + value.replacingOccurrences(of: "'", with: "'\''") + "'"
             }
             let engine = InstallerEngine()
-            _ = engine.shell("openclaw gateway start >/dev/null 2>&1 || true")
+            if shouldPrepareGateway {
+                _ = engine.shell("openclaw gateway status >/dev/null 2>&1 || openclaw gateway start >/dev/null 2>&1 || true")
+            }
 
             let tempMessagePath = NSTemporaryDirectory() + "localclaw-chat-message-\(UUID().uuidString).txt"
             do {
@@ -2234,9 +2239,28 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func refreshOpenClawChatInfo() {
-        refreshVersions()
-        currentModel = engine.getCurrentModel()
-        refreshLocalLMStudioModels()
+        chatStatus = "Checking setup..."
+        Task.detached {
+            let engine = InstallerEngine()
+            let model = engine.getCurrentModel()
+            let models = engine.listLMStudioLLMModelIds()
+            let loaded = engine.loadedLMStudioModelInfo()?.model
+            await MainActor.run {
+                self.currentModel = model
+                self.localLMStudioModels = models
+                if self.selectedLocalLMStudioModel.isEmpty {
+                    if let loaded, models.contains(loaded) {
+                        self.selectedLocalLMStudioModel = loaded
+                    } else if model.hasPrefix("lmstudio/") {
+                        let configured = String(model.dropFirst("lmstudio/".count))
+                        if models.contains(configured) { self.selectedLocalLMStudioModel = configured }
+                    } else if let first = models.first {
+                        self.selectedLocalLMStudioModel = first
+                    }
+                }
+                self.chatStatus = "Ready"
+            }
+        }
     }
 
     func refreshLocalLMStudioModels() {
