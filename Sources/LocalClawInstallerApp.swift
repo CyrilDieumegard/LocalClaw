@@ -19,17 +19,37 @@ final class InstallerViewModel: ObservableObject {
         var id: String { rawValue }
     }
 
-    struct ChatMessage: Identifiable {
-        let id = UUID()
+    struct ChatMessage: Identifiable, Codable {
+        let id: UUID
         let role: String
         let text: String
         let metadata: String?
-        let createdAt = Date()
+        let createdAt: Date
 
-        init(role: String, text: String, metadata: String? = nil) {
+        init(id: UUID = UUID(), role: String, text: String, metadata: String? = nil, createdAt: Date = Date()) {
+            self.id = id
             self.role = role
             self.text = text
             self.metadata = metadata
+            self.createdAt = createdAt
+        }
+    }
+
+    struct ChatSession: Identifiable, Codable {
+        let id: String
+        var title: String
+        var subtitle: String
+        var messages: [ChatMessage]
+        var updatedAt: Date
+
+        static func fresh(title: String = "New discussion") -> ChatSession {
+            ChatSession(
+                id: "localclaw-ui-chat-\(UUID().uuidString)",
+                title: title,
+                subtitle: "OpenClaw assistant",
+                messages: [ChatMessage(role: "assistant", text: "Hi, I’m OpenClaw inside LocalClaw. Ask me anything about your setup.")],
+                updatedAt: Date()
+            )
         }
     }
 
@@ -264,9 +284,25 @@ final class InstallerViewModel: ObservableObject {
     @Published var isRunning = false
 
     @Published var chatInput = ""
-    @Published var chatMessages: [ChatMessage] = [
-        ChatMessage(role: "assistant", text: "Hi, I’m OpenClaw inside LocalClaw. Ask me anything about your setup.")
-    ]
+    @Published var chatSessions: [ChatSession] = [ChatSession.fresh(title: "Main setup")] {
+        didSet { persistChatSessions() }
+    }
+    @Published var selectedChatSessionID: String = "" {
+        didSet { UserDefaults.standard.set(selectedChatSessionID, forKey: Self.selectedChatSessionDefaultsKey) }
+    }
+    var chatMessages: [ChatMessage] {
+        get { selectedChatSession?.messages ?? [] }
+        set { updateSelectedChatSession { $0.messages = newValue } }
+    }
+    var selectedChatSession: ChatSession? {
+        chatSessions.first { $0.id == activeChatSessionID }
+    }
+    var activeChatSessionID: String {
+        if !selectedChatSessionID.isEmpty, chatSessions.contains(where: { $0.id == selectedChatSessionID }) {
+            return selectedChatSessionID
+        }
+        return chatSessions.first?.id ?? "localclaw-ui-chat"
+    }
     @Published var chatIsSending = false
     @Published var chatStatus = "Ready"
     @Published var localLMStudioModels: [String] = []
@@ -302,6 +338,13 @@ final class InstallerViewModel: ObservableObject {
     @Published var costAdvice: String = ""
     @Published var modeSwitchInProgress: Bool = false
     @Published var modeSwitchStatus: String = ""
+
+    private static let chatSessionsDefaultsKey = "localclaw.chat.sessions.v1"
+    private static let selectedChatSessionDefaultsKey = "localclaw.chat.selectedSession.v1"
+
+    init() {
+        restoreChatSessions()
+    }
 
     // Installation status tracking (using existing status variables)
     var statusNodeJS: String {
@@ -1900,7 +1943,68 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func openOpenClawChat() {
+        if selectedChatSessionID.isEmpty, let first = chatSessions.first?.id {
+            selectedChatSessionID = first
+        }
         screen = .chat
+    }
+
+    func restoreChatSessions() {
+        if let data = UserDefaults.standard.data(forKey: Self.chatSessionsDefaultsKey),
+           let decoded = try? JSONDecoder().decode([ChatSession].self, from: data),
+           !decoded.isEmpty {
+            chatSessions = decoded.sorted { $0.updatedAt > $1.updatedAt }
+        }
+        let savedID = UserDefaults.standard.string(forKey: Self.selectedChatSessionDefaultsKey) ?? ""
+        selectedChatSessionID = chatSessions.contains(where: { $0.id == savedID }) ? savedID : (chatSessions.first?.id ?? "")
+    }
+
+    func persistChatSessions() {
+        guard let data = try? JSONEncoder().encode(chatSessions) else { return }
+        UserDefaults.standard.set(data, forKey: Self.chatSessionsDefaultsKey)
+    }
+
+    func updateSelectedChatSession(_ mutate: (inout ChatSession) -> Void) {
+        let id = activeChatSessionID
+        guard let index = chatSessions.firstIndex(where: { $0.id == id }) else { return }
+        mutate(&chatSessions[index])
+        chatSessions[index].updatedAt = Date()
+    }
+
+    func newChatSession() {
+        var session = ChatSession.fresh()
+        session.title = "Discussion \(chatSessions.count + 1)"
+        chatSessions.insert(session, at: 0)
+        selectedChatSessionID = session.id
+        chatInput = ""
+        chatStatus = "Ready"
+    }
+
+    func selectChatSession(_ session: ChatSession) {
+        selectedChatSessionID = session.id
+        chatInput = ""
+        chatStatus = "Ready"
+    }
+
+    func deleteSelectedChatSession() {
+        let id = activeChatSessionID
+        guard chatSessions.count > 1 else {
+            chatSessions = [ChatSession.fresh(title: "Main setup")]
+            selectedChatSessionID = chatSessions[0].id
+            return
+        }
+        chatSessions.removeAll { $0.id == id }
+        selectedChatSessionID = chatSessions.first?.id ?? ""
+    }
+
+    func renameSelectedChatSession(from firstUserMessage: String) {
+        updateSelectedChatSession { session in
+            if session.title.hasPrefix("Discussion") || session.title == "New discussion" || session.title == "Main setup" {
+                let compact = firstUserMessage.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                session.title = String(compact.prefix(34)) + (compact.count > 34 ? "…" : "")
+                session.subtitle = openClawChatModeLabel
+            }
+        }
     }
 
     func sendChatMessage() {
@@ -1909,8 +2013,10 @@ final class InstallerViewModel: ObservableObject {
 
         chatInput = ""
         chatMessages.append(ChatMessage(role: "user", text: text))
+        renameSelectedChatSession(from: text)
         chatIsSending = true
         chatStatus = "Thinking..."
+        let sessionID = activeChatSessionID
 
         Task.detached {
             let quote: (String) -> String = { value in
@@ -1932,7 +2038,7 @@ final class InstallerViewModel: ObservableObject {
             }
             defer { try? FileManager.default.removeItem(atPath: tempMessagePath) }
 
-            let command = "MESSAGE_FILE=\(quote(tempMessagePath)); openclaw agent --session-id localclaw-ui-chat --message \"$(cat \"$MESSAGE_FILE\")\" --json --timeout 180 2>&1"
+            let command = "MESSAGE_FILE=\(quote(tempMessagePath)); openclaw agent --session-id \(quote(sessionID)) --message \"$(cat \"$MESSAGE_FILE\")\" --json --timeout 180 2>&1"
             let startedAt = Date()
             var result = engine.shell(command)
             var repairedPlugin = false
@@ -2037,9 +2143,13 @@ final class InstallerViewModel: ObservableObject {
     nonisolated private static func extractAgentMetrics(from raw: String, elapsedSeconds: TimeInterval) -> String {
         let clean = stripANSI(raw)
         var parts = [String(format: "%.1fs", elapsedSeconds)]
-        guard let data = clean.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return parts.joined(separator: " • ")
+
+        func regexNumber(_ pattern: String) -> Int? {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+            let range = NSRange(clean.startIndex..<clean.endIndex, in: clean)
+            guard let match = regex.firstMatch(in: clean, options: [], range: range), match.numberOfRanges > 1,
+                  let valueRange = Range(match.range(at: 1), in: clean) else { return nil }
+            return Int(clean[valueRange].replacingOccurrences(of: "_", with: ""))
         }
 
         func findNumber(_ object: Any, keys: Set<String>) -> Int? {
@@ -2062,9 +2172,17 @@ final class InstallerViewModel: ObservableObject {
             return nil
         }
 
-        let input = findNumber(json, keys: ["inputtokens", "input_tokens", "prompttokens", "prompt_tokens"])
-        let output = findNumber(json, keys: ["outputtokens", "output_tokens", "completiontokens", "completion_tokens"])
-        let total = findNumber(json, keys: ["totaltokens", "total_tokens"])
+        var json: [String: Any]? = nil
+        if let data = clean.data(using: .utf8) {
+            json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        }
+
+        let input = json.flatMap { findNumber($0, keys: ["inputtokens", "input_tokens", "prompttokens", "prompt_tokens"]) }
+            ?? regexNumber(#"(?:prompt|input|text)\s*(?:tokens)?\s*[=:]\s*([0-9_]+)"#)
+        let output = json.flatMap { findNumber($0, keys: ["outputtokens", "output_tokens", "completiontokens", "completion_tokens"]) }
+            ?? regexNumber(#"(?:completion|output|predicted)\s*(?:tokens)?\s*[=:]\s*([0-9_]+)"#)
+        let total = json.flatMap { findNumber($0, keys: ["totaltokens", "total_tokens"])}
+            ?? regexNumber(#"(?:total|tokens)\s*(?:tokens)?\s*[=:]\s*([0-9_]+)"#)
 
         if let input { parts.append("in \(input)t") }
         if let output { parts.append("out \(output)t") }
@@ -3475,31 +3593,63 @@ struct ContentView: View {
                     .foregroundStyle(vm.chatStatus == "Ready" ? Color(NSColor.systemGreen) : UI.accent)
             }
 
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
-                        ForEach(vm.chatMessages) { message in
-                            chatBubble(message)
-                                .id(message.id)
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("Discussions")
+                            .font(AppFont.bodySemi(12))
+                            .foregroundStyle(UI.text)
+                        Spacer()
+                        Button(action: { vm.newChatSession() }) {
+                            Image(systemName: "plus")
                         }
-                        if vm.chatIsSending {
-                            HStack(spacing: 8) {
-                                ProgressView()
-                                    .scaleEffect(0.7)
-                                Text("OpenClaw is thinking...")
-                                    .font(AppFont.body(12))
-                                    .foregroundStyle(UI.muted)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(UI.accent)
+                        .help("New discussion")
+                    }
+                    ScrollView {
+                        VStack(spacing: 8) {
+                            ForEach(vm.chatSessions) { session in
+                                chatSessionRow(session)
                             }
-                            .padding(.horizontal, 10)
                         }
                     }
-                    .padding(14)
+                    .scrollIndicators(.hidden)
+                    Button("DELETE CURRENT") { vm.deleteSelectedChatSession() }
+                        .buttonStyle(CTAButton(primary: false))
+                        .disabled(vm.chatIsSending)
                 }
+                .padding(12)
+                .frame(width: 210)
                 .background(RoundedRectangle(cornerRadius: 16).fill(UI.cardSoft))
                 .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.black.opacity(0.07), lineWidth: 1))
-                .onChange(of: vm.chatMessages.count) { _ in
-                    if let last = vm.chatMessages.last?.id {
-                        withAnimation { proxy.scrollTo(last, anchor: .bottom) }
+
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(vm.chatMessages) { message in
+                                chatBubble(message)
+                                    .id(message.id)
+                            }
+                            if vm.chatIsSending {
+                                HStack(spacing: 8) {
+                                    ProgressView()
+                                        .scaleEffect(0.7)
+                                    Text("OpenClaw is thinking...")
+                                        .font(AppFont.body(12))
+                                        .foregroundStyle(UI.muted)
+                                }
+                                .padding(.horizontal, 10)
+                            }
+                        }
+                        .padding(14)
+                    }
+                    .background(RoundedRectangle(cornerRadius: 16).fill(UI.cardSoft))
+                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.black.opacity(0.07), lineWidth: 1))
+                    .onChange(of: vm.chatMessages.count) { _ in
+                        if let last = vm.chatMessages.last?.id {
+                            withAnimation { proxy.scrollTo(last, anchor: .bottom) }
+                        }
                     }
                 }
             }
@@ -3520,6 +3670,28 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
         .shadow(color: Color.black.opacity(0.06), radius: 6, x: 0, y: 2)
         .onAppear { vm.refreshOpenClawChatInfo() }
+    }
+
+    func chatSessionRow(_ session: InstallerViewModel.ChatSession) -> some View {
+        let isActive = session.id == vm.activeChatSessionID
+        return Button(action: { vm.selectChatSession(session) }) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(session.title)
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(isActive ? Color.white : UI.text)
+                    .lineLimit(1)
+                Text("\(session.messages.count) messages • \(session.subtitle)")
+                    .font(AppFont.body(10))
+                    .foregroundStyle(isActive ? Color.white.opacity(0.75) : UI.muted)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 12).fill(isActive ? UI.accent : UI.card))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(isActive ? 0 : 0.06), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
     }
 
     func chatInfoPill(_ text: String, icon: String) -> some View {
