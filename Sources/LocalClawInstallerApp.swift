@@ -53,6 +53,26 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    struct ModelUsageRecord: Identifiable, Codable {
+        let id: UUID
+        let createdAt: Date
+        let model: String
+        let inputTokens: Int
+        let outputTokens: Int
+        let totalTokens: Int
+        let estimatedCostUSD: Double
+
+        init(id: UUID = UUID(), createdAt: Date = Date(), model: String, inputTokens: Int, outputTokens: Int, totalTokens: Int, estimatedCostUSD: Double) {
+            self.id = id
+            self.createdAt = createdAt
+            self.model = model
+            self.inputTokens = inputTokens
+            self.outputTokens = outputTokens
+            self.totalTokens = totalTokens
+            self.estimatedCostUSD = estimatedCostUSD
+        }
+    }
+
     enum CloudAuthMode: String, CaseIterable, Identifiable {
         case api = "API"
         case oauth = "OAuth"
@@ -339,14 +359,19 @@ final class InstallerViewModel: ObservableObject {
     @Published var estimatedMonthlyCostUSD: Double = 0
     @Published var costAdvice: String = ""
     @Published var tokenMonitoringEnabled: Bool = false
+    @Published var modelUsageRecords: [ModelUsageRecord] = [] {
+        didSet { persistModelUsageRecords() }
+    }
     @Published var modeSwitchInProgress: Bool = false
     @Published var modeSwitchStatus: String = ""
 
     private static let chatSessionsDefaultsKey = "localclaw.chat.sessions.v1"
     private static let selectedChatSessionDefaultsKey = "localclaw.chat.selectedSession.v1"
+    private static let modelUsageDefaultsKey = "localclaw.modelUsage.records.v1"
 
     init() {
         restoreChatSessions()
+        restoreModelUsageRecords()
     }
 
     // Installation status tracking (using existing status variables)
@@ -1968,6 +1993,38 @@ final class InstallerViewModel: ObservableObject {
         UserDefaults.standard.set(data, forKey: Self.chatSessionsDefaultsKey)
     }
 
+    func restoreModelUsageRecords() {
+        guard let data = UserDefaults.standard.data(forKey: Self.modelUsageDefaultsKey),
+              let decoded = try? JSONDecoder().decode([ModelUsageRecord].self, from: data) else { return }
+        modelUsageRecords = decoded.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    func persistModelUsageRecords() {
+        guard let data = try? JSONEncoder().encode(modelUsageRecords) else { return }
+        UserDefaults.standard.set(data, forKey: Self.modelUsageDefaultsKey)
+    }
+
+    func recordModelUsage(model: String, input: Int?, output: Int?, total: Int?) {
+        guard tokenMonitoringEnabled else { return }
+        let inputTokens = input ?? 0
+        let outputTokens = output ?? 0
+        let totalTokens = total ?? inputTokens + outputTokens
+        guard totalTokens > 0 else { return }
+        let cost = Self.estimateUsageCostUSD(model: model, totalTokens: totalTokens)
+        modelUsageRecords.insert(ModelUsageRecord(model: model, inputTokens: inputTokens, outputTokens: outputTokens, totalTokens: totalTokens, estimatedCostUSD: cost), at: 0)
+        modelUsageRecords = Array(modelUsageRecords.prefix(200))
+    }
+
+    nonisolated private static func estimateUsageCostUSD(model: String, totalTokens: Int) -> Double {
+        let lower = model.lowercased()
+        let ratePerMillion: Double
+        if lower.contains("lmstudio") || lower.contains("local") { ratePerMillion = 0 }
+        else if lower.contains("kimi") || lower.contains("haiku") || lower.contains("mini") { ratePerMillion = 2.5 }
+        else if lower.contains("opus") || lower.contains("gpt-4") { ratePerMillion = 15 }
+        else { ratePerMillion = 5 }
+        return Double(totalTokens) / 1_000_000 * ratePerMillion
+    }
+
     func updateSelectedChatSession(_ mutate: (inout ChatSession) -> Void) {
         let id = activeChatSessionID
         guard let index = chatSessions.firstIndex(where: { $0.id == id }) else { return }
@@ -2061,6 +2118,7 @@ final class InstallerViewModel: ObservableObject {
             let knownDiagnostic = Self.friendlyChatDiagnostic(from: result.1)
             let reply = knownDiagnostic ?? Self.extractAgentReply(from: result.1)
             let runtimeModel = Self.extractAgentRuntimeModel(from: result.1)
+            let usage = Self.extractAgentUsage(from: result.1)
             let metrics = Self.extractAgentMetrics(from: result.1, elapsedSeconds: elapsed)
             await MainActor.run {
                 if let runtimeModel, !runtimeModel.isEmpty {
@@ -2071,6 +2129,9 @@ final class InstallerViewModel: ObservableObject {
                 }
                 let role = (result.0 == 0 || knownDiagnostic != nil) ? "assistant" : "error"
                 self.chatMessages.append(ChatMessage(role: role, text: reply, metadata: metrics))
+                if result.0 == 0 {
+                    self.recordModelUsage(model: runtimeModel ?? self.currentModel, input: usage.input, output: usage.output, total: usage.total)
+                }
                 self.chatStatus = result.0 == 0 ? "Ready" : (knownDiagnostic == nil ? "Error" : "Needs setup")
                 self.chatIsSending = false
             }
@@ -2149,8 +2210,22 @@ final class InstallerViewModel: ObservableObject {
 
 
     nonisolated private static func extractAgentMetrics(from raw: String, elapsedSeconds: TimeInterval) -> String {
-        let clean = stripANSI(raw)
         var parts = [String(format: "%.1fs", elapsedSeconds)]
+
+        let usage = extractAgentUsage(from: raw)
+
+        if let input = usage.input { parts.append("in \(input)t") }
+        if let output = usage.output { parts.append("out \(output)t") }
+        if usage.total == nil, usage.input == nil, usage.output == nil {
+            parts.append("tokens n/a")
+        } else if let total = usage.total {
+            parts.append("total \(total)t")
+        }
+        return parts.joined(separator: " • ")
+    }
+
+    nonisolated private static func extractAgentUsage(from raw: String) -> (input: Int?, output: Int?, total: Int?) {
+        let clean = stripANSI(raw)
 
         func regexNumber(_ pattern: String) -> Int? {
             guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
@@ -2192,14 +2267,7 @@ final class InstallerViewModel: ObservableObject {
         let total = json.flatMap { findNumber($0, keys: ["totaltokens", "total_tokens"])}
             ?? regexNumber(#"(?:total|tokens)\s*(?:tokens)?\s*[=:]\s*([0-9_]+)"#)
 
-        if let input { parts.append("in \(input)t") }
-        if let output { parts.append("out \(output)t") }
-        if total == nil, input == nil, output == nil {
-            parts.append("tokens n/a")
-        } else if let total {
-            parts.append("total \(total)t")
-        }
-        return parts.joined(separator: " • ")
+        return (input, output, total)
     }
 
     nonisolated private static func extractAgentRuntimeModel(from raw: String) -> String? {
@@ -4759,16 +4827,27 @@ struct ContentView: View {
                 .foregroundStyle(UI.muted)
             if vm.tokenMonitoringEnabled {
                 HStack(spacing: 8) {
-                    usageLegend("Input", color: Color.blue); usageLegend("Output", color: Color.purple); usageLegend("Cache", color: Color.orange)
+                    usageLegend("Input", color: Color.blue); usageLegend("Output", color: Color.purple); usageLegend("Cost", color: Color.orange)
                 }
-                RoundedRectangle(cornerRadius: 999)
-                    .fill(LinearGradient(colors: [Color.blue, Color.blue, Color.orange], startPoint: .leading, endPoint: .trailing))
-                    .frame(height: 14).opacity(0.85)
-                Text("Monitoring UI is enabled. Live history collection will be added as an explicit opt-in action.")
-                    .font(AppFont.body(11))
-                    .foregroundStyle(UI.muted)
+                if vm.modelUsageRecords.isEmpty {
+                    Text("No tracked model calls yet. Send a chat message while monitoring is enabled.")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(UI.muted)
+                } else {
+                    ForEach(vm.modelUsageRecords.prefix(8)) { record in
+                        HStack(spacing: 8) {
+                            Text(record.model).font(AppFont.bodySemi(11)).foregroundStyle(UI.text).lineLimit(1).truncationMode(.middle)
+                            Spacer()
+                            Text("in \(record.inputTokens)t").font(.system(size: 10, design: .monospaced)).foregroundStyle(UI.muted)
+                            Text("out \(record.outputTokens)t").font(.system(size: 10, design: .monospaced)).foregroundStyle(UI.muted)
+                            Text(String(format: "$%.4f", record.estimatedCostUSD)).font(.system(size: 10, design: .monospaced)).foregroundStyle(UI.muted)
+                        }
+                        .padding(8)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+                    }
+                }
             } else {
-                Text("No background polling running.")
+                Text("No usage tracking running. Enable this to record model calls from LocalClaw Chat.")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(UI.muted)
             }
