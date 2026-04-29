@@ -163,6 +163,7 @@ final class CommandCenterViewModel: ObservableObject {
     }
 
     func startMonitoring() {
+        guard !isMonitoring else { return }
         isMonitoring = true
         addLog(.info, "Monitoring started")
 
@@ -829,7 +830,7 @@ struct AdvancedCommandCenterView: View {
             }
         }
         .onAppear {
-            viewModel.startMonitoring()
+            viewModel.addLog(.info, "Monitoring is off by default. Click Start Monitoring when you want live resource checks.")
         }
         .onDisappear {
             viewModel.stopMonitoring()
@@ -1186,7 +1187,7 @@ struct AdvancedCommandCenterView: View {
                             viewModel.startMonitoring()
                         }
                     }
-                    .buttonStyle(CTAButton(primary: false))
+                    .buttonStyle(CTAButton(primary: viewModel.isMonitoring))
                 }
             }
             .padding(.horizontal, 12)
@@ -1215,7 +1216,11 @@ struct AdvancedCommandCenterView: View {
                     }
                 }
             } else {
-                resourcesPanel
+                if viewModel.isMonitoring {
+                    resourcesPanel
+                } else {
+                    monitoringOptInPanel
+                }
             }
         }
     }
@@ -1308,6 +1313,34 @@ struct AdvancedCommandCenterView: View {
             }
             .padding(12)
         }
+        .background(UI.card)
+    }
+
+    private var monitoringOptInPanel: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Spacer()
+            VStack(alignment: .leading, spacing: 12) {
+                Image(systemName: "speedometer")
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(UI.accent)
+                Text("Resource monitoring is off")
+                    .font(AppFont.heading(26))
+                    .foregroundStyle(UI.text)
+                Text("LocalClaw stays lightweight by default. Start monitoring only when you want live CPU, memory, swap, and heavy-process checks.")
+                    .font(AppFont.body(13))
+                    .foregroundStyle(UI.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Start Monitoring") { viewModel.startMonitoring() }
+                    .buttonStyle(CTAButton(primary: true))
+            }
+            .padding(24)
+            .frame(maxWidth: 520, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 18).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
         .background(UI.card)
     }
 
