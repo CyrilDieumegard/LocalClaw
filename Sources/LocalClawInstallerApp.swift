@@ -3615,9 +3615,20 @@ struct ContentView: View {
                         }
                     }
                     .scrollIndicators(.hidden)
-                    Button("DELETE CURRENT") { vm.deleteSelectedChatSession() }
-                        .buttonStyle(CTAButton(primary: false))
-                        .disabled(vm.chatIsSending)
+                    Divider()
+                        .padding(.vertical, 2)
+                    Button(role: .destructive, action: { vm.deleteSelectedChatSession() }) {
+                        Label("Delete", systemImage: "trash")
+                            .font(AppFont.bodySemi(11))
+                            .foregroundStyle(Color(NSColor.systemRed))
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.vertical, 7)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color(NSColor.systemRed).opacity(0.07)))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(NSColor.systemRed).opacity(0.16), lineWidth: 1))
+                    .disabled(vm.chatIsSending)
+                    .help("Delete current discussion")
                 }
                 .padding(12)
                 .frame(width: 210)
