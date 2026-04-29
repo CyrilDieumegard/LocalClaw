@@ -362,6 +362,8 @@ final class InstallerViewModel: ObservableObject {
     @Published var modelUsageRecords: [ModelUsageRecord] = [] {
         didSet { persistModelUsageRecords() }
     }
+    @Published var modelsApplyStatus: String = ""
+    @Published var modelsApplyInProgress: Bool = false
     @Published var modeSwitchInProgress: Bool = false
     @Published var modeSwitchStatus: String = ""
 
@@ -745,6 +747,35 @@ final class InstallerViewModel: ObservableObject {
         let result = engine.changeModel(selectedControlModel)
         controlCenterLogs += "[\(result.state.rawValue)] \(result.message)\n"
         refreshControlCenter()
+    }
+
+    func applyModelsTabSelection() {
+        if modelsApplyInProgress { return }
+        let targetModel: String
+        if inferenceMode == .local {
+            guard !selectedLocalLMStudioModel.isEmpty else {
+                modelsApplyStatus = "Select a local LM Studio model first."
+                return
+            }
+            targetModel = "lmstudio/\(selectedLocalLMStudioModel)"
+        } else {
+            guard !selectedOpenRouterModel.isEmpty else {
+                modelsApplyStatus = "Select a cloud model first."
+                return
+            }
+            targetModel = selectedOpenRouterModel
+        }
+
+        modelsApplyInProgress = true
+        modelsApplyStatus = "Applying \(targetModel)..."
+        Task.detached {
+            let result = InstallerEngine().changeModel(targetModel)
+            await MainActor.run {
+                self.currentModel = targetModel
+                self.modelsApplyStatus = "[\(result.state.rawValue)] \(result.message)"
+                self.modelsApplyInProgress = false
+            }
+        }
     }
 
     func openControlDashboard() {
@@ -4789,10 +4820,56 @@ struct ContentView: View {
     var configuredModelsCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Configured models").font(AppFont.bodySemi(14)).foregroundStyle(UI.text)
-            modelConfigRow(title: "Cloud", subtitle: vm.selectedOpenRouterModel.isEmpty ? "No cloud model selected" : vm.selectedOpenRouterModel, icon: "cloud.fill", status: vm.cloudProviderAuthConfigured ? "Configured" : "API key missing")
-            modelConfigRow(title: "Local", subtitle: vm.selectedLocalLMStudioModel.isEmpty ? "No LM Studio model selected" : vm.selectedLocalLMStudioModel, icon: "desktopcomputer", status: vm.localLMStudioModels.isEmpty ? "Scan needed" : "Available")
-            if !vm.openRouterModelsLive.isEmpty {
-                Text("OpenRouter catalog: \(vm.openRouterModelsLive.count) models").font(AppFont.body(11)).foregroundStyle(UI.muted)
+
+            Picker("Mode", selection: $vm.inferenceMode) {
+                Text("Cloud LLM").tag(InstallerViewModel.InferenceMode.cloud)
+                Text("Local LLM").tag(InstallerViewModel.InferenceMode.local)
+            }
+            .pickerStyle(.segmented)
+
+            if vm.inferenceMode == .cloud {
+                Picker("Cloud model", selection: $vm.selectedOpenRouterModel) {
+                    if vm.openRouterModelsLive.isEmpty {
+                        ForEach(InstallerViewModel.openRouterModels) { model in
+                            Text(model.displayName).tag(model.id)
+                        }
+                    } else {
+                        ForEach(vm.openRouterModelsLive) { model in
+                            Text(model.displayName).tag(model.id)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                modelConfigRow(title: "Cloud", subtitle: vm.selectedOpenRouterModel.isEmpty ? "No cloud model selected" : vm.selectedOpenRouterModel, icon: "cloud.fill", status: vm.cloudProviderAuthConfigured ? "Configured" : "API key missing")
+                if !vm.openRouterModelsLive.isEmpty {
+                    Text("OpenRouter catalog: \(vm.openRouterModelsLive.count) models").font(AppFont.body(11)).foregroundStyle(UI.muted)
+                }
+            } else {
+                Picker("Local model", selection: $vm.selectedLocalLMStudioModel) {
+                    if vm.localLMStudioModels.isEmpty {
+                        Text("No LM Studio model found").tag("")
+                    } else {
+                        ForEach(vm.localLMStudioModels, id: \.self) { model in
+                            Text(model).tag(model)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                modelConfigRow(title: "Local", subtitle: vm.selectedLocalLMStudioModel.isEmpty ? "No LM Studio model selected" : vm.selectedLocalLMStudioModel, icon: "desktopcomputer", status: vm.localLMStudioModels.isEmpty ? "Scan needed" : "Available")
+            }
+
+            HStack(spacing: 8) {
+                Button(vm.modelsApplyInProgress ? "Applying..." : "Apply model") { vm.applyModelsTabSelection() }
+                    .buttonStyle(CTAButton(primary: true))
+                    .disabled(vm.modelsApplyInProgress || (vm.inferenceMode == .local && vm.selectedLocalLMStudioModel.isEmpty) || (vm.inferenceMode == .cloud && vm.selectedOpenRouterModel.isEmpty))
+                Button("Scan") {
+                    vm.refreshOpenRouterModels()
+                    vm.refreshLocalLMStudioModels()
+                }
+                .buttonStyle(CTAButton(primary: false))
+            }
+            if !vm.modelsApplyStatus.isEmpty {
+                Text(vm.modelsApplyStatus).font(AppFont.body(11)).foregroundStyle(UI.muted).lineLimit(2)
             }
         }
         .padding(12).frame(maxWidth: .infinity, alignment: .topLeading)
