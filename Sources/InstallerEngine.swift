@@ -470,6 +470,46 @@ final class InstallerEngine: @unchecked Sendable {
         return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    func hasProviderAuth(provider: String) -> Bool {
+        let fm = FileManager.default
+        let profileKey = "\(provider):default"
+        let authPaths = [
+            NSHomeDirectory() + "/.openclaw/agents/main/agent/auth-profiles.json",
+            NSHomeDirectory() + "/.openclaw/openclaw.json"
+        ]
+
+        for path in authPaths where fm.fileExists(atPath: path) {
+            guard let data = fm.contents(atPath: path),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            let rootProfiles = json["profiles"] as? [String: Any]
+            let nestedProfiles = (json["auth"] as? [String: Any])?["profiles"] as? [String: Any]
+            for profiles in [rootProfiles, nestedProfiles].compactMap({ $0 }) {
+                if let profile = profiles[profileKey] as? [String: Any],
+                   let key = profile["key"] as? String,
+                   !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return true
+                }
+            }
+        }
+
+        let envKeyMap = [
+            "openrouter": "OPENROUTER_API_KEY",
+            "openai": "OPENAI_API_KEY",
+            "anthropic": "ANTHROPIC_API_KEY",
+            "google": "GEMINI_API_KEY",
+            "xai": "XAI_API_KEY"
+        ]
+        guard let envKey = envKeyMap[provider] else { return false }
+        for path in [NSHomeDirectory() + "/.openclaw/.env", NSHomeDirectory() + "/.openclaw/.env.local"] where fm.fileExists(atPath: path) {
+            guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
+            if raw.components(separatedBy: .newlines).contains(where: { line in
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.hasPrefix("\(envKey)=") && trimmed.split(separator: "=", maxSplits: 1).count == 2
+            }) { return true }
+        }
+        return false
+    }
+
     /// Machine resource snapshot for Control Center
     func getSystemUsage() -> SystemUsageSnapshot {
         let (_, memTotalRaw) = shell("sysctl -n hw.memsize")

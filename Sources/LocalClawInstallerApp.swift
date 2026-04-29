@@ -239,6 +239,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var selectedOpenRouterModel: String = "openrouter/moonshotai/kimi-k2.5"
     @Published var openRouterModelsLive: [OpenRouterModel] = []
     @Published var openRouterKeyVerified: Bool = false
+    @Published var cloudProviderAuthConfigured: Bool = false
     @Published var hasExistingOpenClawSetup = false
     @Published var gatewayToken: String = ""
     @Published private var userGeneratedToken: Bool = false  // Track if user manually generated token
@@ -995,6 +996,7 @@ final class InstallerViewModel: ObservableObject {
         if loadedAny {
             append("Loaded existing .env values")
         }
+        cloudProviderAuthConfigured = engine.hasProviderAuth(provider: effectiveAuthProvider()) || !requiredProviderKey().isEmpty
     }
 
     private func parseEnv(_ text: String) -> [String: String] {
@@ -2240,13 +2242,17 @@ final class InstallerViewModel: ObservableObject {
 
     func refreshOpenClawChatInfo() {
         chatStatus = "Checking setup..."
+        let provider = effectiveAuthProvider()
+        let localKeyPresent = !requiredProviderKey().isEmpty
         Task.detached {
             let engine = InstallerEngine()
             let model = engine.getCurrentModel()
             let models = engine.listLMStudioLLMModelIds()
             let loaded = engine.loadedLMStudioModelInfo()?.model
+            let authConfigured = engine.hasProviderAuth(provider: provider) || localKeyPresent
             await MainActor.run {
                 self.currentModel = model
+                self.cloudProviderAuthConfigured = authConfigured
                 self.localLMStudioModels = models
                 if self.selectedLocalLMStudioModel.isEmpty {
                     if let loaded, models.contains(loaded) {
@@ -4676,8 +4682,8 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
         .onAppear {
+            vm.refreshOpenClawChatInfo()
             vm.refreshOpenRouterModels()
-            vm.refreshLocalLMStudioModels()
             vm.refreshUsageCostEstimate()
         }
     }
@@ -4714,7 +4720,7 @@ struct ContentView: View {
     var configuredModelsCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Configured models").font(AppFont.bodySemi(14)).foregroundStyle(UI.text)
-            modelConfigRow(title: "Cloud", subtitle: vm.selectedOpenRouterModel.isEmpty ? "No cloud model selected" : vm.selectedOpenRouterModel, icon: "cloud.fill", status: vm.openRouterApiKey.isEmpty ? "API key missing" : "Configured")
+            modelConfigRow(title: "Cloud", subtitle: vm.selectedOpenRouterModel.isEmpty ? "No cloud model selected" : vm.selectedOpenRouterModel, icon: "cloud.fill", status: vm.cloudProviderAuthConfigured ? "Configured" : "API key missing")
             modelConfigRow(title: "Local", subtitle: vm.selectedLocalLMStudioModel.isEmpty ? "No LM Studio model selected" : vm.selectedLocalLMStudioModel, icon: "desktopcomputer", status: vm.localLMStudioModels.isEmpty ? "Scan needed" : "Available")
             if !vm.openRouterModelsLive.isEmpty {
                 Text("OpenRouter catalog: \(vm.openRouterModelsLive.count) models").font(AppFont.body(11)).foregroundStyle(UI.muted)
