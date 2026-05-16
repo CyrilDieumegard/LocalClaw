@@ -3572,6 +3572,9 @@ struct ContentView: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 8) {
+            Spacer()
+                .frame(height: 44)
+
             Text("NAVIGATION")
                 .font(AppFont.heading(10))
                 .kerning(0.6)
