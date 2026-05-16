@@ -37,4 +37,39 @@ struct InstallerEngineTests {
         let version = engine.installedVersion(for: "definitely-not-a-command")
         #expect(version == "Not installed")
     }
+
+    @Test func redactsSecretsFromConfigJSON() {
+        let raw = """
+        {
+          "gateway": {
+            "auth": {
+              "token": "super-secret-token"
+            }
+          },
+          "auth": {
+            "profiles": {
+              "openrouter:default": {
+                "type": "api_key",
+                "provider": "openrouter",
+                "key": "sk-or-secret"
+              }
+            }
+          },
+          "agents": {
+            "defaults": {
+              "model": {
+                "primary": "openrouter/moonshotai/kimi-k2.5"
+              }
+            }
+          }
+        }
+        """
+
+        let redacted = SecretRedactor.redactConfigText(raw)
+
+        #expect(!redacted.contains("super-secret-token"))
+        #expect(!redacted.contains("sk-or-secret"))
+        #expect(redacted.contains("<redacted>"))
+        #expect(redacted.contains("kimi-k2.5"))
+    }
 }

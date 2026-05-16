@@ -694,18 +694,20 @@ final class CommandCenterViewModel: ObservableObject {
     }
     
     func viewConfig() {
-        addLog(.command, "Reading config...")
-        executeCommandAsync("cat ~/.openclaw/openclaw.json", onOutput: { line in
-            DispatchQueue.main.async {
-                self.addLog(.info, line)
-            }
-        }, onComplete: { code in
-            DispatchQueue.main.async {
-                if code != 0 {
-                    self.addLog(.error, "Config not found")
+        addLog(.command, "Reading redacted config...")
+        let path = NSHomeDirectory() + "/.openclaw/openclaw.json"
+        guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else {
+            addLog(.error, "Config not found")
+            return
+        }
+
+        SecretRedactor.redactConfigText(raw)
+            .components(separatedBy: .newlines)
+            .forEach { line in
+                if !line.isEmpty {
+                    addLog(.info, line)
                 }
             }
-        })
     }
     
     func fixAuth() {

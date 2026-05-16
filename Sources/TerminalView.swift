@@ -131,7 +131,13 @@ final class TerminalViewModel: ObservableObject {
     
     /// Show config
     func showConfig() {
-        execute("cat ~/.openclaw/openclaw.json 2>&1 || echo 'Config not found'")
+        let path = NSHomeDirectory() + "/.openclaw/openclaw.json"
+        append("$ show redacted ~/.openclaw/openclaw.json")
+        guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else {
+            append("Config not found")
+            return
+        }
+        output += SecretRedactor.redactConfigText(raw) + "\n"
     }
     
     /// Show OpenClaw version
