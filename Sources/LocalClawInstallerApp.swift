@@ -456,6 +456,10 @@ final class InstallerViewModel: ObservableObject {
         licenseEndpoint.contains("127.0.0.1") || licenseEndpoint.contains("localhost")
     }
 
+    private var allowsOfflineLicenses: Bool {
+        ProcessInfo.processInfo.environment["LOCALCLAW_ALLOW_OFFLINE_LICENSE"] == "1"
+    }
+
     private var installerUpdateManifestURL: String {
         ProcessInfo.processInfo.environment["LOCALCLAW_INSTALLER_UPDATE_URL"] ?? "https://localclaw.io/downloads/localclaw-installer-latest.json"
     }
@@ -1118,7 +1122,7 @@ final class InstallerViewModel: ObservableObject {
 
     func useTestLicense() {
         licenseEmail = "cyril@test.local"
-        licenseKey = "LCW-20991231-0001-BASE"
+        licenseKey = "LOCALCLAW-V1-TEST"
     }
 
     func activateLicense() {
@@ -1134,12 +1138,17 @@ final class InstallerViewModel: ObservableObject {
 
         let machineId = engine.machineIdentifier()
 
-        if key.hasPrefix("LCW-") && !isValidOfflineKey(key) {
+        if key.hasPrefix("LCW-") && !allowsOfflineLicenses {
+            activationStatus = "Offline licenses are disabled in this build"
+            return
+        }
+
+        if allowsOfflineLicenses && key.hasPrefix("LCW-") && !isValidOfflineKey(key) {
             activationStatus = "License expired or invalid format"
             return
         }
 
-        if isValidOfflineKey(key) {
+        if allowsOfflineLicenses && isValidOfflineKey(key) {
             let record = LocalLicenseRecord(
                 email: email,
                 licenseKey: key,
@@ -1251,7 +1260,7 @@ final class InstallerViewModel: ObservableObject {
         // - a valid offline key format, or
         // - an API activation token (even if backend does not return expiresAt), or
         // - an explicit expiresAt value
-        if isValidOfflineKey(record.licenseKey) || !record.token.isEmpty || (record.expiresAt != nil) {
+        if (allowsOfflineLicenses && isValidOfflineKey(record.licenseKey)) || !record.token.isEmpty || (record.expiresAt != nil) {
             isActivated = true
             activationStatus = "Activated on this Mac"
         } else {
