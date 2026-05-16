@@ -508,7 +508,7 @@ final class InstallerViewModel: ObservableObject {
             return date < Date()
         }
 
-        return true
+        return false
     }
 
     var progress: Double {
