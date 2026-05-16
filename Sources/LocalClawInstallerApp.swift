@@ -26,14 +26,16 @@ final class InstallerViewModel: ObservableObject {
         let role: String
         let text: String
         let metadata: String?
+        let modelName: String?
         let imagePath: String?
         let createdAt: Date
 
-        init(id: UUID = UUID(), role: String, text: String, metadata: String? = nil, imagePath: String? = nil, createdAt: Date = Date()) {
+        init(id: UUID = UUID(), role: String, text: String, metadata: String? = nil, modelName: String? = nil, imagePath: String? = nil, createdAt: Date = Date()) {
             self.id = id
             self.role = role
             self.text = text
             self.metadata = metadata
+            self.modelName = modelName
             self.imagePath = imagePath
             self.createdAt = createdAt
         }
@@ -2401,14 +2403,15 @@ final class InstallerViewModel: ObservableObject {
             let usage = Self.extractAgentUsage(from: result.1)
             let metrics = Self.extractAgentMetrics(from: result.1, elapsedSeconds: elapsed)
             await MainActor.run {
+                let responseModel = runtimeModel?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? runtimeModel : self.openClawChatModelLabel
                 if let runtimeModel, !runtimeModel.isEmpty {
                     self.currentModel = runtimeModel
                 }
                 if repairedPlugin && result.0 == 0 {
-                    self.chatMessages.append(ChatMessage(role: "assistant", text: "I found and disabled an outdated global WhatsApp plugin that was blocking OpenClaw, then retried automatically."))
+                    self.chatMessages.append(ChatMessage(role: "assistant", text: "I found and disabled an outdated global WhatsApp plugin that was blocking OpenClaw, then retried automatically.", modelName: responseModel))
                 }
                 let role = (result.0 == 0 || knownDiagnostic != nil) ? "assistant" : "error"
-                self.chatMessages.append(ChatMessage(role: role, text: reply, metadata: metrics))
+                self.chatMessages.append(ChatMessage(role: role, text: reply, metadata: metrics, modelName: role == "assistant" ? responseModel : nil))
                 if result.0 == 0 {
                     self.recordModelUsage(model: runtimeModel ?? self.currentModel, input: usage.input, output: usage.output, total: usage.total)
                 }
@@ -4564,6 +4567,7 @@ struct ContentView: View {
         let senderIcon = isUser ? "person.fill" : (isError ? "exclamationmark.triangle.fill" : "sparkles")
         let bubbleFill = isError ? Color(NSColor.systemRed).opacity(0.08) : (isUser ? UI.accent.opacity(0.16) : UI.card)
         let bubbleStroke = isError ? Color(NSColor.systemRed).opacity(0.35) : (isUser ? UI.accent.opacity(0.22) : Color.black.opacity(0.06))
+        let modelName = message.modelName?.trimmingCharacters(in: .whitespacesAndNewlines)
         return HStack {
             if isUser { Spacer(minLength: 80) }
             VStack(alignment: .leading, spacing: 8) {
@@ -4571,6 +4575,17 @@ struct ContentView: View {
                     Label(senderName, systemImage: senderIcon)
                         .font(AppFont.bodySemi(11))
                         .foregroundStyle(isError ? Color(NSColor.systemRed) : UI.muted)
+                    if !isUser, let modelName, !modelName.isEmpty {
+                        Label(modelName, systemImage: "cpu")
+                            .font(AppFont.bodySemi(10))
+                            .foregroundStyle(UI.muted)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(UI.cardSoft))
+                            .overlay(Capsule().stroke(UI.lineSoft, lineWidth: 1))
+                    }
                     Spacer(minLength: 12)
                     Button {
                         copyChatMessage(message.text)
