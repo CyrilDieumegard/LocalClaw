@@ -3463,7 +3463,7 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     }
                 }
-                .frame(maxWidth: 1260, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 16)
             }
@@ -3471,8 +3471,8 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ReturnToHome"))) { _ in
             vm.screen = .home
         }
-        .frame(minWidth: 980, idealWidth: 1220, maxWidth: 1500,
-               minHeight: 700, idealHeight: 820, maxHeight: 1100)
+        .frame(minWidth: 1100, idealWidth: 1440, maxWidth: .infinity,
+               minHeight: 760, idealHeight: 920, maxHeight: .infinity)
         .onAppear { vm.bootstrap() }
         .alert("Homebrew Required", isPresented: $vm.showHomebrewPrompt) {
             Button("Install Homebrew", role: .none) { vm.installHomebrewWithUserConsent() }
@@ -3928,7 +3928,7 @@ struct ContentView: View {
             }
         }
         .padding(22)
-        .frame(maxWidth: 940, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
         .shadow(color: Color.black.opacity(0.06), radius: 6, x: 0, y: 2)
@@ -3989,6 +3989,7 @@ struct ContentView: View {
                 }
             }
             .padding(11)
+            .frame(maxWidth: 760, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 13).fill(isUser ? UI.accent.opacity(0.13) : UI.card))
             .overlay(RoundedRectangle(cornerRadius: 13).stroke(isError ? Color(NSColor.systemRed).opacity(0.3) : Color.black.opacity(0.06), lineWidth: 1))
             if !isUser { Spacer(minLength: 80) }
@@ -5624,5 +5625,6 @@ struct LocalClawInstallerApp: App {
         WindowGroup {
             ContentView().preferredColorScheme(.light)
         }
+        .defaultSize(width: 1440, height: 920)
     }
 }
