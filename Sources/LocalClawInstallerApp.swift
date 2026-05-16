@@ -1,6 +1,7 @@
 import SwiftUI
 import Foundation
 import AppKit
+import CryptoKit
 
 @MainActor
 final class InstallerViewModel: ObservableObject {
@@ -294,6 +295,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var installerLatestVersion = "Checking..."
     @Published var installerUpdateStatus = "Checking..."
     @Published var installerDownloadURL = ""
+    @Published var installerExpectedSHA256 = ""
     @Published var localClawBuildLabel = "build unknown"
     @Published var brewUpToDate = false
     @Published var nodeUpToDate = false
@@ -1422,6 +1424,7 @@ final class InstallerViewModel: ObservableObject {
                         normalizedURL = normalizedURL.replacingOccurrences(of: "/LocalClawInstaller.dmg", with: "/localclaw.dmg")
                     }
                     self.installerDownloadURL = normalizedURL
+                    self.installerExpectedSHA256 = manifest.sha256?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
 
                     let cmp = self.compareVersion(manifest.latestVersion, self.installerCurrentVersion)
                     if cmp > 0 {
@@ -1451,10 +1454,22 @@ final class InstallerViewModel: ObservableObject {
         "'" + value.replacingOccurrences(of: "'", with: "'\''") + "'"
     }
 
+    nonisolated static func sha256Hex(for fileURL: URL) throws -> String {
+        let data = try Data(contentsOf: fileURL)
+        let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
     func updateLocalClawFromDMG() {
         if isRunning { return }
         guard let url = URL(string: installerDownloadURL), !installerDownloadURL.isEmpty else {
             append("No installer download URL found in manifest. Click CHECK, then retry.")
+            return
+        }
+        let expectedSHA256 = installerExpectedSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard expectedSHA256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else {
+            installerUpdateStatus = "Update blocked"
+            append("Update blocked: manifest is missing a valid SHA256 checksum for the DMG.")
             return
         }
 
@@ -1486,6 +1501,15 @@ final class InstallerViewModel: ObservableObject {
                 let dmgPath = tempDir.appendingPathComponent("localclaw.dmg")
                 try? FileManager.default.removeItem(at: dmgPath)
                 try FileManager.default.moveItem(at: downloadedURL, to: dmgPath)
+
+                let actualSHA256 = try InstallerViewModel.sha256Hex(for: dmgPath)
+                guard actualSHA256 == expectedSHA256 else {
+                    throw NSError(
+                        domain: "LocalClawUpdate",
+                        code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "Downloaded DMG checksum mismatch. Expected \(expectedSHA256), got \(actualSHA256)."]
+                    )
+                }
 
                 let scriptPath = tempDir.appendingPathComponent("install-localclaw-update.sh")
                 let quotedDMG = await MainActor.run { self.shellSingleQuote(dmgPath.path) }
@@ -1527,7 +1551,7 @@ final class InstallerViewModel: ObservableObject {
                 _ = await MainActor.run { self.engine.shell("chmod +x \(self.shellSingleQuote(scriptPath.path))") }
 
                 await MainActor.run {
-                    self.append("Downloaded update DMG. Installing LocalClaw to \(targetApp)...")
+                    self.append("Downloaded update DMG. SHA256 verified. Installing LocalClaw to \(targetApp)...")
                     self.installerUpdateStatus = "Installing update..."
                 }
 

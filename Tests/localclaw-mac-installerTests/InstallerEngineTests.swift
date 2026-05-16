@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import localclaw_mac_installer
 
@@ -71,5 +72,16 @@ struct InstallerEngineTests {
         #expect(!redacted.contains("sk-or-secret"))
         #expect(redacted.contains("<redacted>"))
         #expect(redacted.contains("kimi-k2.5"))
+    }
+
+    @Test func computesSHA256ForDownloadedInstaller() throws {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("localclaw-sha-test-\(UUID().uuidString)")
+        try "LocalClaw".write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let hash = try InstallerViewModel.sha256Hex(for: url)
+
+        #expect(hash == "a1c2aaf18a271d28ac8433e25331c5ae53b09ff48b1db8b960c65e243545aea0")
     }
 }
