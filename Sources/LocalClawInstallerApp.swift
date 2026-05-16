@@ -382,6 +382,9 @@ final class InstallerViewModel: ObservableObject {
     @Published var chatIsSending = false
     @Published var chatStatus = "Ready"
     private var chatGatewayPrepared = false
+    private var activeChatProcess: Process?
+    private var activeChatRequestID: UUID?
+    private var chatStopRequested = false
     @Published var localLMStudioModels: [String] = []
     @Published var selectedLocalLMStudioModel: String = ""
     @Published var localLMStudioSetupStatus = ""
@@ -2343,6 +2346,9 @@ final class InstallerViewModel: ObservableObject {
 
         chatInput = ""
         chatImagePath = ""
+        chatStopRequested = false
+        let requestID = UUID()
+        activeChatRequestID = requestID
         let userText = text.isEmpty ? "Image attached" : text
         let projectContext = chatProjectContext(for: activeChatSessionID)
         var agentTextParts: [String] = []
@@ -2385,15 +2391,27 @@ final class InstallerViewModel: ObservableObject {
             }
             defer { try? FileManager.default.removeItem(atPath: tempMessagePath) }
 
-            let command = "MESSAGE_FILE=\(quote(tempMessagePath)); openclaw agent --session-id \(quote(sessionID)) --message \"$(cat \"$MESSAGE_FILE\")\" --json --timeout 180 2>&1"
+            let command = "MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(sessionID)) --message \"$(cat \"$MESSAGE_FILE\")\" --json --timeout 180 2>&1"
             let startedAt = Date()
-            var result = engine.shell(command)
+            var result = Self.shellCancellable(command) { process in
+                Task { @MainActor in
+                    if self.activeChatRequestID == requestID {
+                        self.activeChatProcess = process
+                    }
+                }
+            }
             var repairedPlugin = false
             if result.0 != 0 && Self.isBrokenGlobalWhatsAppPluginError(result.1) {
                 let repair = engine.disableBrokenGlobalPlugin(id: "whatsapp")
                 repairedPlugin = repair.state == .ok
                 if repairedPlugin {
-                    result = engine.shell(command)
+                    result = Self.shellCancellable(command) { process in
+                        Task { @MainActor in
+                            if self.activeChatRequestID == requestID {
+                                self.activeChatProcess = process
+                            }
+                        }
+                    }
                 }
             }
             let elapsed = Date().timeIntervalSince(startedAt)
@@ -2403,6 +2421,15 @@ final class InstallerViewModel: ObservableObject {
             let usage = Self.extractAgentUsage(from: result.1)
             let metrics = Self.extractAgentMetrics(from: result.1, elapsedSeconds: elapsed)
             await MainActor.run {
+                guard self.activeChatRequestID == requestID else { return }
+                self.activeChatProcess = nil
+                self.activeChatRequestID = nil
+                if self.chatStopRequested {
+                    self.chatStopRequested = false
+                    self.chatStatus = "Ready"
+                    self.chatIsSending = false
+                    return
+                }
                 let responseModel = runtimeModel?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? runtimeModel : self.openClawChatModelLabel
                 if let runtimeModel, !runtimeModel.isEmpty {
                     self.currentModel = runtimeModel
@@ -2419,6 +2446,40 @@ final class InstallerViewModel: ObservableObject {
                 self.chatIsSending = false
             }
         }
+    }
+
+    func stopChatGeneration() {
+        guard chatIsSending else { return }
+        chatStopRequested = true
+        chatStatus = "Stopping..."
+        activeChatProcess?.terminate()
+        activeChatProcess = nil
+        activeChatRequestID = nil
+        appendChatSystemMessageOnce("Generation stopped.")
+        chatStatus = "Ready"
+        chatIsSending = false
+    }
+
+    nonisolated private static func shellCancellable(_ command: String, onStart: @escaping (Process) -> Void) -> (Int32, String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-lc", command]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        do {
+            try process.run()
+            onStart(process)
+        } catch {
+            return (1, "Failed command: \(command)\n\(error.localizedDescription)")
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let output = String(data: data, encoding: .utf8) ?? ""
+        return (process.terminationStatus, output.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     func attachChatImage() {
@@ -4324,22 +4385,18 @@ struct ContentView: View {
 
                 Spacer(minLength: 12)
 
-                if vm.chatIsSending {
-                    ProgressView()
-                        .scaleEffect(0.75)
+                Button(action: {
+                    vm.chatIsSending ? vm.stopChatGeneration() : vm.sendChatMessage()
+                }) {
+                    Image(systemName: vm.chatIsSending ? "stop.fill" : "arrow.up")
+                        .font(.system(size: vm.chatIsSending ? 14 : 18, weight: .bold))
+                        .foregroundStyle(vm.chatIsSending ? Color.white : (canSend ? UI.card : UI.muted))
                         .frame(width: 34, height: 34)
-                } else {
-                    Button(action: { vm.sendChatMessage() }) {
-                        Image(systemName: "arrow.up")
-                            .font(.system(size: 18, weight: .bold))
-                            .foregroundStyle(canSend ? UI.card : UI.muted)
-                            .frame(width: 34, height: 34)
-                            .background(Circle().fill(canSend ? UI.text : UI.lineSoft))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!canSend)
-                    .help("Send message")
+                        .background(Circle().fill(vm.chatIsSending ? Color(NSColor.systemRed) : (canSend ? UI.text : UI.lineSoft)))
                 }
+                .buttonStyle(.plain)
+                .disabled(!vm.chatIsSending && !canSend)
+                .help(vm.chatIsSending ? "Stop generation" : "Send message")
             }
         }
         .padding(.horizontal, 16)
