@@ -3224,12 +3224,13 @@ struct CompactGhostButton: ButtonStyle {
             .frame(maxWidth: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.white.opacity(0.9))
+                    .fill(UI.card)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(UI.lineSoft, lineWidth: 1)
+                    .stroke(UI.line, lineWidth: 1)
             )
+            .shadow(color: Color.black.opacity(0.08), radius: 3, x: 0, y: 1)
             .scaleEffect(configuration.isPressed ? 0.985 : 1)
             .opacity(configuration.isPressed ? 0.92 : 1)
     }
