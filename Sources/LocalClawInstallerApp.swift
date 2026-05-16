@@ -386,19 +386,25 @@ final class InstallerViewModel: ObservableObject {
     var statusConfig: String = "PENDING"
     var statusService: String = "PENDING"
 
-    let modelOptions = [
-        "Qwen 3.5 35B-A3B Q4_K_M",
-        "Qwen 3.5 27B Q4_K_M",
-        "Qwen 3.5 9B Q4_K_M",
-        "Qwen 3.5 4B Q4_K_M",
-        "Qwen 3.5 2B Q4_K_M",
-        "Qwen 3.5 0.8B Q4_K_M",
-        "Qwen 3 14B Q4_K_M",
-        "Qwen 3 8B Q4_K_M",
-        "Nemotron 3 Nano 4B Q4_K_M",
-        "DeepSeek R1 14B Q4_K_M",
-        "Llama 3.3 8B Q4_K_M"
-    ]
+    var modelOptions: [String] {
+        localModelCandidates.map(\.name)
+    }
+
+    private var localModelCandidates: [LocalModelCandidate] {
+        [
+            LocalModelCandidate(name: "Qwen 3.5 35B-A3B Q4_K_M", query: "qwen3.5-35b-a3b@q4_k_m", providerId: "qwen3.5-35b-a3b"),
+            LocalModelCandidate(name: "Qwen 3.5 27B Q4_K_M", query: "qwen3.5-27b@q4_k_m", providerId: "qwen3.5-27b"),
+            LocalModelCandidate(name: "Qwen 3.5 9B Q4_K_M", query: "qwen3.5-9b@q4_k_m", providerId: "qwen3.5-9b"),
+            LocalModelCandidate(name: "Qwen 3.5 4B Q4_K_M", query: "qwen3.5-4b@q4_k_m", providerId: "qwen3.5-4b"),
+            LocalModelCandidate(name: "Qwen 3.5 2B Q4_K_M", query: "qwen3.5-2b@q4_k_m", providerId: "qwen3.5-2b"),
+            LocalModelCandidate(name: "Qwen 3.5 0.8B Q4_K_M", query: "qwen3.5-0.8b@q4_k_m", providerId: "qwen3.5-0.8b"),
+            LocalModelCandidate(name: "Qwen 3 14B Q4_K_M", query: "qwen-3-14b@q4_k_m", providerId: "qwen3-14b"),
+            LocalModelCandidate(name: "Qwen 3 8B Q4_K_M", query: "qwen-3-8b@q4_k_m", providerId: "qwen3-8b"),
+            LocalModelCandidate(name: "Nemotron 3 Nano 4B Q4_K_M", query: "nemotron-3-nano-4b@q4_k_m", providerId: "nvidia/nemotron-3-nano-4b"),
+            LocalModelCandidate(name: "DeepSeek R1 14B Q4_K_M", query: "deepseek-r1-distill-qwen-14b@q4_k_m", providerId: "deepseek-r1-distill-qwen-14b"),
+            LocalModelCandidate(name: "Llama 3.3 8B Q4_K_M", query: "llama-3.3-8b-instruct@q4_k_m", providerId: "llama-3.3-8b-instruct")
+        ]
+    }
 
     let modelQueries: [String: String] = [
         "Qwen 3.5 35B-A3B Q4_K_M": "qwen3.5-35b-a3b@q4_k_m",
@@ -446,6 +452,12 @@ final class InstallerViewModel: ObservableObject {
         let dmgUrl: String
         let notesUrl: String?
         let sha256: String?
+    }
+
+    private struct LocalModelCandidate {
+        let name: String
+        let query: String
+        let providerId: String
     }
 
     private var licenseEndpoint: String {
@@ -2642,6 +2654,13 @@ final class InstallerViewModel: ObservableObject {
         let modelId = installLMStudio ? "lmstudio/\(providerModelId)" : (selectedProvider == .openRouter ? selectedOpenRouterModel : effectiveModelIdentifier())
         let authProvider = effectiveAuthProvider()
         let apiKey = installLMStudio ? "" : requiredProviderKey()
+        let dynamicLocalCandidates = ([resolvedLocalModel] + modelOptions)
+            .compactMap { name in localModelCandidates.first { $0.name == name } }
+            .reduce(into: [LocalModelCandidate]()) { result, candidate in
+                if !result.contains(where: { $0.providerId == candidate.providerId }) {
+                    result.append(candidate)
+                }
+            }
         
         // Build script as array then join
         var lines: [String] = []
@@ -2679,14 +2698,48 @@ final class InstallerViewModel: ObservableObject {
             lines.append("")
             lines.append("echo \"\"")
             lines.append("echo \"[3/7] Downloading AI Model...\"")
-            lines.append("echo \"  → Downloading \(modelQuery)...\"")
             lines.append("LMS_CMD='lms'")
             lines.append("if ! command -v lms &>/dev/null; then")
             lines.append("  if [ -x \"/Applications/LM Studio.app/Contents/Resources/app/.webpack/lms\" ]; then")
             lines.append("    LMS_CMD=\"/Applications/LM Studio.app/Contents/Resources/app/.webpack/lms\"")
             lines.append("  fi")
             lines.append("fi")
-            lines.append("$LMS_CMD get \(modelQuery) --gguf -y || echo \"  ! Model download failed, continue setup\"")
+            lines.append("LOCAL_MODEL_ID=\(shellSingleQuote(providerModelId))")
+            lines.append("LOCAL_MODEL_NAME=\(shellSingleQuote(resolvedLocalModel))")
+            lines.append("download_model_candidate() {")
+            lines.append("  local query=\"$1\"")
+            lines.append("  local provider_id=\"$2\"")
+            lines.append("  local display_name=\"$3\"")
+            lines.append("  [ -z \"$query\" ] && return 1")
+            lines.append("  echo \"  → Checking LM Studio recommendation: $display_name ($query)\"")
+            lines.append("  if $LMS_CMD get \"$query\" --gguf -y; then")
+            lines.append("    LOCAL_MODEL_ID=\"$provider_id\"")
+            lines.append("    LOCAL_MODEL_NAME=\"$display_name\"")
+            lines.append("    return 0")
+            lines.append("  fi")
+            lines.append("  if [[ \"$query\" == *@* ]]; then")
+            lines.append("    local base_query=\"${query%@*}\"")
+            lines.append("    echo \"  → Exact quant unavailable. Asking LM Studio for best variant: $base_query\"")
+            lines.append("    if $LMS_CMD get \"$base_query\" --gguf -y; then")
+            lines.append("      LOCAL_MODEL_ID=\"$provider_id\"")
+            lines.append("      LOCAL_MODEL_NAME=\"$display_name\"")
+            lines.append("      return 0")
+            lines.append("    fi")
+            lines.append("  fi")
+            lines.append("  return 1")
+            lines.append("}")
+            lines.append("MODEL_READY=0")
+            for candidate in dynamicLocalCandidates {
+                lines.append("if [ \"$MODEL_READY\" != \"1\" ]; then")
+                lines.append("  download_model_candidate \(shellSingleQuote(candidate.query)) \(shellSingleQuote(candidate.providerId)) \(shellSingleQuote(candidate.name)) && MODEL_READY=1 || true")
+                lines.append("fi")
+            }
+            lines.append("if [ \"$MODEL_READY\" != \"1\" ]; then")
+            lines.append("  echo \"  ✕ No compatible LM Studio model could be downloaded\"")
+            lines.append("  echo \"model:FAIL\" >> /tmp/localclaw_status")
+            lines.append("  exit 1")
+            lines.append("fi")
+            lines.append("echo \"  ✓ Model ready: $LOCAL_MODEL_NAME\"")
             lines.append("echo \"model:OK\" >> /tmp/localclaw_status")
         } else {
             lines.append("")
@@ -2747,7 +2800,7 @@ final class InstallerViewModel: ObservableObject {
         lines.append("  \"agents\": {")
         lines.append("    \"defaults\": {")
         lines.append("      \"model\": {")
-        lines.append("        \"primary\": \"\(modelId)\"")
+        lines.append("        \"primary\": \"\(installLMStudio ? "lmstudio/${LOCAL_MODEL_ID}" : modelId)\"")
         lines.append("      },")
         lines.append("      \"sandbox\": {")
         lines.append("        \"mode\": \"off\"")
@@ -2763,7 +2816,7 @@ final class InstallerViewModel: ObservableObject {
             lines.append("        \"apiKey\": \"lmstudio\",")
             lines.append("        \"api\": \"openai-completions\",")
             lines.append("        \"models\": [")
-            lines.append("          { \"id\": \"\(providerModelId)\", \"name\": \"\(resolvedLocalModel)\", \"reasoning\": false, \"input\": [\"text\"], \"cost\": { \"input\": 0, \"output\": 0, \"cacheRead\": 0, \"cacheWrite\": 0 }, \"contextWindow\": 32768, \"maxTokens\": 4096 }")
+            lines.append("          { \"id\": \"${LOCAL_MODEL_ID}\", \"name\": \"${LOCAL_MODEL_NAME}\", \"reasoning\": false, \"input\": [\"text\"], \"cost\": { \"input\": 0, \"output\": 0, \"cacheRead\": 0, \"cacheWrite\": 0 }, \"contextWindow\": 32768, \"maxTokens\": 4096 }")
             lines.append("        ]")
             lines.append("      }")
             lines.append("    }")
