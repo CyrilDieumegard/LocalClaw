@@ -3962,15 +3962,7 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            HStack(spacing: 10) {
-                TextField("Message OpenClaw...", text: $vm.chatInput, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
-                    .lineLimit(1...6)
-                    .onSubmit { vm.sendChatMessage() }
-                Button(vm.chatIsSending ? "SENDING..." : "SEND") { vm.sendChatMessage() }
-                    .buttonStyle(CTAButton(primary: true))
-                    .disabled(vm.chatIsSending || vm.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
+            chatComposer
         }
         .padding(22)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -3978,6 +3970,68 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.06), radius: 6, x: 0, y: 2)
         .onAppear { vm.refreshOpenClawChatInfo() }
+    }
+
+    var chatComposer: some View {
+        let canSend = !vm.chatIsSending && !vm.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+        return VStack(alignment: .leading, spacing: 12) {
+            TextField("Message OpenClaw...", text: $vm.chatInput, axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(AppFont.body(15))
+                .foregroundStyle(UI.text)
+                .lineLimit(2...7)
+                .onSubmit { vm.sendChatMessage() }
+
+            HStack(spacing: 14) {
+                chatComposerIcon("plus", help: "Add context")
+                chatComposerIcon("globe", help: "Web context")
+                chatComposerIcon("apps.iphone", help: "Apps")
+
+                Label(vm.openClawChatModelLabel, systemImage: "cpu")
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Spacer(minLength: 12)
+
+                if vm.chatIsSending {
+                    ProgressView()
+                        .scaleEffect(0.75)
+                        .frame(width: 34, height: 34)
+                } else {
+                    Button(action: { vm.sendChatMessage() }) {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundStyle(canSend ? UI.card : UI.muted)
+                            .frame(width: 34, height: 34)
+                            .background(Circle().fill(canSend ? UI.text : UI.lineSoft))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canSend)
+                    .help("Send message")
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
+        .frame(minHeight: 104, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 22).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 22).stroke(UI.line, lineWidth: 1))
+    }
+
+    func chatComposerIcon(_ systemName: String, help: String) -> some View {
+        Button(action: {}) {
+            Image(systemName: systemName)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(UI.muted)
+                .frame(width: 26, height: 26)
+        }
+        .buttonStyle(.plain)
+        .disabled(true)
+        .help(help)
     }
 
     func chatSessionRow(_ session: InstallerViewModel.ChatSession) -> some View {
