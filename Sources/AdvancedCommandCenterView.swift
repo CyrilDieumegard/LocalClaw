@@ -1067,9 +1067,15 @@ struct AdvancedCommandCenterView: View {
             }
             .foregroundStyle(color)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+            .frame(height: 32)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(color.opacity(0.12))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(color.opacity(0.28), lineWidth: 1)
+            )
         }
         .buttonStyle(.plain)
     }
@@ -1435,7 +1441,15 @@ struct StatusCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(10)
-        .background(Color.white.opacity(0.5))
+        .frame(minHeight: 74)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(color.opacity(0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(color.opacity(0.24), lineWidth: 1)
+        )
         .cornerRadius(8)
     }
 }
@@ -1462,14 +1476,16 @@ struct ActionButton: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .background(UI.cardSoft)
-            .cornerRadius(6)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(color.opacity(0.10))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(color.opacity(0.22), lineWidth: 1)
+            )
         }
         .buttonStyle(.plain)
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(UI.lineSoft, lineWidth: 1)
-        )
     }
 }
 
