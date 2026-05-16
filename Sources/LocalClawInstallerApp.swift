@@ -499,6 +499,18 @@ final class InstallerViewModel: ObservableObject {
         return expiry >= Date()
     }
 
+    private func isExpiredLicenseDate(_ raw: String?) -> Bool {
+        guard let raw, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+
+        if let date = ISO8601DateFormatter().date(from: raw) {
+            return date < Date()
+        }
+
+        return true
+    }
+
     var progress: Double {
         let states = [statusHomebrew, statusLMStudio, statusNode, statusOpenClaw, statusOpenClawCheck, statusModel]
         let done = states.filter { $0 == "OK" || $0 == "SKIP" }.count
@@ -1255,17 +1267,18 @@ final class InstallerViewModel: ObservableObject {
 
         licenseEmail = record.email
         licenseKey = record.licenseKey
+        let currentMachineId = engine.machineIdentifier()
+        let isSameMachine = record.machineId == currentMachineId
+        let hasServerActivation = !record.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasValidOnlineActivation = isSameMachine && hasServerActivation && !isExpiredLicenseDate(record.expiresAt)
+        let hasValidOfflineActivation = allowsOfflineLicenses && isSameMachine && isValidOfflineKey(record.licenseKey)
 
-        // Keep activation valid when we have either:
-        // - a valid offline key format, or
-        // - an API activation token (even if backend does not return expiresAt), or
-        // - an explicit expiresAt value
-        if (allowsOfflineLicenses && isValidOfflineKey(record.licenseKey)) || !record.token.isEmpty || (record.expiresAt != nil) {
+        if hasValidOnlineActivation || hasValidOfflineActivation {
             isActivated = true
             activationStatus = "Activated on this Mac"
         } else {
             isActivated = false
-            activationStatus = "License expired, renew required"
+            activationStatus = isSameMachine ? "License expired, renew required" : "License belongs to another Mac"
             try? FileManager.default.removeItem(at: localLicenseFile)
         }
     }
