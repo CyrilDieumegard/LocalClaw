@@ -2852,6 +2852,51 @@ final class InstallerViewModel: ObservableObject {
         let apiKey = self.requiredProviderKey()
 
         Task.detached {
+            let clt = engine.ensureXcodeCLITools()
+            if clt.state == .fail {
+                await MainActor.run {
+                    self.ocStepNode = clt.state.rawValue
+                    self.statusNode = clt.state.rawValue
+                    self.append("[\(clt.state.rawValue)] Preflight - Xcode CLI Tools")
+                    self.append("  \(clt.message)")
+                    self.append("Setup blocked: Xcode CLI Tools are required before installing OpenClaw.")
+                    self.isRunning = false
+                }
+                return
+            }
+
+            let brew = engine.installHomebrewIfNeeded()
+            if brew.state == .fail {
+                await MainActor.run {
+                    self.ocStepNode = brew.state.rawValue
+                    self.statusNode = brew.state.rawValue
+                    self.append("[\(clt.state.rawValue)] Preflight - Xcode CLI Tools")
+                    self.append("  \(clt.message)")
+                    self.append("[\(brew.state.rawValue)] Preflight - Homebrew")
+                    self.append("  \(brew.message)")
+                    self.append("Setup blocked: Homebrew is required before installing Node and OpenClaw.")
+                    self.isRunning = false
+                }
+                return
+            }
+
+            let brewDoctor = engine.runBrewDoctorCheck()
+            if brewDoctor.state == .fail {
+                await MainActor.run {
+                    self.ocStepNode = brewDoctor.state.rawValue
+                    self.statusNode = brewDoctor.state.rawValue
+                    self.append("[\(clt.state.rawValue)] Preflight - Xcode CLI Tools")
+                    self.append("  \(clt.message)")
+                    self.append("[\(brew.state.rawValue)] Preflight - Homebrew")
+                    self.append("  \(brew.message)")
+                    self.append("[\(brewDoctor.state.rawValue)] Preflight - Brew Doctor")
+                    self.append("  \(brewDoctor.message)")
+                    self.append("Setup blocked: fix Homebrew health before installing OpenClaw.")
+                    self.isRunning = false
+                }
+                return
+            }
+
             let node = engine.installNodeIfNeeded()
             let existing = engine.hasCommand("openclaw")
             let cli = existing
@@ -2886,6 +2931,12 @@ final class InstallerViewModel: ObservableObject {
                 self.statusOpenClaw = cli.state.rawValue
                 self.statusOpenClawCheck = verify.state.rawValue
 
+                self.append("[\(clt.state.rawValue)] Preflight - Xcode CLI Tools")
+                self.append("  \(clt.message)")
+                self.append("[\(brew.state.rawValue)] Preflight - Homebrew")
+                self.append("  \(brew.message)")
+                self.append("[\(brewDoctor.state.rawValue)] Preflight - Brew Doctor")
+                self.append("  \(brewDoctor.message)")
                 self.append("[\(node.state.rawValue)] Step 1 - Node")
                 self.append("  \(node.message)")
                 self.append("[\(cli.state.rawValue)] Step 2 - OpenClaw CLI")
