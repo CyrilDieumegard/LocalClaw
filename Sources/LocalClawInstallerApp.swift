@@ -3169,14 +3169,21 @@ final class InstallerViewModel: ObservableObject {
 }
 
 enum UI {
-    static let bg = Color(red: 0.95, green: 0.95, blue: 0.94)
-    static let bg2 = Color(red: 0.94, green: 0.94, blue: 0.93)
-    static let card = Color(red: 0.97, green: 0.97, blue: 0.96)
-    static let cardSoft = Color(red: 0.98, green: 0.98, blue: 0.97)
+    static let bg = adaptive(light: NSColor(red: 0.95, green: 0.95, blue: 0.94, alpha: 1), dark: NSColor(red: 0.05, green: 0.05, blue: 0.05, alpha: 1))
+    static let bg2 = adaptive(light: NSColor(red: 0.94, green: 0.94, blue: 0.93, alpha: 1), dark: NSColor(red: 0.08, green: 0.08, blue: 0.08, alpha: 1))
+    static let card = adaptive(light: NSColor(red: 0.97, green: 0.97, blue: 0.96, alpha: 1), dark: NSColor(red: 0.12, green: 0.12, blue: 0.12, alpha: 1))
+    static let cardSoft = adaptive(light: NSColor(red: 0.98, green: 0.98, blue: 0.97, alpha: 1), dark: NSColor(red: 0.16, green: 0.16, blue: 0.16, alpha: 1))
     static let accent = Color(red: 1.00, green: 0.30, blue: 0.24)
     static let accent2 = Color(red: 1.00, green: 0.42, blue: 0.24)
-    static let text = Color(red: 0.12, green: 0.17, blue: 0.28)
-    static let muted = Color(red: 0.37, green: 0.45, blue: 0.57)
+    static let text = adaptive(light: NSColor(red: 0.12, green: 0.17, blue: 0.28, alpha: 1), dark: NSColor(red: 0.93, green: 0.93, blue: 0.91, alpha: 1))
+    static let muted = adaptive(light: NSColor(red: 0.37, green: 0.45, blue: 0.57, alpha: 1), dark: NSColor(red: 0.62, green: 0.62, blue: 0.60, alpha: 1))
+
+    private static func adaptive(light: NSColor, dark: NSColor) -> Color {
+        Color(NSColor(name: nil) { appearance in
+            let best = appearance.bestMatch(from: [.darkAqua, .aqua])
+            return best == .darkAqua ? dark : light
+        })
+    }
 }
 
 enum AppFont {
@@ -3415,6 +3422,7 @@ struct ContentView: View {
     @StateObject private var vm = InstallerViewModel()
     @State private var helpTab: HelpTab = .stepByStep
     @State private var isSidebarVisible = true
+    @AppStorage("localclaw.appearance") private var appearance = "dark"
 
     var body: some View {
         ZStack {
@@ -3477,6 +3485,7 @@ struct ContentView: View {
         }
         .frame(minWidth: 1100, idealWidth: 1440, maxWidth: .infinity,
                minHeight: 760, idealHeight: 920, maxHeight: .infinity)
+        .preferredColorScheme(appearance == "light" ? .light : .dark)
         .onAppear { vm.bootstrap() }
         .alert("Homebrew Required", isPresented: $vm.showHomebrewPrompt) {
             Button("Install Homebrew", role: .none) { vm.installHomebrewWithUserConsent() }
@@ -3522,7 +3531,17 @@ struct ContentView: View {
 
             Spacer()
 
-            VStack(alignment: .trailing, spacing: 4) {
+            HStack(alignment: .top, spacing: 10) {
+                Picker("", selection: $appearance) {
+                    Image(systemName: "moon.fill").tag("dark")
+                    Image(systemName: "sun.max.fill").tag("light")
+                }
+                .pickerStyle(.segmented)
+                .tint(UI.accent)
+                .frame(width: 82)
+                .help("Switch appearance")
+
+                VStack(alignment: .trailing, spacing: 4) {
                 Picker("", selection: $vm.inferenceMode) {
                     Text("Cloud LLM").tag(InstallerViewModel.InferenceMode.cloud)
                     Text("Local LLM").tag(InstallerViewModel.InferenceMode.local)
@@ -3538,6 +3557,7 @@ struct ContentView: View {
                     Text(vm.modeSwitchInProgress ? "Switching..." : vm.modeSwitchStatus)
                         .font(AppFont.body(10))
                         .foregroundStyle(vm.modeSwitchInProgress ? UI.accent : Color(NSColor.systemGreen))
+                }
                 }
             }
         }
@@ -5644,7 +5664,7 @@ struct ContentView: View {
 struct LocalClawInstallerApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView().preferredColorScheme(.light)
+            ContentView()
         }
         .defaultSize(width: 1440, height: 920)
     }
