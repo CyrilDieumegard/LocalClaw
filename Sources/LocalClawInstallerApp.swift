@@ -3214,6 +3214,26 @@ struct CTAButton: ButtonStyle {
     }
 }
 
+struct CompactChatButton: ButtonStyle {
+    var primary: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(AppFont.bodySemi(12))
+            .foregroundStyle(primary ? .white : UI.text)
+            .lineLimit(1)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 13)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(primary ? UI.accent : UI.cardSoft)
+            )
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(primary ? UI.accent : UI.lineSoft, lineWidth: 1))
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .opacity(configuration.isPressed ? 0.94 : 1)
+    }
+}
+
 struct CompactGhostButton: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -3817,25 +3837,22 @@ struct ContentView: View {
 
     var openClawChat: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 12) {
-                Image(systemName: "message.badge.waveform")
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(UI.accent)
-                Text("OpenClaw Chat")
-                    .font(AppFont.heading(28))
-                    .foregroundStyle(UI.text)
-                HStack(spacing: 8) {
-                    chatInfoPill(vm.openClawChatModeLabel, icon: vm.inferenceMode == .local ? "desktopcomputer" : "cloud.fill")
-                    chatInfoPill(vm.openClawChatModelLabel, icon: "cpu")
-                }
-                Spacer()
-                Label(vm.chatStatus, systemImage: vm.chatStatus == "Ready" ? "checkmark.circle.fill" : "circle.fill")
-                    .font(AppFont.bodySemi(12))
-                    .foregroundStyle(vm.chatStatus == "Ready" ? Color(NSColor.systemGreen) : UI.accent)
-            }
-
             if vm.inferenceMode == .local {
-                HStack(spacing: 8) {
+                HStack(alignment: .center, spacing: 10) {
+                    Image(systemName: "message.badge.waveform")
+                        .font(.system(size: 23, weight: .semibold))
+                        .foregroundStyle(UI.accent)
+                    Text("OpenClaw Chat")
+                        .font(AppFont.heading(26))
+                        .foregroundStyle(UI.text)
+                        .lineLimit(1)
+
+                    chatInfoPill(vm.openClawChatModeLabel, icon: vm.inferenceMode == .local ? "desktopcomputer" : "cloud.fill")
+
+                    Text("Model")
+                        .font(AppFont.bodySemi(12))
+                        .foregroundStyle(UI.muted)
+
                     Picker("Local model", selection: $vm.selectedLocalLMStudioModel) {
                         if vm.localLMStudioModels.isEmpty {
                             Text("No LM Studio model found").tag("")
@@ -3845,20 +3862,30 @@ struct ContentView: View {
                             }
                         }
                     }
-                    .frame(minWidth: 260, idealWidth: 420, maxWidth: 520)
+                    .labelsHidden()
+                    .frame(minWidth: 210, idealWidth: 300, maxWidth: 360)
+
                     Button(vm.localLMStudioSetupInProgress ? "SETTING UP..." : "AUTO SETUP") {
                         vm.autoSetupSelectedLocalLMStudioModel()
                     }
-                    .buttonStyle(CTAButton(primary: true))
+                    .buttonStyle(CompactChatButton(primary: true))
                     .disabled(vm.localLMStudioSetupInProgress || vm.selectedLocalLMStudioModel.isEmpty)
+
                     Button("SCAN") { vm.refreshLocalLMStudioModels() }
-                        .buttonStyle(CTAButton(primary: false))
+                        .buttonStyle(CompactChatButton(primary: false))
+
                     Button(vm.localLMStudioRepairInProgress ? "REPAIRING..." : "REPAIR LM STUDIO") {
                         vm.repairLMStudioRuntimeFromChat()
                     }
-                    .buttonStyle(CTAButton(primary: false))
+                    .buttonStyle(CompactChatButton(primary: false))
                     .disabled(vm.localLMStudioRepairInProgress || vm.localLMStudioSetupInProgress)
+
                     Spacer(minLength: 0)
+
+                    Label(vm.chatStatus, systemImage: vm.chatStatus == "Ready" ? "checkmark.circle.fill" : "circle.fill")
+                        .font(AppFont.bodySemi(12))
+                        .foregroundStyle(vm.chatStatus == "Ready" ? Color(NSColor.systemGreen) : UI.accent)
+                        .lineLimit(1)
                 }
 
                 if !vm.localLMStudioSetupStatus.isEmpty {
@@ -3883,6 +3910,23 @@ struct ContentView: View {
                     }
                     .font(AppFont.body(11))
                     .foregroundStyle(UI.muted)
+                }
+            } else {
+                HStack(alignment: .center, spacing: 12) {
+                    Image(systemName: "message.badge.waveform")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundStyle(UI.accent)
+                    Text("OpenClaw Chat")
+                        .font(AppFont.heading(28))
+                        .foregroundStyle(UI.text)
+                    HStack(spacing: 8) {
+                        chatInfoPill(vm.openClawChatModeLabel, icon: vm.inferenceMode == .local ? "desktopcomputer" : "cloud.fill")
+                        chatInfoPill(vm.openClawChatModelLabel, icon: "cpu")
+                    }
+                    Spacer()
+                    Label(vm.chatStatus, systemImage: vm.chatStatus == "Ready" ? "checkmark.circle.fill" : "circle.fill")
+                        .font(AppFont.bodySemi(12))
+                        .foregroundStyle(vm.chatStatus == "Ready" ? Color(NSColor.systemGreen) : UI.accent)
                 }
             }
 
