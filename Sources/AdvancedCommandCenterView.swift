@@ -256,21 +256,46 @@ final class CommandCenterViewModel: ObservableObject {
     }
 
     func killProcess(_ pid: Int) {
+        guard confirmProcessAction(
+            title: "Kill process?",
+            message: "This will send TERM to PID \(pid). Unsaved work in that process may be lost."
+        ) else { return }
+
         let result = engine.killProcess(pid: pid)
         addLog(result.state == .ok ? .success : .error, result.message)
         refreshResourceInfo()
     }
 
     func emergencyCleanup() {
+        guard confirmProcessAction(
+            title: "Run emergency cleanup?",
+            message: "This will stop LocalClaw, LM Studio, and OpenClaw helper processes to recover memory. Active local model sessions may close."
+        ) else { return }
+
         let result = engine.emergencyCleanup()
         addLog(result.state == .ok ? .success : .error, result.message)
         refreshResourceInfo()
     }
 
     func fixMySpeed() {
+        guard confirmProcessAction(
+            title: "Fix speed?",
+            message: "This will stop LocalClaw, LM Studio, and OpenClaw helper processes. It will not close browser or Discord helper processes."
+        ) else { return }
+
         let result = engine.runPerformanceAutopilot()
         addLog(result.state == .ok ? .success : .error, result.message)
         refreshResourceInfo()
+    }
+
+    private func confirmProcessAction(title: String, message: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
     
     func addLog(_ level: LogEntry.LogLevel, _ message: String) {

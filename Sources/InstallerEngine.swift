@@ -643,15 +643,13 @@ final class InstallerEngine: @unchecked Sendable {
     func runPerformanceAutopilot() -> StepResult {
         let command = [
             "pkill -f '.lmstudio/.internal/utils/node' 2>/dev/null || true",
-            "pkill -f 'Google Chrome Helper (Renderer)' 2>/dev/null || true",
-            "pkill -f 'Brave Browser Helper (Renderer)' 2>/dev/null || true",
-            "pkill -f 'Discord Helper (Renderer)' 2>/dev/null || true",
-            "pkill -f 'Genspark Helper (Renderer)' 2>/dev/null || true"
+            "pkill -f 'LM Studio' 2>/dev/null || true",
+            "pkill -f 'openclaw-gateway' 2>/dev/null || true"
         ].joined(separator: "; ")
 
         let (code, out) = shell(command)
         return code == 0
-            ? StepResult(state: .ok, message: "Performance autopilot applied: killed heavy helper processes")
+            ? StepResult(state: .ok, message: "Performance autopilot applied: stopped LocalClaw/LM Studio helper processes")
             : StepResult(state: .fail, message: out)
     }
 

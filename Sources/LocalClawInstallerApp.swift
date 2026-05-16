@@ -717,15 +717,35 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func killHeavyProcess(_ pid: Int) {
+        guard confirmProcessAction(
+            title: "Kill process?",
+            message: "This will send TERM to PID \(pid). Unsaved work in that process may be lost."
+        ) else { return }
+
         let result = engine.killProcess(pid: pid)
         controlCenterLogs += "[\(result.state.rawValue)] \(result.message)\n"
         refreshControlCenter()
     }
 
     func emergencyCleanupAction() {
+        guard confirmProcessAction(
+            title: "Run emergency cleanup?",
+            message: "This will stop LocalClaw, LM Studio, and OpenClaw helper processes to recover memory. Active local model sessions may close."
+        ) else { return }
+
         let result = engine.emergencyCleanup()
         controlCenterLogs += "[\(result.state.rawValue)] \(result.message)\n"
         refreshControlCenter()
+    }
+
+    private func confirmProcessAction(title: String, message: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     func runDoctor() {
