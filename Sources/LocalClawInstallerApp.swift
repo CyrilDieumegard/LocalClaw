@@ -1541,8 +1541,12 @@ final class InstallerViewModel: ObservableObject {
         append("Opened installer download: \(installerDownloadURL)")
     }
 
+    nonisolated static func shellSingleQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+    }
+
     private func shellSingleQuote(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\''") + "'"
+        Self.shellSingleQuote(value)
     }
 
     nonisolated static func sha256Hex(for fileURL: URL) throws -> String {

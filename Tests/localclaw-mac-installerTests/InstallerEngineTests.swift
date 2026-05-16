@@ -84,4 +84,10 @@ struct InstallerEngineTests {
 
         #expect(hash == "a1c2aaf18a271d28ac8433e25331c5ae53b09ff48b1db8b960c65e243545aea0")
     }
+
+    @Test func shellSingleQuoteEscapesApostrophes() {
+        let quoted = InstallerViewModel.shellSingleQuote("/Users/cyril/LocalClaw's update/localclaw.dmg")
+
+        #expect(quoted == #"'/Users/cyril/LocalClaw'"'"'s update/localclaw.dmg'"#)
+    }
 }
