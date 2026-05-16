@@ -2,6 +2,7 @@ import SwiftUI
 import Foundation
 import AppKit
 import CryptoKit
+import UniformTypeIdentifiers
 
 @MainActor
 final class InstallerViewModel: ObservableObject {
@@ -25,13 +26,15 @@ final class InstallerViewModel: ObservableObject {
         let role: String
         let text: String
         let metadata: String?
+        let imagePath: String?
         let createdAt: Date
 
-        init(id: UUID = UUID(), role: String, text: String, metadata: String? = nil, createdAt: Date = Date()) {
+        init(id: UUID = UUID(), role: String, text: String, metadata: String? = nil, imagePath: String? = nil, createdAt: Date = Date()) {
             self.id = id
             self.role = role
             self.text = text
             self.metadata = metadata
+            self.imagePath = imagePath
             self.createdAt = createdAt
         }
     }
@@ -307,6 +310,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var isRunning = false
 
     @Published var chatInput = ""
+    @Published var chatImagePath = ""
     @Published var chatSessions: [ChatSession] = [ChatSession.fresh(title: "Main setup")] {
         didSet { persistChatSessions() }
     }
@@ -2181,11 +2185,15 @@ final class InstallerViewModel: ObservableObject {
 
     func sendChatMessage() {
         let text = chatInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.isEmpty || chatIsSending { return }
+        let imagePath = chatImagePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if (text.isEmpty && imagePath.isEmpty) || chatIsSending { return }
 
         chatInput = ""
-        chatMessages.append(ChatMessage(role: "user", text: text))
-        renameSelectedChatSession(from: text)
+        chatImagePath = ""
+        let userText = text.isEmpty ? "Image attached" : text
+        let agentText = imagePath.isEmpty ? text : "\(userText)\n\n[Attached image: \(imagePath)]"
+        chatMessages.append(ChatMessage(role: "user", text: userText, imagePath: imagePath.isEmpty ? nil : imagePath))
+        renameSelectedChatSession(from: userText)
         chatIsSending = true
         chatStatus = "Thinking..."
         let sessionID = activeChatSessionID
@@ -2203,7 +2211,7 @@ final class InstallerViewModel: ObservableObject {
 
             let tempMessagePath = NSTemporaryDirectory() + "localclaw-chat-message-\(UUID().uuidString).txt"
             do {
-                try text.write(toFile: tempMessagePath, atomically: true, encoding: .utf8)
+                try agentText.write(toFile: tempMessagePath, atomically: true, encoding: .utf8)
             } catch {
                 await MainActor.run {
                     self.chatMessages.append(ChatMessage(role: "error", text: "I couldn’t prepare the message for OpenClaw: \(error.localizedDescription)"))
@@ -2247,6 +2255,23 @@ final class InstallerViewModel: ObservableObject {
                 self.chatIsSending = false
             }
         }
+    }
+
+    func attachChatImage() {
+        let panel = NSOpenPanel()
+        panel.title = "Attach image"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.png, .jpeg, .gif, .tiff, .bmp, .heic, .webP]
+
+        if panel.runModal() == .OK, let url = panel.url {
+            chatImagePath = url.path
+        }
+    }
+
+    func removeChatImage() {
+        chatImagePath = ""
     }
 
     nonisolated private static func isBrokenGlobalWhatsAppPluginError(_ raw: String) -> Bool {
@@ -4043,17 +4068,29 @@ struct ContentView: View {
                                 }
                                 .padding(.horizontal, 10)
                             }
+                            Color.clear
+                                .frame(height: 18)
+                                .id("chat-bottom-anchor")
                         }
-                        .padding(14)
+                        .padding(.horizontal, 14)
+                        .padding(.top, 14)
+                        .padding(.bottom, 28)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(RoundedRectangle(cornerRadius: 16).fill(UI.cardSoft))
                     .overlay(RoundedRectangle(cornerRadius: 16).stroke(UI.lineSoft, lineWidth: 1))
                     .onChange(of: vm.chatMessages.count) { _ in
-                        if let last = vm.chatMessages.last?.id {
-                            withAnimation { proxy.scrollTo(last, anchor: .bottom) }
-                        }
+                        scrollChatToBottom(proxy)
+                    }
+                    .onChange(of: vm.chatIsSending) { _ in
+                        scrollChatToBottom(proxy)
+                    }
+                    .onChange(of: vm.activeChatSessionID) { _ in
+                        scrollChatToBottom(proxy)
+                    }
+                    .onAppear {
+                        scrollChatToBottom(proxy)
                     }
                 }
             }
@@ -4069,10 +4106,23 @@ struct ContentView: View {
         .onAppear { vm.refreshOpenClawChatInfo() }
     }
 
+    func scrollChatToBottom(_ proxy: ScrollViewProxy) {
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.22)) {
+                proxy.scrollTo("chat-bottom-anchor", anchor: .bottom)
+            }
+        }
+    }
+
     var chatComposer: some View {
-        let canSend = !vm.chatIsSending && !vm.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasImage = !vm.chatImagePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let canSend = !vm.chatIsSending && (!vm.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasImage)
 
         return VStack(alignment: .leading, spacing: 12) {
+            if hasImage {
+                chatImagePreview(path: vm.chatImagePath)
+            }
+
             TextField("Message OpenClaw...", text: $vm.chatInput, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(AppFont.body(15))
@@ -4081,7 +4131,7 @@ struct ContentView: View {
                 .onSubmit { vm.sendChatMessage() }
 
             HStack(spacing: 14) {
-                chatComposerIcon("plus", help: "Add context")
+                chatComposerIcon("plus", help: "Attach image") { vm.attachChatImage() }
                 chatComposerIcon("globe", help: "Web context")
                 chatComposerIcon("apps.iphone", help: "Apps")
 
@@ -4119,16 +4169,58 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 22).stroke(UI.line, lineWidth: 1))
     }
 
-    func chatComposerIcon(_ systemName: String, help: String) -> some View {
-        Button(action: {}) {
+    func chatComposerIcon(_ systemName: String, help: String, action: @escaping () -> Void = {}) -> some View {
+        Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(UI.muted)
                 .frame(width: 26, height: 26)
         }
         .buttonStyle(.plain)
-        .disabled(true)
+        .disabled(systemName != "plus")
         .help(help)
+    }
+
+    func chatImagePreview(path: String) -> some View {
+        HStack(spacing: 10) {
+            if let image = NSImage(contentsOfFile: path) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 56, height: 42)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+            } else {
+                Image(systemName: "photo")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(UI.muted)
+                    .frame(width: 56, height: 42)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(URL(fileURLWithPath: path).lastPathComponent)
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(UI.text)
+                    .lineLimit(1)
+                Text("Image attached")
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+            }
+
+            Spacer()
+
+            Button(action: { vm.removeChatImage() }) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(UI.muted)
+            }
+            .buttonStyle(.plain)
+            .help("Remove image")
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 12).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     func chatSessionRow(_ session: InstallerViewModel.ChatSession) -> some View {
@@ -4178,6 +4270,9 @@ struct ContentView: View {
                     .font(AppFont.body(14))
                     .foregroundStyle(isError ? Color(NSColor.systemRed) : UI.text)
                     .textSelection(.enabled)
+                if let imagePath = message.imagePath, !imagePath.isEmpty {
+                    chatMessageImage(path: imagePath)
+                }
                 if let metadata = message.metadata, !metadata.isEmpty {
                     Label(metadata, systemImage: "speedometer")
                         .font(AppFont.body(10))
@@ -4190,6 +4285,25 @@ struct ContentView: View {
             .overlay(RoundedRectangle(cornerRadius: 13).stroke(isError ? Color(NSColor.systemRed).opacity(0.3) : Color.black.opacity(0.06), lineWidth: 1))
             if !isUser { Spacer(minLength: 80) }
         }
+    }
+
+    func chatMessageImage(path: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let image = NSImage(contentsOfFile: path) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: 280, maxHeight: 180)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+            }
+
+            Label(URL(fileURLWithPath: path).lastPathComponent, systemImage: "photo")
+                .font(AppFont.body(10))
+                .foregroundStyle(UI.muted)
+                .lineLimit(1)
+        }
+        .padding(.top, 4)
     }
 
     var options: some View {
