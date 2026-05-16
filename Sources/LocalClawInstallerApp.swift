@@ -4560,15 +4560,35 @@ struct ContentView: View {
     func chatBubble(_ message: InstallerViewModel.ChatMessage) -> some View {
         let isUser = message.role == "user"
         let isError = message.role == "error"
+        let senderName = isUser ? "You" : (isError ? "Error" : "OpenClaw")
+        let senderIcon = isUser ? "person.fill" : (isError ? "exclamationmark.triangle.fill" : "sparkles")
+        let bubbleFill = isError ? Color(NSColor.systemRed).opacity(0.08) : (isUser ? UI.accent.opacity(0.16) : UI.card)
+        let bubbleStroke = isError ? Color(NSColor.systemRed).opacity(0.35) : (isUser ? UI.accent.opacity(0.22) : Color.black.opacity(0.06))
         return HStack {
             if isUser { Spacer(minLength: 80) }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(isUser ? "You" : (isError ? "Error" : "OpenClaw"))
-                    .font(AppFont.bodySemi(11))
-                    .foregroundStyle(isError ? Color(NSColor.systemRed) : UI.muted)
-                Text(message.text)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 7) {
+                    Label(senderName, systemImage: senderIcon)
+                        .font(AppFont.bodySemi(11))
+                        .foregroundStyle(isError ? Color(NSColor.systemRed) : UI.muted)
+                    Spacer(minLength: 12)
+                    Button {
+                        copyChatMessage(message.text)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(UI.muted)
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy message")
+                    .background(Circle().fill(UI.cardSoft.opacity(0.9)))
+                    .overlay(Circle().stroke(UI.lineSoft, lineWidth: 1))
+                }
+                renderedChatText(message.text)
                     .font(AppFont.body(14))
                     .foregroundStyle(isError ? Color(NSColor.systemRed) : UI.text)
+                    .lineSpacing(3)
                     .textSelection(.enabled)
                 if let imagePath = message.imagePath, !imagePath.isEmpty {
                     chatMessageImage(path: imagePath)
@@ -4579,12 +4599,24 @@ struct ContentView: View {
                         .foregroundStyle(UI.muted)
                 }
             }
-            .padding(11)
+            .padding(12)
             .frame(maxWidth: 760, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 13).fill(isUser ? UI.accent.opacity(0.13) : UI.card))
-            .overlay(RoundedRectangle(cornerRadius: 13).stroke(isError ? Color(NSColor.systemRed).opacity(0.3) : Color.black.opacity(0.06), lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: 14).fill(bubbleFill))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(bubbleStroke, lineWidth: 1))
             if !isUser { Spacer(minLength: 80) }
         }
+    }
+
+    func copyChatMessage(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    func renderedChatText(_ text: String) -> Text {
+        if let markdown = try? AttributedString(markdown: text) {
+            return Text(markdown)
+        }
+        return Text(text)
     }
 
     func chatMessageImage(path: String) -> some View {
