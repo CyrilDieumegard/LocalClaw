@@ -1,6 +1,6 @@
 {
-  "latestVersion": "1.0.31",
+  "latestVersion": "1.0.32",
   "dmgUrl": "https://localclaw.io/downloads/builds/localclaw.dmg",
-  "notesUrl": "https://localclaw.io/changelog/localclaw-installer-v1.0.31",
-  "sha256": "4a92a9d2da74b0d9df32a83fc9dea53585c1a9c1b8339a6acddf2913a2f590ce"
+  "notesUrl": "https://localclaw.io/changelog/localclaw-installer-v1.0.32",
+  "sha256": "cd367ee7c961553cff18c7a7f2bd4c2f2660225e4d5f2b51cf47b6f1305c6f20"
 }

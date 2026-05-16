@@ -1468,8 +1468,10 @@ final class InstallerViewModel: ObservableObject {
         }
         let expectedSHA256 = installerExpectedSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard expectedSHA256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else {
-            installerUpdateStatus = "Update blocked"
-            append("Update blocked: manifest is missing a valid SHA256 checksum for the DMG.")
+            installerUpdateStatus = "Using Git update..."
+            append("DMG update unavailable: manifest is missing a valid SHA256 checksum.")
+            append("Falling back to Advanced Git Update.")
+            updateLocalClaw()
             return
         }
 
