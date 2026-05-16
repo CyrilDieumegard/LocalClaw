@@ -43,6 +43,7 @@ final class InstallerViewModel: ObservableObject {
         let id: String
         var title: String
         var subtitle: String
+        var projectID: String?
         var messages: [ChatMessage]
         var updatedAt: Date
 
@@ -51,9 +52,20 @@ final class InstallerViewModel: ObservableObject {
                 id: "localclaw-ui-chat-\(UUID().uuidString)",
                 title: title,
                 subtitle: "OpenClaw assistant",
+                projectID: nil,
                 messages: [ChatMessage(role: "assistant", text: "Hi, I’m OpenClaw inside LocalClaw. Ask me anything about your setup.")],
                 updatedAt: Date()
             )
+        }
+    }
+
+    struct ChatProject: Identifiable, Codable {
+        let id: String
+        var title: String
+        var createdAt: Date
+
+        static func fresh(index: Int) -> ChatProject {
+            ChatProject(id: "localclaw-chat-project-\(UUID().uuidString)", title: "Project \(index)", createdAt: Date())
         }
     }
 
@@ -311,6 +323,10 @@ final class InstallerViewModel: ObservableObject {
 
     @Published var chatInput = ""
     @Published var chatImagePath = ""
+    @Published var chatProjects: [ChatProject] = [] {
+        didSet { persistChatProjects() }
+    }
+    @Published var expandedChatProjectIDs: Set<String> = []
     @Published var chatSessions: [ChatSession] = [ChatSession.fresh(title: "Main setup")] {
         didSet { persistChatSessions() }
     }
@@ -374,6 +390,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var modeSwitchStatus: String = ""
 
     private static let chatSessionsDefaultsKey = "localclaw.chat.sessions.v1"
+    private static let chatProjectsDefaultsKey = "localclaw.chat.projects.v1"
     private static let selectedChatSessionDefaultsKey = "localclaw.chat.selectedSession.v1"
     private static let modelUsageDefaultsKey = "localclaw.modelUsage.records.v1"
 
@@ -2094,6 +2111,7 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func restoreChatSessions() {
+        restoreChatProjects()
         if let data = UserDefaults.standard.data(forKey: Self.chatSessionsDefaultsKey),
            let decoded = try? JSONDecoder().decode([ChatSession].self, from: data),
            !decoded.isEmpty {
@@ -2106,6 +2124,18 @@ final class InstallerViewModel: ObservableObject {
     func persistChatSessions() {
         guard let data = try? JSONEncoder().encode(chatSessions) else { return }
         UserDefaults.standard.set(data, forKey: Self.chatSessionsDefaultsKey)
+    }
+
+    func restoreChatProjects() {
+        guard let data = UserDefaults.standard.data(forKey: Self.chatProjectsDefaultsKey),
+              let decoded = try? JSONDecoder().decode([ChatProject].self, from: data) else { return }
+        chatProjects = decoded.sorted { $0.createdAt < $1.createdAt }
+        expandedChatProjectIDs = Set(chatProjects.map(\.id))
+    }
+
+    func persistChatProjects() {
+        guard let data = try? JSONEncoder().encode(chatProjects) else { return }
+        UserDefaults.standard.set(data, forKey: Self.chatProjectsDefaultsKey)
     }
 
     func restoreModelUsageRecords() {
@@ -2154,6 +2184,41 @@ final class InstallerViewModel: ObservableObject {
         selectedChatSessionID = session.id
         chatInput = ""
         chatStatus = "Ready"
+    }
+
+    func newChatProject() {
+        let project = ChatProject.fresh(index: chatProjects.count + 1)
+        chatProjects.append(project)
+        expandedChatProjectIDs.insert(project.id)
+    }
+
+    func toggleChatProject(_ project: ChatProject) {
+        if expandedChatProjectIDs.contains(project.id) {
+            expandedChatProjectIDs.remove(project.id)
+        } else {
+            expandedChatProjectIDs.insert(project.id)
+        }
+    }
+
+    func chatSessions(in project: ChatProject) -> [ChatSession] {
+        chatSessions.filter { $0.projectID == project.id }.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    var unfiledChatSessions: [ChatSession] {
+        chatSessions.filter { session in
+            guard let projectID = session.projectID, !projectID.isEmpty else { return true }
+            return !chatProjects.contains { $0.id == projectID }
+        }
+        .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    func moveChatSession(_ sessionID: String, toProjectID projectID: String?) {
+        guard let index = chatSessions.firstIndex(where: { $0.id == sessionID }) else { return }
+        chatSessions[index].projectID = projectID
+        chatSessions[index].updatedAt = Date()
+        if let projectID {
+            expandedChatProjectIDs.insert(projectID)
+        }
     }
 
     func selectChatSession(_ session: ChatSession) {
@@ -4015,6 +4080,12 @@ struct ContentView: View {
                             .font(AppFont.bodySemi(12))
                             .foregroundStyle(UI.text)
                         Spacer()
+                        Button(action: { vm.newChatProject() }) {
+                            Image(systemName: "folder.badge.plus")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(UI.accent)
+                        .help("New project")
                         Button(action: { vm.newChatSession() }) {
                             Image(systemName: "plus")
                         }
@@ -4023,9 +4094,20 @@ struct ContentView: View {
                         .help("New discussion")
                     }
                     ScrollView {
-                        VStack(spacing: 8) {
-                            ForEach(vm.chatSessions) { session in
-                                chatSessionRow(session)
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(vm.chatProjects) { project in
+                                chatProjectSection(project)
+                            }
+
+                            if !vm.unfiledChatSessions.isEmpty {
+                                Text(vm.chatProjects.isEmpty ? "Chats" : "No project")
+                                    .font(AppFont.bodySemi(10))
+                                    .foregroundStyle(UI.muted)
+                                    .padding(.horizontal, 4)
+                                    .padding(.top, vm.chatProjects.isEmpty ? 0 : 4)
+                                ForEach(vm.unfiledChatSessions) { session in
+                                    chatSessionRow(session)
+                                }
                             }
                         }
                     }
@@ -4223,6 +4305,71 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
     }
 
+    func chatProjectSection(_ project: InstallerViewModel.ChatProject) -> some View {
+        let sessions = vm.chatSessions(in: project)
+        let isExpanded = vm.expandedChatProjectIDs.contains(project.id)
+
+        return VStack(alignment: .leading, spacing: 6) {
+            Button(action: { vm.toggleChatProject(project) }) {
+                HStack(spacing: 7) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 12)
+                    Image(systemName: "folder")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(project.title)
+                        .font(AppFont.bodySemi(12))
+                        .lineLimit(1)
+                    Spacer()
+                    Text("\(sessions.count)")
+                        .font(AppFont.body(10))
+                        .foregroundStyle(UI.muted)
+                }
+                .foregroundStyle(UI.text)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .onDrop(of: [UTType.text], isTargeted: nil) { providers in
+                handleChatDrop(providers, projectID: project.id)
+            }
+
+            if isExpanded {
+                if sessions.isEmpty {
+                    Text("Drop chats here")
+                        .font(AppFont.body(10))
+                        .foregroundStyle(UI.muted)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 4)
+                } else {
+                    ForEach(sessions) { session in
+                        chatSessionRow(session)
+                            .padding(.leading, 12)
+                    }
+                }
+            }
+        }
+    }
+
+    func handleChatDrop(_ providers: [NSItemProvider], projectID: String?) -> Bool {
+        guard let provider = providers.first else { return false }
+        provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { item, _ in
+            let value: String?
+            if let data = item as? Data {
+                value = String(data: data, encoding: .utf8)
+            } else {
+                value = item as? String
+            }
+            guard let sessionID = value?.trimmingCharacters(in: .whitespacesAndNewlines), !sessionID.isEmpty else { return }
+            DispatchQueue.main.async {
+                vm.moveChatSession(sessionID, toProjectID: projectID)
+            }
+        }
+        return true
+    }
+
     func chatSessionRow(_ session: InstallerViewModel.ChatSession) -> some View {
         let isActive = session.id == vm.activeChatSessionID
         return Button(action: { vm.selectChatSession(session) }) {
@@ -4243,6 +4390,7 @@ struct ContentView: View {
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
         }
         .buttonStyle(.plain)
+        .onDrag { NSItemProvider(object: session.id as NSString) }
     }
 
     func chatInfoPill(_ text: String, icon: String) -> some View {
