@@ -3414,6 +3414,7 @@ struct ContentView: View {
 
     @StateObject private var vm = InstallerViewModel()
     @State private var helpTab: HelpTab = .stepByStep
+    @State private var isSidebarVisible = true
 
     var body: some View {
         ZStack {
@@ -3434,8 +3435,11 @@ struct ContentView: View {
                 .padding(.vertical, 18)
             } else {
                 HStack(spacing: 16) {
-                    sidebar
-                        .frame(width: 240)
+                    if isSidebarVisible {
+                        sidebar
+                            .frame(width: 240)
+                            .transition(.move(edge: .leading).combined(with: .opacity))
+                    }
 
                     VStack(spacing: 14) {
                         topBar
@@ -3484,6 +3488,21 @@ struct ContentView: View {
 
     private var topBar: some View {
         HStack(spacing: 10) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isSidebarVisible.toggle()
+                }
+            } label: {
+                Image(systemName: isSidebarVisible ? "sidebar.left" : "sidebar.left")
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(UI.text)
+            .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.07), lineWidth: 1))
+            .help(isSidebarVisible ? "Hide navigation" : "Show navigation")
+
             BrandLogoView(size: 20)
             VStack(alignment: .leading, spacing: 1) {
                 Text("LocalClaw")
