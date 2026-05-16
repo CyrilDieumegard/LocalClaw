@@ -62,10 +62,39 @@ final class InstallerViewModel: ObservableObject {
     struct ChatProject: Identifiable, Codable {
         let id: String
         var title: String
+        var icon: String
+        var colorName: String
         var createdAt: Date
 
+        init(id: String, title: String, icon: String = "folder", colorName: String = "red", createdAt: Date) {
+            self.id = id
+            self.title = title
+            self.icon = icon
+            self.colorName = colorName
+            self.createdAt = createdAt
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id, title, icon, colorName, createdAt
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            title = try container.decode(String.self, forKey: .title)
+            icon = try container.decodeIfPresent(String.self, forKey: .icon) ?? "folder"
+            colorName = try container.decodeIfPresent(String.self, forKey: .colorName) ?? "red"
+            createdAt = try container.decode(Date.self, forKey: .createdAt)
+        }
+
         static func fresh(index: Int) -> ChatProject {
-            ChatProject(id: "localclaw-chat-project-\(UUID().uuidString)", title: "Project \(index)", createdAt: Date())
+            ChatProject(
+                id: "localclaw-chat-project-\(UUID().uuidString)",
+                title: "Project \(index)",
+                icon: "folder",
+                colorName: "red",
+                createdAt: Date()
+            )
         }
     }
 
@@ -327,6 +356,8 @@ final class InstallerViewModel: ObservableObject {
         didSet { persistChatProjects() }
     }
     @Published var expandedChatProjectIDs: Set<String> = []
+    @Published var editingChatProjectID = ""
+    @Published var editingChatProjectTitle = ""
     @Published var chatSessions: [ChatSession] = [ChatSession.fresh(title: "Main setup")] {
         didSet { persistChatSessions() }
     }
@@ -2190,6 +2221,8 @@ final class InstallerViewModel: ObservableObject {
         let project = ChatProject.fresh(index: chatProjects.count + 1)
         chatProjects.append(project)
         expandedChatProjectIDs.insert(project.id)
+        editingChatProjectID = project.id
+        editingChatProjectTitle = project.title
     }
 
     func toggleChatProject(_ project: ChatProject) {
@@ -2219,6 +2252,59 @@ final class InstallerViewModel: ObservableObject {
         if let projectID {
             expandedChatProjectIDs.insert(projectID)
         }
+    }
+
+    func beginEditingChatProject(_ project: ChatProject) {
+        editingChatProjectID = project.id
+        editingChatProjectTitle = project.title
+    }
+
+    func commitEditingChatProject() {
+        let title = editingChatProjectTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !editingChatProjectID.isEmpty, !title.isEmpty,
+              let index = chatProjects.firstIndex(where: { $0.id == editingChatProjectID }) else {
+            editingChatProjectID = ""
+            editingChatProjectTitle = ""
+            return
+        }
+        chatProjects[index].title = String(title.prefix(40))
+        editingChatProjectID = ""
+        editingChatProjectTitle = ""
+    }
+
+    func updateChatProjectStyle(_ projectID: String, icon: String? = nil, colorName: String? = nil) {
+        guard let index = chatProjects.firstIndex(where: { $0.id == projectID }) else { return }
+        if let icon { chatProjects[index].icon = icon }
+        if let colorName { chatProjects[index].colorName = colorName }
+    }
+
+    func chatProjectContext(for sessionID: String) -> String {
+        guard let session = chatSessions.first(where: { $0.id == sessionID }),
+              let projectID = session.projectID,
+              let project = chatProjects.first(where: { $0.id == projectID }) else { return "" }
+
+        let siblings = chatSessions
+            .filter { $0.projectID == projectID && $0.id != sessionID }
+            .sorted { $0.updatedAt > $1.updatedAt }
+            .prefix(5)
+
+        var lines = [
+            "Project context: \(project.title)",
+            "The current chat belongs to this LocalClaw project. Treat chats in the same project as related work."
+        ]
+
+        for sibling in siblings {
+            let lastUseful = sibling.messages.reversed().first { $0.role == "user" || $0.role == "assistant" }?.text
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if lastUseful.isEmpty {
+                lines.append("- \(sibling.title)")
+            } else {
+                lines.append("- \(sibling.title): \(String(lastUseful.prefix(180)))")
+            }
+        }
+
+        return lines.joined(separator: "\n")
     }
 
     func selectChatSession(_ session: ChatSession) {
@@ -2256,7 +2342,17 @@ final class InstallerViewModel: ObservableObject {
         chatInput = ""
         chatImagePath = ""
         let userText = text.isEmpty ? "Image attached" : text
-        let agentText = imagePath.isEmpty ? text : "\(userText)\n\n[Attached image: \(imagePath)]"
+        let projectContext = chatProjectContext(for: activeChatSessionID)
+        var agentTextParts: [String] = []
+        if !projectContext.isEmpty {
+            agentTextParts.append("""
+            [LocalClaw project context]
+            \(projectContext)
+            [/LocalClaw project context]
+            """)
+        }
+        agentTextParts.append(imagePath.isEmpty ? text : "\(userText)\n\n[Attached image: \(imagePath)]")
+        let agentText = agentTextParts.joined(separator: "\n\n")
         chatMessages.append(ChatMessage(role: "user", text: userText, imagePath: imagePath.isEmpty ? nil : imagePath))
         renameSelectedChatSession(from: userText)
         chatIsSending = true
@@ -4308,30 +4404,74 @@ struct ContentView: View {
     func chatProjectSection(_ project: InstallerViewModel.ChatProject) -> some View {
         let sessions = vm.chatSessions(in: project)
         let isExpanded = vm.expandedChatProjectIDs.contains(project.id)
+        let color = chatProjectColor(project.colorName)
+        let isEditing = vm.editingChatProjectID == project.id
 
         return VStack(alignment: .leading, spacing: 6) {
-            Button(action: { vm.toggleChatProject(project) }) {
-                HStack(spacing: 7) {
+            HStack(spacing: 7) {
+                Button(action: { vm.toggleChatProject(project) }) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                         .font(.system(size: 10, weight: .bold))
                         .frame(width: 12)
-                    Image(systemName: "folder")
-                        .font(.system(size: 13, weight: .semibold))
-                    Text(project.title)
+                }
+                .buttonStyle(.plain)
+
+                Image(systemName: project.icon)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(color)
+
+                if isEditing {
+                    TextField("Project name", text: $vm.editingChatProjectTitle)
+                        .textFieldStyle(.plain)
                         .font(AppFont.bodySemi(12))
-                        .lineLimit(1)
-                    Spacer()
-                    Text("\(sessions.count)")
-                        .font(AppFont.body(10))
+                        .onSubmit { vm.commitEditingChatProject() }
+                } else {
+                    Button(action: { vm.toggleChatProject(project) }) {
+                        Text(project.title)
+                            .font(AppFont.bodySemi(12))
+                            .foregroundStyle(UI.text)
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                    .onTapGesture(count: 2) { vm.beginEditingChatProject(project) }
+                }
+
+                Spacer(minLength: 4)
+
+                Text("\(sessions.count)")
+                    .font(AppFont.body(10))
+                    .foregroundStyle(UI.muted)
+
+                Menu {
+                    Button("Rename") { vm.beginEditingChatProject(project) }
+                    Divider()
+                    ForEach(["folder", "briefcase", "sparkles", "cpu", "hammer", "graduationcap", "paintpalette"], id: \.self) { icon in
+                        Button {
+                            vm.updateChatProjectStyle(project.id, icon: icon)
+                        } label: {
+                            Label(icon, systemImage: icon)
+                        }
+                    }
+                    Divider()
+                    ForEach(["red", "orange", "yellow", "green", "blue", "purple", "gray"], id: \.self) { colorName in
+                        Button(colorName.capitalized) {
+                            vm.updateChatProjectStyle(project.id, colorName: colorName)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 12, weight: .bold))
                         .foregroundStyle(UI.muted)
                 }
-                .foregroundStyle(UI.text)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 7)
-                .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+                .menuStyle(.borderlessButton)
+                .frame(width: 20)
             }
-            .buttonStyle(.plain)
+            .foregroundStyle(UI.text)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 10).fill(color.opacity(0.10)))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(color.opacity(0.32), lineWidth: 1))
             .onDrop(of: [UTType.text], isTargeted: nil) { providers in
                 handleChatDrop(providers, projectID: project.id)
             }
@@ -4350,6 +4490,18 @@ struct ContentView: View {
                     }
                 }
             }
+        }
+    }
+
+    func chatProjectColor(_ name: String) -> Color {
+        switch name {
+        case "orange": return Color(NSColor.systemOrange)
+        case "yellow": return Color(NSColor.systemYellow)
+        case "green": return Color(NSColor.systemGreen)
+        case "blue": return Color(NSColor.systemBlue)
+        case "purple": return Color(NSColor.systemPurple)
+        case "gray": return Color(NSColor.systemGray)
+        default: return UI.accent
         }
     }
 
