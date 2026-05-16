@@ -915,7 +915,7 @@ struct AdvancedCommandCenterView: View {
                     .cornerRadius(6)
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                            .stroke(UI.lineSoft, lineWidth: 1)
                     )
                 }
                 .buttonStyle(.plain)
@@ -966,7 +966,7 @@ struct AdvancedCommandCenterView: View {
         }
         .padding(12)
         .background(UI.cardSoft)
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.06), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
         .cornerRadius(10)
     }
     
@@ -1053,7 +1053,7 @@ struct AdvancedCommandCenterView: View {
         }
         .padding(12)
         .background(UI.cardSoft)
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.06), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
         .cornerRadius(10)
     }
     
@@ -1069,7 +1069,7 @@ struct AdvancedCommandCenterView: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 8)
             .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.08), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
         }
         .buttonStyle(.plain)
     }
@@ -1127,7 +1127,7 @@ struct AdvancedCommandCenterView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .background(UI.cardSoft)
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.06), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
         .cornerRadius(10)
     }
     
@@ -1147,7 +1147,7 @@ struct AdvancedCommandCenterView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .background(UI.cardSoft)
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.06), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
         .cornerRadius(10)
     }
     
@@ -1363,7 +1363,7 @@ struct AdvancedCommandCenterView: View {
             .padding(24)
             .frame(maxWidth: 520, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 18).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1468,7 +1468,7 @@ struct ActionButton: View {
         .buttonStyle(.plain)
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                .stroke(UI.lineSoft, lineWidth: 1)
         )
     }
 }

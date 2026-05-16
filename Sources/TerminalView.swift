@@ -187,7 +187,7 @@ struct TerminalView: View {
         .background(UI.card)
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                .stroke(UI.lineSoft, lineWidth: 1)
         )
     }
     

@@ -3177,6 +3177,8 @@ enum UI {
     static let accent2 = Color(red: 1.00, green: 0.42, blue: 0.24)
     static let text = adaptive(light: NSColor(red: 0.12, green: 0.17, blue: 0.28, alpha: 1), dark: NSColor(red: 0.93, green: 0.93, blue: 0.91, alpha: 1))
     static let muted = adaptive(light: NSColor(red: 0.37, green: 0.45, blue: 0.57, alpha: 1), dark: NSColor(red: 0.62, green: 0.62, blue: 0.60, alpha: 1))
+    static let line = adaptive(light: NSColor.black.withAlphaComponent(0.10), dark: NSColor.white.withAlphaComponent(0.12))
+    static let lineSoft = adaptive(light: NSColor.black.withAlphaComponent(0.06), dark: NSColor.white.withAlphaComponent(0.08))
 
     private static func adaptive(light: NSColor, dark: NSColor) -> Color {
         Color(NSColor(name: nil) { appearance in
@@ -3226,7 +3228,7 @@ struct CompactGhostButton: ButtonStyle {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.black.opacity(0.10), lineWidth: 1)
+                    .stroke(UI.lineSoft, lineWidth: 1)
             )
             .scaleEffect(configuration.isPressed ? 0.985 : 1)
             .opacity(configuration.isPressed ? 0.92 : 1)
@@ -3278,7 +3280,7 @@ struct HomeTile: View {
     let action: () -> Void
 
     private var iconColor: Color {
-        selected ? UI.accent : Color.black.opacity(0.72)
+        selected ? UI.accent : UI.text
     }
 
     private var cardFill: AnyShapeStyle {
@@ -3288,7 +3290,7 @@ struct HomeTile: View {
     }
 
     private var cardStroke: Color {
-        selected ? UI.accent.opacity(0.45) : Color.black.opacity(0.08)
+        selected ? UI.accent.opacity(0.45) : UI.line
     }
 
     var body: some View {
@@ -3311,7 +3313,7 @@ struct HomeTile: View {
                 VStack(spacing: 5) {
                     Text(label)
                         .font(AppFont.bodySemi(18))
-                        .foregroundStyle(Color.black.opacity(0.86))
+                        .foregroundStyle(UI.text)
                         .multilineTextAlignment(.center)
                     if let subtitle {
                         Text(subtitle)
@@ -3372,14 +3374,14 @@ struct ProgressSteps: View {
 
     private var line: some View {
         RoundedRectangle(cornerRadius: 99)
-            .fill(Color.black.opacity(0.12))
+            .fill(UI.line)
             .frame(height: 3)
     }
 
     private func step(_ label: String, _ number: Int) -> some View {
         HStack(spacing: 6) {
             Circle()
-                .fill(idx + 1 >= number ? UI.accent : Color.black.opacity(0.10))
+                .fill(idx + 1 >= number ? UI.accent : UI.line)
                 .frame(width: 18, height: 18)
             Text(label)
                 .font(AppFont.bodySemi(12))
@@ -3509,7 +3511,7 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .foregroundStyle(UI.text)
             .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.07), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
             .help(isSidebarVisible ? "Hide navigation" : "Show navigation")
 
             BrandLogoView(size: 20)
@@ -3564,7 +3566,7 @@ struct ContentView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(RoundedRectangle(cornerRadius: 12).fill(UI.card))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     private var sidebar: some View {
@@ -3634,7 +3636,7 @@ struct ContentView: View {
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 14).fill(UI.card))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     private func sidebarButton(_ title: String, icon: String, isActive: Bool, action: @escaping () -> Void) -> some View {
@@ -3694,7 +3696,7 @@ struct ContentView: View {
             .padding(22)
             .frame(maxWidth: 620, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
-            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
             .shadow(color: Color.black.opacity(0.06), radius: 6, x: 0, y: 2)
             .frame(maxWidth: .infinity, alignment: .center)
             Spacer(minLength: 0)
@@ -3923,7 +3925,7 @@ struct ContentView: View {
                 .frame(width: 230)
                 .frame(maxHeight: .infinity, alignment: .top)
                 .background(RoundedRectangle(cornerRadius: 16).fill(UI.cardSoft))
-                .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.black.opacity(0.07), lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 16).stroke(UI.lineSoft, lineWidth: 1))
 
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -3948,7 +3950,7 @@ struct ContentView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(RoundedRectangle(cornerRadius: 16).fill(UI.cardSoft))
-                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.black.opacity(0.07), lineWidth: 1))
+                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(UI.lineSoft, lineWidth: 1))
                     .onChange(of: vm.chatMessages.count) { _ in
                         if let last = vm.chatMessages.last?.id {
                             withAnimation { proxy.scrollTo(last, anchor: .bottom) }
@@ -3971,7 +3973,7 @@ struct ContentView: View {
         .padding(22)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.06), radius: 6, x: 0, y: 2)
         .onAppear { vm.refreshOpenClawChatInfo() }
     }
@@ -3993,7 +3995,7 @@ struct ContentView: View {
             .padding(.vertical, 9)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 12).fill(isActive ? UI.accent : UI.card))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(isActive ? 0 : 0.06), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
         }
         .buttonStyle(.plain)
     }
@@ -4007,7 +4009,7 @@ struct ContentView: View {
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
             .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 999).stroke(Color.black.opacity(0.06), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 999).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     func chatBubble(_ message: InstallerViewModel.ChatMessage) -> some View {
@@ -4155,7 +4157,7 @@ struct ContentView: View {
             .padding(22)
             .frame(maxWidth: 600, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
-            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .scrollIndicators(.hidden)
@@ -4247,7 +4249,7 @@ struct ContentView: View {
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.06), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     @ViewBuilder
@@ -4284,7 +4286,7 @@ struct ContentView: View {
             }
             .padding(10)
             .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.06), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
         }
     }
 
@@ -4413,7 +4415,7 @@ struct ContentView: View {
         }
         .padding(18)
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.25), radius: 12, x: 0, y: 8)
     }
 
@@ -4448,7 +4450,7 @@ struct ContentView: View {
             }
             .padding(14)
             .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.07), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
 
             // Next steps checklist (Bug 4)
             VStack(alignment: .leading, spacing: 8) {
@@ -4466,7 +4468,7 @@ struct ContentView: View {
             }
             .padding(14)
             .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.07), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
 
             // CTA buttons (Bug 4)
             VStack(alignment: .leading, spacing: 10) {
@@ -4485,7 +4487,7 @@ struct ContentView: View {
             }
             .padding(14)
             .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.07), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
 
             // Back button
             HStack {
@@ -4498,7 +4500,7 @@ struct ContentView: View {
         .padding(22)
         .frame(maxWidth: 900, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 4)
         .frame(maxWidth: .infinity, alignment: .center)
         }
@@ -4560,7 +4562,7 @@ struct ContentView: View {
                 Button("BACK") { vm.screen = .home }.buttonStyle(CTAButton(primary: false))
             }
 
-            Divider().overlay(Color.black.opacity(0.08))
+            Divider().overlay(UI.lineSoft)
 
             Text("Live log")
                 .font(AppFont.bodySemi(14))
@@ -4575,13 +4577,13 @@ struct ContentView: View {
             }
             .scrollIndicators(.hidden)
             .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
             .frame(maxHeight: .infinity)
         }
         .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
     }
 
@@ -4609,7 +4611,7 @@ struct ContentView: View {
             }
             .padding(12)
             .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
 
             HStack(spacing: 10) {
                 Button("Founder mode") { vm.applyAgentTemplate("founder") }
@@ -4630,7 +4632,7 @@ struct ContentView: View {
             }
             .padding(12)
             .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
 
             Text("Applied template log")
                 .font(AppFont.bodySemi(14))
@@ -4645,13 +4647,13 @@ struct ContentView: View {
             }
             .scrollIndicators(.hidden)
             .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
             .frame(maxHeight: .infinity)
         }
         .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
     }
 
@@ -4698,7 +4700,7 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     @ViewBuilder
@@ -4714,7 +4716,7 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     var healthCenter: some View {
@@ -4781,7 +4783,7 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(12)
                             .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
                         }
                         .padding(.vertical, 2)
                     }
@@ -4840,7 +4842,7 @@ struct ContentView: View {
                         }
                         .scrollIndicators(.hidden)
                         .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
                         .frame(maxHeight: .infinity)
                     }
                 }
@@ -4849,7 +4851,7 @@ struct ContentView: View {
         .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
     }
 
@@ -4886,7 +4888,7 @@ struct ContentView: View {
             }
             .padding(12)
             .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Estimated monthly tokens: \(String(format: "%.1f", vm.estimatedMonthlyTokensM))M")
@@ -4903,7 +4905,7 @@ struct ContentView: View {
             }
             .padding(12)
             .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
 
             Text("Estimator log")
                 .font(AppFont.bodySemi(14))
@@ -4918,13 +4920,13 @@ struct ContentView: View {
             }
             .scrollIndicators(.hidden)
             .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
             .frame(maxHeight: .infinity)
         }
         .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
         .onAppear { vm.refreshUsageCostEstimate() }
     }
@@ -4940,7 +4942,7 @@ struct ContentView: View {
         .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
         .onAppear {
             vm.refreshOpenClawChatInfo()
@@ -5035,7 +5037,7 @@ struct ContentView: View {
         }
         .padding(12).frame(maxWidth: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     var tokenEstimatorCard: some View {
@@ -5048,7 +5050,7 @@ struct ContentView: View {
         }
         .padding(12).frame(maxWidth: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     var modelsRecentUsage: some View {
@@ -5092,7 +5094,7 @@ struct ContentView: View {
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     func modelSummaryCard(_ title: String, value: String, icon: String) -> some View {
@@ -5108,7 +5110,7 @@ struct ContentView: View {
         .padding(12)
         .frame(maxWidth: .infinity)
         .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     func modelConfigRow(title: String, subtitle: String, icon: String, status: String) -> some View {
@@ -5170,13 +5172,13 @@ struct ContentView: View {
             }
             .scrollIndicators(.hidden)
             .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
             .frame(maxHeight: .infinity)
         }
         .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
     }
 
@@ -5213,7 +5215,7 @@ struct ContentView: View {
                     .padding(12)
                     .frame(maxWidth: 520, alignment: .leading)
                     .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.07), lineWidth: 1))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
 
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Safety")
@@ -5224,7 +5226,7 @@ struct ContentView: View {
                             .foregroundStyle(UI.muted)
                             .fixedSize(horizontal: false, vertical: true)
 
-                        Divider().overlay(Color.black.opacity(0.08))
+                        Divider().overlay(UI.lineSoft)
 
                         Text("Actions")
                             .font(AppFont.bodySemi(13))
@@ -5241,7 +5243,7 @@ struct ContentView: View {
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                     .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.07), lineWidth: 1))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
                 }
 
                 Text("Live log")
@@ -5258,12 +5260,12 @@ struct ContentView: View {
                 .scrollIndicators(.hidden)
                 .frame(minHeight: 170, maxHeight: 260)
                 .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08), lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
             }
             .padding(18)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
-            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.black.opacity(0.08), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
             .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
         }
         .scrollIndicators(.hidden)
@@ -5293,7 +5295,7 @@ struct ContentView: View {
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.05), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
         .opacity(installed ? 1 : 0.7)
     }
 
@@ -5350,7 +5352,7 @@ struct ContentView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(RoundedRectangle(cornerRadius: 9).fill(UI.cardSoft))
-        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.black.opacity(0.06), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     func statusRow(_ name: String, _ state: String) -> some View {
