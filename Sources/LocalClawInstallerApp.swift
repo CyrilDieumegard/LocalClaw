@@ -3792,76 +3792,74 @@ struct ContentView: View {
     }
 
     var openClawChat: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
                 Image(systemName: "message.badge.waveform")
-                    .font(.system(size: 28, weight: .semibold))
+                    .font(.system(size: 24, weight: .semibold))
                     .foregroundStyle(UI.accent)
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("OpenClaw Chat")
-                        .font(AppFont.heading(34))
-                        .foregroundStyle(UI.text)
-                    Text("Talk directly with your OpenClaw assistant inside LocalClaw.")
-                        .font(AppFont.body(14))
-                        .foregroundStyle(UI.muted)
-                    HStack(spacing: 8) {
-                        chatInfoPill(vm.openClawChatModeLabel, icon: vm.inferenceMode == .local ? "desktopcomputer" : "cloud.fill")
-                        chatInfoPill(vm.openClawChatModelLabel, icon: "cpu")
-                    }
-                    if vm.inferenceMode == .local {
-                        HStack(spacing: 8) {
-                            Picker("Local model", selection: $vm.selectedLocalLMStudioModel) {
-                                if vm.localLMStudioModels.isEmpty {
-                                    Text("No LM Studio model found").tag("")
-                                } else {
-                                    ForEach(vm.localLMStudioModels, id: \.self) { model in
-                                        Text(model).tag(model)
-                                    }
-                                }
-                            }
-                            .frame(maxWidth: 360)
-                            Button(vm.localLMStudioSetupInProgress ? "SETTING UP..." : "AUTO SETUP") {
-                                vm.autoSetupSelectedLocalLMStudioModel()
-                            }
-                            .buttonStyle(CTAButton(primary: true))
-                            .disabled(vm.localLMStudioSetupInProgress || vm.selectedLocalLMStudioModel.isEmpty)
-                            Button("SCAN") { vm.refreshLocalLMStudioModels() }
-                                .buttonStyle(CTAButton(primary: false))
-                            Button(vm.localLMStudioRepairInProgress ? "REPAIRING..." : "REPAIR LM STUDIO") {
-                                vm.repairLMStudioRuntimeFromChat()
-                            }
-                            .buttonStyle(CTAButton(primary: false))
-                            .disabled(vm.localLMStudioRepairInProgress || vm.localLMStudioSetupInProgress)
-                        }
-                        if !vm.localLMStudioSetupStatus.isEmpty {
-                            Text(vm.localLMStudioSetupStatus)
-                                .font(AppFont.body(11))
-                                .foregroundStyle(UI.muted)
-                                .lineLimit(2)
-                        }
-                        if !vm.localLMStudioSetupLog.isEmpty {
-                            DisclosureGroup("Setup details") {
-                                ScrollView {
-                                    Text(vm.localLMStudioSetupLog)
-                                        .font(.system(size: 10, design: .monospaced))
-                                        .foregroundStyle(UI.muted)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .padding(8)
-                                }
-                                .scrollIndicators(.hidden)
-                                .frame(maxWidth: 520, maxHeight: 80)
-                                .background(RoundedRectangle(cornerRadius: 9).fill(UI.cardSoft))
-                            }
-                            .font(AppFont.body(11))
-                            .foregroundStyle(UI.muted)
-                            .frame(maxWidth: 520, alignment: .leading)
-                        }
-                    }
+                Text("OpenClaw Chat")
+                    .font(AppFont.heading(28))
+                    .foregroundStyle(UI.text)
+                HStack(spacing: 8) {
+                    chatInfoPill(vm.openClawChatModeLabel, icon: vm.inferenceMode == .local ? "desktopcomputer" : "cloud.fill")
+                    chatInfoPill(vm.openClawChatModelLabel, icon: "cpu")
                 }
                 Spacer()
                 Label(vm.chatStatus, systemImage: vm.chatStatus == "Ready" ? "checkmark.circle.fill" : "circle.fill")
                     .font(AppFont.bodySemi(12))
                     .foregroundStyle(vm.chatStatus == "Ready" ? Color(NSColor.systemGreen) : UI.accent)
+            }
+
+            if vm.inferenceMode == .local {
+                HStack(spacing: 8) {
+                    Picker("Local model", selection: $vm.selectedLocalLMStudioModel) {
+                        if vm.localLMStudioModels.isEmpty {
+                            Text("No LM Studio model found").tag("")
+                        } else {
+                            ForEach(vm.localLMStudioModels, id: \.self) { model in
+                                Text(model).tag(model)
+                            }
+                        }
+                    }
+                    .frame(minWidth: 260, idealWidth: 420, maxWidth: 520)
+                    Button(vm.localLMStudioSetupInProgress ? "SETTING UP..." : "AUTO SETUP") {
+                        vm.autoSetupSelectedLocalLMStudioModel()
+                    }
+                    .buttonStyle(CTAButton(primary: true))
+                    .disabled(vm.localLMStudioSetupInProgress || vm.selectedLocalLMStudioModel.isEmpty)
+                    Button("SCAN") { vm.refreshLocalLMStudioModels() }
+                        .buttonStyle(CTAButton(primary: false))
+                    Button(vm.localLMStudioRepairInProgress ? "REPAIRING..." : "REPAIR LM STUDIO") {
+                        vm.repairLMStudioRuntimeFromChat()
+                    }
+                    .buttonStyle(CTAButton(primary: false))
+                    .disabled(vm.localLMStudioRepairInProgress || vm.localLMStudioSetupInProgress)
+                    Spacer(minLength: 0)
+                }
+
+                if !vm.localLMStudioSetupStatus.isEmpty {
+                    Text(vm.localLMStudioSetupStatus)
+                        .font(AppFont.body(11))
+                        .foregroundStyle(UI.muted)
+                        .lineLimit(2)
+                }
+
+                if !vm.localLMStudioSetupLog.isEmpty {
+                    DisclosureGroup("Setup details") {
+                        ScrollView {
+                            Text(vm.localLMStudioSetupLog)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(UI.muted)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(8)
+                        }
+                        .scrollIndicators(.hidden)
+                        .frame(maxWidth: .infinity, maxHeight: 90)
+                        .background(RoundedRectangle(cornerRadius: 9).fill(UI.cardSoft))
+                    }
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+                }
             }
 
             HStack(alignment: .top, spacing: 12) {
@@ -3902,7 +3900,8 @@ struct ContentView: View {
                     .help("Delete current discussion")
                 }
                 .padding(12)
-                .frame(width: 210)
+                .frame(width: 230)
+                .frame(maxHeight: .infinity, alignment: .top)
                 .background(RoundedRectangle(cornerRadius: 16).fill(UI.cardSoft))
                 .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.black.opacity(0.07), lineWidth: 1))
 
@@ -3925,7 +3924,9 @@ struct ContentView: View {
                             }
                         }
                         .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(RoundedRectangle(cornerRadius: 16).fill(UI.cardSoft))
                     .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.black.opacity(0.07), lineWidth: 1))
                     .onChange(of: vm.chatMessages.count) { _ in
@@ -3935,11 +3936,12 @@ struct ContentView: View {
                     }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             HStack(spacing: 10) {
                 TextField("Message OpenClaw...", text: $vm.chatInput, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
-                    .lineLimit(1...4)
+                    .lineLimit(1...6)
                     .onSubmit { vm.sendChatMessage() }
                 Button(vm.chatIsSending ? "SENDING..." : "SEND") { vm.sendChatMessage() }
                     .buttonStyle(CTAButton(primary: true))
