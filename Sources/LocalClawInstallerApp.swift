@@ -160,6 +160,18 @@ final class InstallerViewModel: ObservableObject {
             return "Limited"
         }
 
+        var isActive: Bool {
+            disabled != true && (eligible == true || modelVisible == true || commandVisible == true)
+        }
+
+        var installedLabel: String {
+            source?.hasPrefix("ClawHub") == true ? "Not installed" : "Installed"
+        }
+
+        var activeLabel: String {
+            isActive ? "Active" : "Inactive"
+        }
+
         var sourceLabel: String {
             source?.replacingOccurrences(of: "openclaw-", with: "").replacingOccurrences(of: "-", with: " ").capitalized ?? "Unknown"
         }
@@ -5843,6 +5855,13 @@ struct ContentView: View {
                     .disabled(vm.skillsSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
+            HStack(spacing: 10) {
+                skillMetricCard("Installed", value: "\(vm.installedSkills.count)", icon: "checkmark.seal.fill", tint: Color(NSColor.systemGreen))
+                skillMetricCard("Active", value: "\(vm.installedSkills.filter { $0.isActive }.count)", icon: "bolt.fill", tint: UI.accent)
+                skillMetricCard("Needs setup", value: "\(vm.installedSkills.filter { $0.disabled == true }.count)", icon: "exclamationmark.triangle.fill", tint: Color(NSColor.systemOrange))
+                skillMetricCard("Not installed", value: "\(vm.clawHubSkills.count)", icon: "tray.and.arrow.down.fill", tint: UI.muted)
+            }
+
             HStack(alignment: .top, spacing: 14) {
                 skillsListPanel(
                     title: "Installed and bundled",
@@ -5888,6 +5907,28 @@ struct ContentView: View {
                 vm.refreshSkills()
             }
         }
+    }
+
+    private func skillMetricCard(_ title: String, value: String, icon: String, tint: Color) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(value)
+                    .font(AppFont.bodySemi(18))
+                    .foregroundStyle(UI.text)
+                Text(title)
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     private func skillsListPanel(title: String, emptyText: String, skills: [InstallerViewModel.OpenClawSkill], showInstall: Bool) -> some View {
@@ -5942,12 +5983,13 @@ struct ContentView: View {
                         .font(AppFont.bodySemi(13))
                         .foregroundStyle(UI.text)
                         .lineLimit(1)
-                    Text(skill.statusLabel)
-                        .font(AppFont.bodySemi(10))
-                        .foregroundStyle(skill.eligible == true ? Color(NSColor.systemGreen) : UI.muted)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(RoundedRectangle(cornerRadius: 999).fill(UI.card))
+                    Spacer(minLength: 4)
+                }
+
+                HStack(spacing: 6) {
+                    skillBadge(skill.installedLabel, color: showInstall ? UI.muted : Color(NSColor.systemGreen), icon: showInstall ? "tray.and.arrow.down" : "checkmark.circle.fill")
+                    skillBadge(skill.activeLabel, color: skill.isActive ? UI.accent : UI.muted, icon: skill.isActive ? "bolt.fill" : "pause.circle")
+                    skillBadge(skill.statusLabel, color: skill.eligible == true ? Color(NSColor.systemGreen) : (skill.disabled == true ? Color(NSColor.systemOrange) : UI.muted), icon: skill.eligible == true ? "checkmark.seal.fill" : "info.circle")
                 }
 
                 Text(skill.description ?? "No description available.")
@@ -5974,6 +6016,17 @@ struct ContentView: View {
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private func skillBadge(_ label: String, color: Color, icon: String) -> some View {
+        Label(label, systemImage: icon)
+            .font(AppFont.bodySemi(10))
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 999).stroke(color.opacity(0.25), lineWidth: 1))
     }
 
     var modelsCenter: some View {
