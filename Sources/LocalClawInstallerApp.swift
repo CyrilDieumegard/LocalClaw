@@ -664,6 +664,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var cronJobLogs: String = ""
     @Published var showCronJobCreator = false
     @Published var cronCreateName = ""
+    @Published var cronCreateAgentID = "main"
     @Published var cronCreateScheduleKind = "every"
     @Published var cronCreateScheduleValue = "30m"
     @Published var cronCreateMessage = ""
@@ -2383,10 +2384,19 @@ final class InstallerViewModel: ObservableObject {
 
     func resetCronJobCreator() {
         cronCreateName = ""
+        cronCreateAgentID = agents.first(where: { $0.isDefault })?.id ?? "main"
         cronCreateScheduleKind = "every"
         cronCreateScheduleValue = "30m"
         cronCreateMessage = ""
         cronCreateError = ""
+    }
+
+    func prepareCronJobCreator() {
+        cronCreateAgentID = agents.first(where: { $0.id == cronCreateAgentID })?.id ?? agents.first(where: { $0.isDefault })?.id ?? "main"
+        showCronJobCreator = true
+        if agents.isEmpty || agentsStatus == "Not loaded" {
+            refreshAgents()
+        }
     }
 
     func createCronJobFromForm() {
@@ -2413,6 +2423,7 @@ final class InstallerViewModel: ObservableObject {
         let command = [
             "openclaw --no-color cron add",
             "--name \(Self.shellSingleQuote(name))",
+            "--agent \(Self.shellSingleQuote(cronCreateAgentID))",
             "--message \(Self.shellSingleQuote(message))",
             "--session isolated",
             "\(scheduleFlag) \(Self.shellSingleQuote(scheduleValue))",
@@ -6657,7 +6668,7 @@ struct ContentView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
-                Button("New Job") { vm.showCronJobCreator = true }
+                Button("New Job") { vm.prepareCronJobCreator() }
                     .buttonStyle(CTAButton(primary: true))
                 Button("Refresh") { vm.refreshCronJobs() }
                     .buttonStyle(CTAButton(primary: false))
@@ -6772,6 +6783,39 @@ struct ContentView: View {
                 cronFormField("Job name", text: $vm.cronCreateName, prompt: "Daily inbox check")
 
                 VStack(alignment: .leading, spacing: 6) {
+                    Text("Agent")
+                        .font(AppFont.bodySemi(12))
+                        .foregroundStyle(UI.muted)
+                    Picker("", selection: $vm.cronCreateAgentID) {
+                        if vm.agents.isEmpty {
+                            Text("Main assistant").tag("main")
+                        } else {
+                            ForEach(vm.agents) { agent in
+                                Text(agent.isDefault ? "\(agent.displayName) · main" : agent.displayName)
+                                    .tag(agent.id)
+                            }
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 9)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+
+                    if let selectedAgent = vm.agents.first(where: { $0.id == vm.cronCreateAgentID }) {
+                        Text(selectedAgent.detailSummary)
+                            .font(AppFont.body(11))
+                            .foregroundStyle(UI.muted)
+                            .lineLimit(2)
+                    } else if vm.agentsIsLoading {
+                        Text("Loading agents...")
+                            .font(AppFont.body(11))
+                            .foregroundStyle(UI.muted)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
                     Text("Schedule")
                         .font(AppFont.bodySemi(12))
                         .foregroundStyle(UI.muted)
@@ -6792,6 +6836,16 @@ struct ContentView: View {
                             .padding(.vertical, 9)
                             .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
                             .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+                    }
+
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], spacing: 8) {
+                        ForEach(schedulePresets, id: \.label) { preset in
+                            Button(preset.label) {
+                                vm.cronCreateScheduleKind = preset.kind
+                                vm.cronCreateScheduleValue = preset.value
+                            }
+                            .buttonStyle(CTAButton(primary: false))
+                        }
                     }
                 }
 
@@ -6847,9 +6901,35 @@ struct ContentView: View {
 
     private var scheduleHelp: String {
         switch vm.cronCreateScheduleKind {
-        case "cron": return "Cron uses classic syntax, for example 0 9 * * *."
-        case "at": return "Use a relative time like +1h or an ISO date."
-        default: return "Use intervals like 30m, 2h, or 1d."
+        case "cron": return "Cron format: minute hour day month weekday. Example: 0 9 * * * means every day at 09:00."
+        case "at": return "No ISO required: use +15m, +1h, +2d for one-shot jobs."
+        default: return "Use simple intervals like 30m, 2h, or 1d."
+        }
+    }
+
+    private var schedulePresets: [(label: String, kind: String, value: String)] {
+        switch vm.cronCreateScheduleKind {
+        case "cron":
+            return [
+                ("Every morning", "cron", "0 9 * * *"),
+                ("Every weekday", "cron", "0 9 * * 1-5"),
+                ("Every Monday", "cron", "0 9 * * 1"),
+                ("Every evening", "cron", "0 18 * * *")
+            ]
+        case "at":
+            return [
+                ("In 15 min", "at", "+15m"),
+                ("In 1 hour", "at", "+1h"),
+                ("Tomorrow", "at", "+1d"),
+                ("Next week", "at", "+7d")
+            ]
+        default:
+            return [
+                ("Every 30 min", "every", "30m"),
+                ("Every hour", "every", "1h"),
+                ("Every 6 hours", "every", "6h"),
+                ("Every day", "every", "1d")
+            ]
         }
     }
 
