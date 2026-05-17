@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class InstallerViewModel: ObservableObject {
-    enum Screen { case license, onboarding, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, templates, healthCenter, usageCenter, chat, models }
+    enum Screen { case license, onboarding, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, templates, healthCenter, usageCenter, chat, models, skills }
     enum InstallMode: String {
         case llmOnly = "Install Local LLM only"
         case openClawOnly = "Install OpenClaw only"
@@ -117,6 +117,87 @@ final class InstallerViewModel: ObservableObject {
             self.outputTokens = outputTokens
             self.totalTokens = totalTokens
             self.estimatedCostUSD = estimatedCostUSD
+        }
+    }
+
+    struct SkillMissingRequirements: Codable {
+        var bins: [String]?
+        var anyBins: [String]?
+        var env: [String]?
+        var config: [String]?
+        var os: [String]?
+
+        var summary: String {
+            let parts = [
+                bins?.isEmpty == false ? "Missing bins: \(bins!.joined(separator: ", "))" : nil,
+                anyBins?.isEmpty == false ? "Needs one of: \(anyBins!.joined(separator: ", "))" : nil,
+                env?.isEmpty == false ? "Missing env: \(env!.joined(separator: ", "))" : nil,
+                config?.isEmpty == false ? "Missing config: \(config!.joined(separator: ", "))" : nil,
+                os?.isEmpty == false ? "OS: \(os!.joined(separator: ", "))" : nil
+            ].compactMap { $0 }
+            return parts.isEmpty ? "Ready" : parts.joined(separator: " · ")
+        }
+    }
+
+    struct OpenClawSkill: Identifiable, Codable {
+        var id: String { name }
+        let name: String
+        let description: String?
+        let emoji: String?
+        let eligible: Bool?
+        let disabled: Bool?
+        let modelVisible: Bool?
+        let userInvocable: Bool?
+        let commandVisible: Bool?
+        let source: String?
+        let bundled: Bool?
+        let homepage: String?
+        let missing: SkillMissingRequirements?
+
+        var statusLabel: String {
+            if disabled == true { return "Needs setup" }
+            if eligible == true { return "Ready" }
+            return "Limited"
+        }
+
+        var sourceLabel: String {
+            source?.replacingOccurrences(of: "openclaw-", with: "").replacingOccurrences(of: "-", with: " ").capitalized ?? "Unknown"
+        }
+    }
+
+    struct OpenClawSkillsListResponse: Codable {
+        let workspaceDir: String?
+        let managedSkillsDir: String?
+        let skills: [OpenClawSkill]
+    }
+
+    struct OpenClawSkillsSearchResponse: Codable {
+        let results: [OpenClawHubSkill]
+    }
+
+    struct OpenClawHubSkill: Identifiable, Codable {
+        var id: String { slug }
+        let slug: String
+        let displayName: String?
+        let summary: String?
+        let version: String?
+        let ownerHandle: String?
+
+        var asSkill: OpenClawSkill {
+            OpenClawSkill(
+                name: slug,
+                description: summary,
+                emoji: nil,
+                eligible: nil,
+                disabled: nil,
+                modelVisible: nil,
+                userInvocable: true,
+                commandVisible: nil,
+                source: ownerHandle.map { "ClawHub / \($0)" } ?? "ClawHub",
+                bundled: false,
+                homepage: nil,
+                missing: nil
+            )
         }
     }
 
@@ -305,6 +386,13 @@ final class InstallerViewModel: ObservableObject {
     @Published var openAIAuthMethod: AIProvider.OpenAIAuthMethod = .apiKey
     @Published var selectedOpenRouterModel: String = "openrouter/moonshotai/kimi-k2.5"
     @Published var openRouterModelsLive: [OpenRouterModel] = []
+    @Published var skillsSearchQuery: String = ""
+    @Published var installedSkills: [OpenClawSkill] = []
+    @Published var clawHubSkills: [OpenClawSkill] = []
+    @Published var skillsStatus: String = "Not loaded"
+    @Published var skillsLog: String = ""
+    @Published var skillsIsLoading = false
+    @Published var installingSkillName: String = ""
     @Published var openRouterKeyVerified: Bool = false
     @Published var cloudProviderAuthConfigured: Bool = false
     @Published var hasExistingOpenClawSetup = false
@@ -1199,6 +1287,104 @@ final class InstallerViewModel: ObservableObject {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(payload, forType: .string)
         append("Copied env template to clipboard")
+    }
+
+    var visibleInstalledSkills: [OpenClawSkill] {
+        let query = skillsSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return installedSkills }
+        return installedSkills.filter {
+            $0.name.lowercased().contains(query) ||
+            ($0.description ?? "").lowercased().contains(query) ||
+            ($0.source ?? "").lowercased().contains(query)
+        }
+    }
+
+    func refreshSkills() {
+        guard !skillsIsLoading else { return }
+        skillsIsLoading = true
+        skillsStatus = "Loading skills..."
+        skillsLog = "Running openclaw skills list..."
+
+        Task.detached {
+            let engine = InstallerEngine()
+            let (code, output) = engine.shell("openclaw --no-color skills list --json 2>&1")
+
+            await MainActor.run {
+                self.skillsIsLoading = false
+                guard code == 0, let data = output.data(using: .utf8) else {
+                    self.skillsStatus = "Unable to load skills"
+                    self.skillsLog = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return
+                }
+
+                do {
+                    let decoded = try JSONDecoder().decode(OpenClawSkillsListResponse.self, from: data)
+                    self.installedSkills = decoded.skills.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                    let readyCount = decoded.skills.filter { $0.eligible == true }.count
+                    self.skillsStatus = "\(decoded.skills.count) skills found · \(readyCount) ready"
+                    self.skillsLog = "Workspace: \(decoded.workspaceDir ?? "unknown")\nManaged skills: \(decoded.managedSkillsDir ?? "unknown")"
+                } catch {
+                    self.skillsStatus = "Skills JSON parse failed"
+                    self.skillsLog = "\(error.localizedDescription)\n\n\(output.prefix(1200))"
+                }
+            }
+        }
+    }
+
+    func searchClawHubSkills() {
+        let query = skillsSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            clawHubSkills = []
+            return
+        }
+
+        skillsStatus = "Searching ClawHub..."
+        let safeQuery = shellSingleQuote(query)
+        Task.detached {
+            let engine = InstallerEngine()
+            let (code, output) = engine.shell("openclaw --no-color skills search --json --limit 12 \(safeQuery) 2>&1")
+
+            await MainActor.run {
+                guard code == 0, let data = output.data(using: .utf8) else {
+                    self.skillsStatus = "ClawHub search failed"
+                    self.skillsLog = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return
+                }
+
+                do {
+                    let decoded = try JSONDecoder().decode(OpenClawSkillsSearchResponse.self, from: data)
+                    self.clawHubSkills = decoded.results.map { $0.asSkill }
+                    self.skillsStatus = self.clawHubSkills.isEmpty ? "No ClawHub result" : "\(self.clawHubSkills.count) ClawHub results"
+                } catch {
+                    self.skillsStatus = "ClawHub JSON parse failed"
+                    self.skillsLog = "\(error.localizedDescription)\n\n\(output.prefix(1200))"
+                }
+            }
+        }
+    }
+
+    func installSkill(_ skill: OpenClawSkill) {
+        let slug = skill.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !slug.isEmpty, installingSkillName.isEmpty else { return }
+
+        installingSkillName = slug
+        skillsStatus = "Installing \(slug)..."
+        skillsLog = "Running openclaw skills install \(slug)"
+        let safeSlug = shellSingleQuote(slug)
+
+        Task.detached {
+            let engine = InstallerEngine()
+            let (code, output) = engine.shell("openclaw --no-color skills install \(safeSlug) 2>&1")
+
+            await MainActor.run {
+                self.installingSkillName = ""
+                self.skillsLog = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.skillsStatus = code == 0 ? "Installed \(slug)" : "Install failed for \(slug)"
+                if code == 0 {
+                    self.refreshSkills()
+                }
+            }
+        }
     }
 
     func useTestLicense() {
@@ -3685,6 +3871,7 @@ struct ProgressSteps: View {
         case .usageCenter: return 0
         case .chat: return 0
         case .models: return 0
+        case .skills: return 0
         }
     }
 
@@ -3800,6 +3987,7 @@ struct ContentView: View {
                             case .usageCenter: usageCenter
                             case .chat: openClawChat
                             case .models: modelsCenter
+                            case .skills: skillsCenter
                             }
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -3913,6 +4101,7 @@ struct ContentView: View {
             sidebarButton("Control Center", icon: "slider.horizontal.3", isActive: vm.screen == .commandCenter) { vm.screen = .commandCenter }
             sidebarButton("OpenClaw Chat", icon: "message.badge.waveform", isActive: vm.screen == .chat) { vm.screen = .chat }
             sidebarButton("Models", icon: "cpu", isActive: vm.screen == .models) { vm.screen = .models }
+            sidebarButton("Skills", icon: "wand.and.stars", isActive: vm.screen == .skills) { vm.screen = .skills }
             sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup) { vm.screen = .channelSetup }
             sidebarButton("Templates", icon: "square.grid.2x2", isActive: vm.screen == .templates) { vm.screen = .templates }
             sidebarButton("Help", icon: "cross.case", isActive: vm.screen == .healthCenter) { vm.screen = .healthCenter }
@@ -4116,6 +4305,9 @@ struct ContentView: View {
                     }
                     HomeTile(label: "Templates", icon: "square.grid.2x2", selected: false) {
                         vm.screen = .templates
+                    }
+                    HomeTile(label: "Skills", icon: "wand.and.stars", selected: false, subtitle: "Browse and add OpenClaw skills") {
+                        vm.screen = .skills
                     }
                     HomeTile(label: "Help", icon: "cross.case", selected: false) {
                         vm.screen = .healthCenter
@@ -5604,6 +5796,184 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
         .onAppear { vm.refreshUsageCostEstimate() }
+    }
+
+    var skillsCenter: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("SKILLS")
+                        .font(AppFont.heading(28))
+                        .foregroundStyle(UI.text)
+                    Text("Browse OpenClaw skills, check what is ready, and install ClawHub skills.")
+                        .font(AppFont.body(13))
+                        .foregroundStyle(UI.muted)
+                }
+
+                Spacer()
+
+                Text(vm.skillsStatus)
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(vm.skillsIsLoading ? UI.accent : UI.muted)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
+            }
+
+            HStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(UI.muted)
+                    TextField("Search installed skills or ClawHub", text: $vm.skillsSearchQuery)
+                        .textFieldStyle(.plain)
+                        .font(AppFont.body(13))
+                        .onSubmit { vm.searchClawHubSkills() }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+
+                Button("Refresh") { vm.refreshSkills() }
+                    .buttonStyle(CTAButton(primary: false))
+                    .disabled(vm.skillsIsLoading)
+
+                Button("Search ClawHub") { vm.searchClawHubSkills() }
+                    .buttonStyle(CTAButton(primary: true))
+                    .disabled(vm.skillsSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            HStack(alignment: .top, spacing: 14) {
+                skillsListPanel(
+                    title: "Installed and bundled",
+                    emptyText: vm.skillsIsLoading ? "Loading skills..." : "No skill found.",
+                    skills: vm.visibleInstalledSkills,
+                    showInstall: false
+                )
+
+                skillsListPanel(
+                    title: "ClawHub results",
+                    emptyText: vm.skillsSearchQuery.isEmpty ? "Search ClawHub to find new skills." : "No ClawHub result yet.",
+                    skills: vm.clawHubSkills,
+                    showInstall: true
+                )
+            }
+
+            if !vm.skillsLog.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Activity")
+                        .font(AppFont.bodySemi(13))
+                        .foregroundStyle(UI.muted)
+                    ScrollView {
+                        Text(vm.skillsLog)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(UI.text)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                    }
+                    .frame(maxHeight: 120)
+                    .scrollIndicators(.hidden)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+                }
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
+        .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
+        .onAppear {
+            if vm.installedSkills.isEmpty {
+                vm.refreshSkills()
+            }
+        }
+    }
+
+    private func skillsListPanel(title: String, emptyText: String, skills: [InstallerViewModel.OpenClawSkill], showInstall: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(AppFont.bodySemi(14))
+                .foregroundStyle(UI.text)
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    if skills.isEmpty {
+                        Text(emptyText)
+                            .font(AppFont.body(12))
+                            .foregroundStyle(UI.muted)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                    } else {
+                        ForEach(skills) { skill in
+                            skillRow(skill, showInstall: showInstall)
+                        }
+                    }
+                }
+                .padding(2)
+            }
+            .scrollIndicators(.hidden)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private func skillRow(_ skill: InstallerViewModel.OpenClawSkill, showInstall: Bool) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(UI.card)
+                if let emoji = skill.emoji, !emoji.isEmpty {
+                    Text(emoji)
+                        .font(.system(size: 18))
+                } else {
+                    Image(systemName: "wand.and.stars")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(UI.accent)
+                }
+            }
+            .frame(width: 34, height: 34)
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Text(skill.name)
+                        .font(AppFont.bodySemi(13))
+                        .foregroundStyle(UI.text)
+                        .lineLimit(1)
+                    Text(skill.statusLabel)
+                        .font(AppFont.bodySemi(10))
+                        .foregroundStyle(skill.eligible == true ? Color(NSColor.systemGreen) : UI.muted)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(RoundedRectangle(cornerRadius: 999).fill(UI.card))
+                }
+
+                Text(skill.description ?? "No description available.")
+                    .font(AppFont.body(12))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(3)
+
+                Text("\(skill.sourceLabel) · \(skill.missing?.summary ?? "Ready")")
+                    .font(AppFont.body(10))
+                    .foregroundStyle(UI.muted.opacity(0.85))
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 8)
+
+            if showInstall {
+                Button(vm.installingSkillName == skill.name ? "Installing..." : "Install") {
+                    vm.installSkill(skill)
+                }
+                .buttonStyle(CTAButton(primary: false))
+                .disabled(!vm.installingSkillName.isEmpty)
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     var modelsCenter: some View {
