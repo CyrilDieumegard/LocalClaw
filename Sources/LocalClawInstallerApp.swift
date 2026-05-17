@@ -4536,75 +4536,325 @@ struct ContentView: View {
     }
 
     var home: some View {
-        VStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("LocalClaw")
-                        .font(AppFont.heading(40))
-                        .foregroundStyle(UI.text)
-                    Text("Install, update or control your OpenClaw setup.")
-                        .font(AppFont.body(16))
-                        .foregroundStyle(UI.muted)
-
-                    HStack(spacing: 10) {
-                        Button("Use Local LLM") {
-                            vm.inferenceMode = .local
-                            if vm.selectedModel.isEmpty { vm.selectedModel = vm.recommendation }
-                            vm.screen = .options
-                        }
-                        .buttonStyle(CTAButton(primary: vm.inferenceMode == .local))
-
-                        Button("Use Cloud LLM") {
-                            vm.inferenceMode = .cloud
-                            vm.selectedModel = ""
-                            vm.screen = .options
-                        }
-                        .buttonStyle(CTAButton(primary: vm.inferenceMode == .cloud))
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .top, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("HOME")
+                            .font(AppFont.heading(30))
+                            .foregroundStyle(UI.text)
+                        Text("Dashboard live de ton installation OpenClaw : santé, consommation, channels, modèle actif et derniers événements.")
+                            .font(AppFont.body(13))
+                            .foregroundStyle(UI.muted)
                     }
+                    Spacer()
+                    Button("Refresh") {
+                        vm.refreshControlCenter()
+                        vm.runHealthCheck()
+                        vm.refreshUsageCostEstimate()
+                        vm.refreshChannels()
+                        vm.refreshSkills()
+                    }
+                    .buttonStyle(CTAButton(primary: true))
                 }
-                .padding(.top, 4)
 
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 190, maximum: 220), spacing: 18, alignment: .top)], spacing: 20) {
-                    HomeTile(label: "Install", icon: "plus.circle", selected: false) {
-                        vm.chooseMode(.fullInstall)
-                    }
-                    HomeTile(label: "Update Center", icon: "arrow.clockwise", selected: false) {
-                        vm.screen = .updates
-                    }
-                    HomeTile(label: "Control Center", icon: "slider.horizontal.3", selected: false) {
-                        vm.screen = .commandCenter
-                    }
-                    HomeTile(label: "Channels", icon: "bubble.left.and.bubble.right", selected: false) {
-                        vm.screen = .channelSetup
-                    }
-                    HomeTile(label: "Templates", icon: "square.grid.2x2", selected: false) {
-                        vm.screen = .templates
-                    }
-                    HomeTile(label: "Skills", icon: "wand.and.stars", selected: false, subtitle: "Browse and add OpenClaw skills") {
-                        vm.screen = .skills
-                    }
-                    HomeTile(label: "Help", icon: "cross.case", selected: false) {
-                        vm.screen = .healthCenter
-                    }
-                    HomeTile(label: "Uninstall Center", icon: "trash", selected: false) {
-                        vm.screen = .uninstallCenter
-                    }
-                    HomeTile(
-                        label: "OpenClaw Chat",
-                        icon: "message.badge.waveform",
-                        selected: true,
-                        subtitle: "Talk directly with your AI",
-                        status: vm.openClawChatStatus
-                    ) {
-                        vm.openOpenClawChat()
-                    }
+                HStack(spacing: 10) {
+                    dashboardKpiCard(
+                        title: "Gateway",
+                        value: vm.gatewayIsRunning ? "Online" : "Offline",
+                        detail: vm.openClawChatModelLabel,
+                        icon: "antenna.radiowaves.left.and.right",
+                        tint: vm.gatewayIsRunning ? Color(NSColor.systemGreen) : Color(NSColor.systemOrange)
+                    )
+                    dashboardKpiCard(
+                        title: "Health",
+                        value: vm.healthStatus,
+                        detail: String(format: "CPU %.0f%% · RAM %.1f/%.1f GB", vm.machineCPUPercent, vm.machineMemoryUsedGB, vm.machineMemoryTotalGB),
+                        icon: "heart.text.square.fill",
+                        tint: dashboardHealthTint
+                    )
+                    dashboardKpiCard(
+                        title: "Budget",
+                        value: String(format: "$%.2f/mo", vm.estimatedMonthlyCostUSD),
+                        detail: String(format: "%.1fM tokens estimated", vm.estimatedMonthlyTokensM),
+                        icon: "chart.bar.xaxis",
+                        tint: UI.accent
+                    )
+                    dashboardKpiCard(
+                        title: "Channels",
+                        value: "(vm.channels.filter { $0.connected || $0.running }.count) active",
+                        detail: "(vm.channels.count) available · (vm.channels.reduce(0) { $0 + $1.accounts.count }) accounts",
+                        icon: "bubble.left.and.bubble.right.fill",
+                        tint: Color(NSColor.systemBlue)
+                    )
                 }
-                .padding(.top, 34)
-                .frame(maxWidth: .infinity)
+
+                HStack(alignment: .top, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        dashboardPanel(title: "System load", icon: "gauge.with.dots.needle.bottom.50percent") {
+                            VStack(alignment: .leading, spacing: 12) {
+                                dashboardMeter("CPU", value: vm.machineCPUPercent / 100, label: String(format: "%.0f%%", vm.machineCPUPercent), tint: UI.accent)
+                                let memoryRatio = vm.machineMemoryTotalGB > 0 ? vm.machineMemoryUsedGB / vm.machineMemoryTotalGB : 0
+                                dashboardMeter("RAM", value: memoryRatio, label: String(format: "%.1f / %.1f GB", vm.machineMemoryUsedGB, vm.machineMemoryTotalGB), tint: Color(NSColor.systemBlue))
+                                let swapRatio = vm.machineSwapTotalGB > 0 ? vm.machineSwapUsedGB / vm.machineSwapTotalGB : 0
+                                dashboardMeter("Swap", value: swapRatio, label: String(format: "%.2f / %.2f GB", vm.machineSwapUsedGB, vm.machineSwapTotalGB), tint: vm.machineSwapUsedGB >= 4 ? Color(NSColor.systemRed) : Color(NSColor.systemOrange))
+                                HStack(spacing: 8) {
+                                    dashboardMiniStat("OpenClaw", String(format: "%.0f MB", vm.machineOpenclawMB))
+                                    dashboardMiniStat("LM Studio", String(format: "%.0f MB", vm.machineLMStudioMB))
+                                    dashboardMiniStat("Node", String(format: "%.0f MB", vm.machineNodeMB))
+                                }
+                            }
+                        }
+
+                        dashboardPanel(title: "Recent activity", icon: "clock.arrow.circlepath") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(dashboardActivityItems, id: \.self) { item in
+                                    HStack(alignment: .top, spacing: 8) {
+                                        Circle()
+                                            .fill(UI.accent)
+                                            .frame(width: 6, height: 6)
+                                            .padding(.top, 6)
+                                        Text(item)
+                                            .font(AppFont.body(12))
+                                            .foregroundStyle(UI.text)
+                                            .lineLimit(2)
+                                        Spacer(minLength: 0)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+
+                    VStack(alignment: .leading, spacing: 14) {
+                        dashboardPanel(title: "Operations", icon: "bolt.horizontal.circle.fill") {
+                            VStack(alignment: .leading, spacing: 10) {
+                                dashboardActionRow(title: "OpenClaw Chat", detail: vm.openClawChatStatus, icon: "message.badge.waveform") {
+                                    vm.openOpenClawChat()
+                                }
+                                dashboardActionRow(title: "Connect channels", detail: vm.channelsStatus, icon: "plus.message.fill") {
+                                    vm.screen = .channelSetup
+                                }
+                                dashboardActionRow(title: "Manage models", detail: vm.openClawChatModeLabel, icon: "cpu.fill") {
+                                    vm.screen = .models
+                                }
+                                dashboardActionRow(title: "Add skills", detail: vm.skillsStatus, icon: "wand.and.stars") {
+                                    vm.screen = .skills
+                                }
+                            }
+                        }
+
+                        dashboardPanel(title: "Configuration", icon: "slider.horizontal.3") {
+                            VStack(alignment: .leading, spacing: 10) {
+                                dashboardConfigLine("Mode", vm.openClawChatModeLabel, icon: vm.inferenceMode == .local ? "desktopcomputer" : "cloud.fill")
+                                dashboardConfigLine("Model", vm.openClawChatModelLabel, icon: "cpu")
+                                dashboardConfigLine("LocalClaw", "v(vm.installerCurrentVersion) · build (vm.installerBuildNumber)", icon: "app.badge")
+                                dashboardConfigLine("OpenClaw", vm.openclawInstalledVersion, icon: "terminal")
+                            }
+                        }
+
+                        dashboardPanel(title: "Quick actions", icon: "square.grid.2x2.fill") {
+                            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                                dashboardShortcut("Install", icon: "plus.circle.fill") { vm.chooseMode(.fullInstall) }
+                                dashboardShortcut("Updates", icon: "arrow.clockwise.circle.fill") { vm.screen = .updates }
+                                dashboardShortcut("Health", icon: "cross.case.fill") { vm.screen = .healthCenter }
+                                dashboardShortcut("Control", icon: "speedometer") { vm.screen = .commandCenter }
+                            }
+                        }
+                    }
+                    .frame(maxWidth: 390, alignment: .topLeading)
+                }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 10)
-            .frame(maxWidth: 940, alignment: .leading)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .padding(18)
+        }
+        .scrollIndicators(.hidden)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
+        .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
+        .onAppear {
+            vm.refreshControlCenter()
+            vm.refreshUsageCostEstimate()
+            if vm.healthStatus == "Unknown" { vm.runHealthCheck() }
+            if vm.channelsStatus == "Not loaded" { vm.refreshChannels() }
+            if vm.installedSkills.isEmpty { vm.refreshSkills() }
+        }
+    }
+
+    private var dashboardHealthTint: Color {
+        if vm.healthStatus == "Healthy" { return Color(NSColor.systemGreen) }
+        if vm.healthStatus == "Critical" { return Color(NSColor.systemRed) }
+        if vm.healthStatus == "Warning" { return Color(NSColor.systemOrange) }
+        return UI.muted
+    }
+
+    private var dashboardActivityItems: [String] {
+        var items: [String] = []
+        if !vm.channelSetupLogs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            items.append(contentsOf: vm.channelSetupLogs.split(separator: "\n").suffix(3).map(String.init))
+        }
+        if !vm.skillsLog.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            items.append(contentsOf: vm.skillsLog.split(separator: "\n").suffix(3).map(String.init))
+        }
+        if !vm.healthLogs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            items.append(contentsOf: vm.healthLogs.split(separator: "\n").suffix(3).map(String.init))
+        }
+        if !vm.usageLogs.isEmpty { items.append(vm.usageLogs) }
+        if !vm.modelsApplyStatus.isEmpty { items.append(vm.modelsApplyStatus) }
+        if items.isEmpty {
+            items = [
+                "No activity yet. Run Refresh to load OpenClaw status.",
+                "Connect channels to start receiving messages.",
+                "Open Models to check cloud/local inference setup."
+            ]
+        }
+        return Array(items.suffix(8).reversed())
+    }
+
+    private func dashboardKpiCard(title: String, value: String, detail: String, icon: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Image(systemName: icon)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(tint)
+                Spacer()
+                Circle()
+                    .fill(tint)
+                    .frame(width: 8, height: 8)
+            }
+            Text(value)
+                .font(AppFont.bodySemi(19))
+                .foregroundStyle(UI.text)
+                .lineLimit(1)
+            Text(title)
+                .font(AppFont.bodySemi(11))
+                .foregroundStyle(UI.muted)
+            Text(detail)
+                .font(AppFont.body(11))
+                .foregroundStyle(UI.muted)
+                .lineLimit(2)
+                .frame(minHeight: 28, alignment: .topLeading)
+        }
+        .padding(13)
+        .frame(maxWidth: .infinity, minHeight: 132, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(tint.opacity(0.22), lineWidth: 1))
+    }
+
+    private func dashboardPanel<Content: View>(title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(UI.accent)
+                    .frame(width: 18)
+                Text(title)
+                    .font(AppFont.bodySemi(14))
+                    .foregroundStyle(UI.text)
+                Spacer()
+            }
+            content()
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private func dashboardMeter(_ title: String, value: Double, label: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(UI.text)
+                Spacer()
+                Text(label)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(UI.muted)
+            }
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 999)
+                        .fill(UI.card)
+                    RoundedRectangle(cornerRadius: 999)
+                        .fill(tint)
+                        .frame(width: max(6, proxy.size.width * min(max(value, 0), 1)))
+                }
+            }
+            .frame(height: 8)
+        }
+    }
+
+    private func dashboardMiniStat(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(AppFont.bodySemi(12))
+                .foregroundStyle(UI.text)
+                .lineLimit(1)
+            Text(title)
+                .font(AppFont.body(10))
+                .foregroundStyle(UI.muted)
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 9).fill(UI.card))
+    }
+
+    private func dashboardActionRow(title: String, detail: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(UI.accent)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(AppFont.bodySemi(12))
+                        .foregroundStyle(UI.text)
+                    Text(detail)
+                        .font(AppFont.body(10))
+                        .foregroundStyle(UI.muted)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(UI.muted)
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 9).fill(UI.card))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func dashboardConfigLine(_ title: String, _ value: String, icon: String) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(UI.muted)
+                .frame(width: 18)
+            Text(title)
+                .font(AppFont.body(11))
+                .foregroundStyle(UI.muted)
+            Spacer()
+            Text(value)
+                .font(AppFont.bodySemi(11))
+                .foregroundStyle(UI.text)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+    }
+
+    private func dashboardShortcut(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: icon)
+                .font(AppFont.bodySemi(11))
+                .foregroundStyle(UI.text)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, minHeight: 34)
+                .background(RoundedRectangle(cornerRadius: 9).fill(UI.card))
+        }
+        .buttonStyle(.plain)
     }
 
     var openClawChat: some View {
