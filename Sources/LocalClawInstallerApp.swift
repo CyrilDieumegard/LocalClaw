@@ -473,6 +473,9 @@ final class InstallerViewModel: ObservableObject {
         OpenRouterModel(id: "openrouter/anthropic/claude-3-haiku", displayName: "Claude 3 Haiku"),
         
         // GPT family
+        OpenRouterModel(id: "openrouter/openai/gpt-5.5", displayName: "OpenAI: GPT-5.5"),
+        OpenRouterModel(id: "openrouter/openai/gpt-5.4", displayName: "OpenAI: GPT-5.4"),
+        OpenRouterModel(id: "openrouter/openai/gpt-5.4-mini", displayName: "OpenAI: GPT-5.4 Mini"),
         OpenRouterModel(id: "openrouter/openai/gpt-4-turbo", displayName: "GPT-4 Turbo"),
         OpenRouterModel(id: "openrouter/openai/gpt-4", displayName: "GPT-4"),
         OpenRouterModel(id: "openrouter/openai/gpt-3.5-turbo", displayName: "GPT-3.5 Turbo"),
@@ -3611,7 +3614,16 @@ final class InstallerViewModel: ObservableObject {
         } else if selectedChatResponseMode == .local, let firstLocal = localLMStudioModels.first, !firstLocal.isEmpty {
             selectedModelForRequest = firstLocal
         }
-        let requestInferenceMode: InferenceMode = selectedChatResponseMode == .local ? .local : (selectedChatResponseMode == .cloud ? .cloud : inferenceMode)
+        let selectedModelLooksLocal = selectedModelForRequest.hasPrefix("lmstudio/") || localLMStudioModels.contains(selectedModelForRequest)
+        let selectedModelLooksCloud = selectedModelForRequest.hasPrefix("openrouter/")
+        let requestInferenceMode: InferenceMode
+        if selectedModelLooksLocal {
+            requestInferenceMode = .local
+        } else if selectedModelLooksCloud {
+            requestInferenceMode = .cloud
+        } else {
+            requestInferenceMode = selectedChatResponseMode == .local ? .local : (selectedChatResponseMode == .cloud ? .cloud : inferenceMode)
+        }
         let modelOverride = Self.normalizedChatModelID(
             selectedModelForRequest,
             inferenceMode: requestInferenceMode,
@@ -3646,7 +3658,8 @@ final class InstallerViewModel: ObservableObject {
             defer { try? FileManager.default.removeItem(atPath: tempMessagePath) }
 
             let workdirPrefix = useDeveloperSession ? "cd \(quote(developerWorkdir)) || exit 1; " : ""
-            let command = "\(workdirPrefix)MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(sessionID)) --message \"$(cat \"$MESSAGE_FILE\")\" --json --timeout 180 2>&1"
+            let modelArgument = modelOverride.isEmpty ? "" : " --model \(quote(modelOverride))"
+            let command = "\(workdirPrefix)MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(sessionID))\(modelArgument) --message \"$(cat \"$MESSAGE_FILE\")\" --json --timeout 180 2>&1"
             let startedAt = Date()
             var result = Self.shellCancellable(command) { process in
                 Task { @MainActor in
@@ -3747,6 +3760,20 @@ final class InstallerViewModel: ObservableObject {
     func ensureSelectedChatModel() {
         if !selectedChatModel.isEmpty, availableChatModels.contains(where: { $0.id == selectedChatModel }) { return }
         selectedChatModel = availableChatModels.first?.id ?? ""
+        syncChatModelModeWithSelection()
+    }
+
+    func syncChatModelModeWithSelection() {
+        let model = selectedChatModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !model.isEmpty else { return }
+        if model.hasPrefix("lmstudio/") || localLMStudioModels.contains(model) {
+            selectedChatResponseMode = .local
+            inferenceMode = .local
+        } else if model.hasPrefix("openrouter/") {
+            selectedChatResponseMode = .cloud
+            inferenceMode = .cloud
+            selectedOpenRouterModel = model
+        }
     }
 
     nonisolated static func readableModelName(_ id: String) -> String {
@@ -6472,6 +6499,9 @@ struct ContentView: View {
                     .labelsHidden()
                     .frame(maxWidth: 260, alignment: .leading)
                     .onAppear { vm.ensureSelectedChatModel() }
+                    .onChange(of: vm.selectedChatModel) { _ in
+                        vm.syncChatModelModeWithSelection()
+                    }
                 }
                 Spacer()
                 Label(vm.openClawChatStatus, systemImage: vm.chatStatus == "Ready" ? "checkmark.circle.fill" : "circle.fill")
@@ -6531,7 +6561,7 @@ struct ContentView: View {
                     developerIconButton("paperclip") { vm.attachChatImage() }
                     developerIconButton("terminal") { vm.chatInput = "Run the project checks for \(vm.developerProjectPath) and summarize failures with fixes." }
                     developerIconButton("photo") { vm.attachChatImage() }
-                    Text(vm.selectedChatModel.isEmpty ? vm.openClawChatModelLabel : vm.selectedChatModel)
+                    Text("Will send with \(vm.selectedChatModel.isEmpty ? vm.openClawChatModelLabel : vm.selectedChatModel)")
                         .font(AppFont.bodySemi(11))
                         .foregroundStyle(UI.muted)
                         .lineLimit(1)
@@ -7290,6 +7320,9 @@ struct ContentView: View {
                 .labelsHidden()
                 .frame(width: 190)
                 .onAppear { vm.ensureSelectedChatModel() }
+                .onChange(of: vm.selectedChatModel) { _ in
+                    vm.syncChatModelModeWithSelection()
+                }
 
                 Spacer(minLength: 12)
 
