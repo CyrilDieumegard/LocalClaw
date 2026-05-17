@@ -6610,40 +6610,47 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Select backend").font(AppFont.bodySemi(15)).foregroundStyle(UI.text)
 
-            Picker("Mode", selection: $vm.inferenceMode) {
-                Text("Cloud LLM").tag(InstallerViewModel.InferenceMode.cloud)
-                Text("Local LLM").tag(InstallerViewModel.InferenceMode.local)
-            }
-            .pickerStyle(.segmented)
+            HStack(alignment: .center, spacing: 16) {
+                Picker("Mode", selection: $vm.inferenceMode) {
+                    Text("Cloud LLM").tag(InstallerViewModel.InferenceMode.cloud)
+                    Text("Local LLM").tag(InstallerViewModel.InferenceMode.local)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 260)
 
-            if vm.inferenceMode == .cloud {
-                Picker("Cloud model", selection: $vm.selectedOpenRouterModel) {
-                    if vm.openRouterModelsLive.isEmpty {
-                        ForEach(InstallerViewModel.openRouterModels) { model in
-                            Text(model.displayName).tag(model.id)
-                        }
-                    } else {
-                        ForEach(vm.openRouterModelsLive) { model in
-                            Text(model.displayName).tag(model.id)
+                if vm.inferenceMode == .cloud {
+                    Picker("Cloud model", selection: $vm.selectedOpenRouterModel) {
+                        if vm.openRouterModelsLive.isEmpty {
+                            ForEach(InstallerViewModel.openRouterModels) { model in
+                                Text(model.displayName).tag(model.id)
+                            }
+                        } else {
+                            ForEach(vm.openRouterModelsLive) { model in
+                                Text(model.displayName).tag(model.id)
+                            }
                         }
                     }
+                    .frame(maxWidth: .infinity)
+                } else {
+                    Picker("Local model", selection: $vm.selectedLocalLMStudioModel) {
+                        if vm.localLMStudioModels.isEmpty {
+                            Text("No LM Studio model found").tag("")
+                        } else {
+                            ForEach(vm.localLMStudioModels, id: \.self) { model in
+                                Text(model).tag(model)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
                 }
-                .frame(maxWidth: .infinity)
+            }
+
+            if vm.inferenceMode == .cloud {
                 modelConfigRow(title: "Cloud model", subtitle: vm.selectedOpenRouterModel.isEmpty ? "No cloud model selected" : vm.selectedOpenRouterModel, icon: "cloud.fill", status: vm.cloudProviderAuthConfigured ? "Ready" : "Needs auth")
                 if !vm.openRouterModelsLive.isEmpty {
                     Text("OpenRouter catalog: \(vm.openRouterModelsLive.count) models").font(AppFont.body(11)).foregroundStyle(UI.muted)
                 }
             } else {
-                Picker("Local model", selection: $vm.selectedLocalLMStudioModel) {
-                    if vm.localLMStudioModels.isEmpty {
-                        Text("No LM Studio model found").tag("")
-                    } else {
-                        ForEach(vm.localLMStudioModels, id: \.self) { model in
-                            Text(model).tag(model)
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity)
                 modelConfigRow(title: "Local model", subtitle: vm.selectedLocalLMStudioModel.isEmpty ? "No LM Studio model selected" : vm.selectedLocalLMStudioModel, icon: "desktopcomputer", status: vm.localLMStudioModels.isEmpty ? "No model" : "Ready")
             }
 
