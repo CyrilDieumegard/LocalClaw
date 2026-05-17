@@ -6545,7 +6545,7 @@ struct ContentView: View {
             modelsHeader
             modelsSummaryRow
             modelsConfigAndEstimator
-            modelsRecentUsage
+            modelsInventoryPanel
             Spacer()
         }
         .padding(18)
@@ -6556,7 +6556,7 @@ struct ContentView: View {
         .onAppear {
             vm.refreshOpenClawChatInfo()
             vm.refreshOpenRouterModels()
-            vm.refreshUsageCostEstimate()
+            vm.refreshLocalLMStudioModels()
         }
     }
 
@@ -6564,11 +6564,11 @@ struct ContentView: View {
         HStack {
             VStack(alignment: .leading, spacing: 6) {
                 Text("MODELS").font(AppFont.heading(28)).foregroundStyle(UI.text)
-                Text("Manage local/cloud models and estimate token usage.").font(AppFont.body(13)).foregroundStyle(UI.muted)
+                Text("Choose the active AI backend, verify what is configured, and switch models cleanly.").font(AppFont.body(13)).foregroundStyle(UI.muted)
             }
             Spacer()
             Button("Refresh") {
-                vm.refreshOpenRouterModels(); vm.refreshLocalLMStudioModels(); vm.refreshUsageCostEstimate()
+                vm.refreshOpenClawChatInfo(); vm.refreshOpenRouterModels(); vm.refreshLocalLMStudioModels()
             }
             .buttonStyle(CTAButton(primary: true))
         }
@@ -6578,20 +6578,21 @@ struct ContentView: View {
         HStack(spacing: 12) {
             modelSummaryCard("Active model", value: vm.openClawChatModelLabel, icon: "cpu")
             modelSummaryCard("Mode", value: vm.openClawChatModeLabel, icon: vm.inferenceMode == .local ? "desktopcomputer" : "cloud.fill")
-            modelSummaryCard("Budget estimate", value: String(format: "$%.2f/mo", vm.estimatedMonthlyCostUSD), icon: "chart.bar.xaxis")
+            modelSummaryCard("Cloud auth", value: vm.cloudProviderAuthConfigured ? "Configured" : "Missing", icon: "key.fill")
+            modelSummaryCard("Local models", value: "\(vm.localLMStudioModels.count)", icon: "internaldrive.fill")
         }
     }
 
     var modelsConfigAndEstimator: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: 14) {
             configuredModelsCard
-            tokenEstimatorCard
+            currentModelCard
         }
     }
 
     var configuredModelsCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Configured models").font(AppFont.bodySemi(14)).foregroundStyle(UI.text)
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Select backend").font(AppFont.bodySemi(15)).foregroundStyle(UI.text)
 
             Picker("Mode", selection: $vm.inferenceMode) {
                 Text("Cloud LLM").tag(InstallerViewModel.InferenceMode.cloud)
@@ -6612,7 +6613,7 @@ struct ContentView: View {
                     }
                 }
                 .frame(maxWidth: .infinity)
-                modelConfigRow(title: "Cloud", subtitle: vm.selectedOpenRouterModel.isEmpty ? "No cloud model selected" : vm.selectedOpenRouterModel, icon: "cloud.fill", status: vm.cloudProviderAuthConfigured ? "Configured" : "API key missing")
+                modelConfigRow(title: "Cloud model", subtitle: vm.selectedOpenRouterModel.isEmpty ? "No cloud model selected" : vm.selectedOpenRouterModel, icon: "cloud.fill", status: vm.cloudProviderAuthConfigured ? "Ready" : "Needs auth")
                 if !vm.openRouterModelsLive.isEmpty {
                     Text("OpenRouter catalog: \(vm.openRouterModelsLive.count) models").font(AppFont.body(11)).foregroundStyle(UI.muted)
                 }
@@ -6627,18 +6628,20 @@ struct ContentView: View {
                     }
                 }
                 .frame(maxWidth: .infinity)
-                modelConfigRow(title: "Local", subtitle: vm.selectedLocalLMStudioModel.isEmpty ? "No LM Studio model selected" : vm.selectedLocalLMStudioModel, icon: "desktopcomputer", status: vm.localLMStudioModels.isEmpty ? "Scan needed" : "Available")
+                modelConfigRow(title: "Local model", subtitle: vm.selectedLocalLMStudioModel.isEmpty ? "No LM Studio model selected" : vm.selectedLocalLMStudioModel, icon: "desktopcomputer", status: vm.localLMStudioModels.isEmpty ? "No model" : "Ready")
             }
 
             HStack(spacing: 8) {
-                Button(vm.modelsApplyInProgress ? "Applying..." : "Apply model") { vm.applyModelsTabSelection() }
+                Button(vm.modelsApplyInProgress ? "Applying..." : "Apply selected model") { vm.applyModelsTabSelection() }
                     .buttonStyle(CTAButton(primary: true))
                     .disabled(vm.modelsApplyInProgress || (vm.inferenceMode == .local && vm.selectedLocalLMStudioModel.isEmpty) || (vm.inferenceMode == .cloud && vm.selectedOpenRouterModel.isEmpty))
-                Button("Scan") {
+                Button("Scan models") {
                     vm.refreshOpenRouterModels()
                     vm.refreshLocalLMStudioModels()
                 }
                 .buttonStyle(CTAButton(primary: false))
+                Button("Open dashboard") { vm.openDashboard() }
+                    .buttonStyle(CTAButton(primary: false))
             }
             if !vm.modelsApplyStatus.isEmpty {
                 Text(vm.modelsApplyStatus).font(AppFont.body(11)).foregroundStyle(UI.muted).lineLimit(2)
@@ -6649,61 +6652,38 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
     }
 
-    var tokenEstimatorCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Token usage estimator").font(AppFont.bodySemi(14)).foregroundStyle(UI.text)
-            Text("Estimated monthly tokens: \(String(format: "%.1f", vm.estimatedMonthlyTokensM))M").font(AppFont.bodySemi(12)).foregroundStyle(UI.text)
-            Slider(value: $vm.estimatedMonthlyTokensM, in: 0.1...50, step: 0.1)
-            Text(vm.costAdvice.isEmpty ? "Move the slider to estimate cloud spend." : vm.costAdvice).font(AppFont.body(11)).foregroundStyle(UI.muted)
-            Text(vm.usageLogs.isEmpty ? "No estimate yet." : vm.usageLogs).font(.system(size: 11, design: .monospaced)).foregroundStyle(UI.muted).lineLimit(3)
+    var currentModelCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Current configuration").font(AppFont.bodySemi(15)).foregroundStyle(UI.text)
+            modelConfigRow(title: "Running model", subtitle: vm.openClawChatModelLabel, icon: "cpu", status: vm.openClawChatStatus)
+            modelConfigRow(title: "Selected cloud", subtitle: vm.selectedOpenRouterModel.isEmpty ? "None selected" : vm.selectedOpenRouterModel, icon: "cloud.fill", status: vm.cloudProviderAuthConfigured ? "Ready" : "Needs auth")
+            modelConfigRow(title: "Selected local", subtitle: vm.selectedLocalLMStudioModel.isEmpty ? "None selected" : vm.selectedLocalLMStudioModel, icon: "desktopcomputer", status: vm.localLMStudioModels.isEmpty ? "Scan needed" : "Ready")
+            Text("Changes are applied only when you click Apply selected model.")
+                .font(AppFont.body(11))
+                .foregroundStyle(UI.muted)
         }
-        .padding(12).frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(12).frame(maxWidth: 380, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
     }
 
-    var modelsRecentUsage: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Usage monitoring").font(AppFont.bodySemi(14)).foregroundStyle(UI.text)
-                Spacer()
-                Toggle("Enable", isOn: $vm.tokenMonitoringEnabled)
-                    .toggleStyle(.switch)
-                    .font(AppFont.body(11))
-            }
-            Text("Off by default to keep LocalClaw light. Enable only if you explicitly want token monitoring.")
-                .font(AppFont.body(12))
-                .foregroundStyle(UI.muted)
-            if vm.tokenMonitoringEnabled {
-                HStack(spacing: 8) {
-                    usageLegend("Input", color: Color.blue); usageLegend("Output", color: Color.purple); usageLegend("Cost", color: Color.orange)
-                }
-                if vm.modelUsageRecords.isEmpty {
-                    Text("No tracked model calls yet. Send a chat message while monitoring is enabled.")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(UI.muted)
-                } else {
-                    ForEach(vm.modelUsageRecords.prefix(8)) { record in
-                        HStack(spacing: 8) {
-                            Text(record.model).font(AppFont.bodySemi(11)).foregroundStyle(UI.text).lineLimit(1).truncationMode(.middle)
-                            Spacer()
-                            Text("in \(record.inputTokens)t").font(.system(size: 10, design: .monospaced)).foregroundStyle(UI.muted)
-                            Text("out \(record.outputTokens)t").font(.system(size: 10, design: .monospaced)).foregroundStyle(UI.muted)
-                            Text(String(format: "$%.4f", record.estimatedCostUSD)).font(.system(size: 10, design: .monospaced)).foregroundStyle(UI.muted)
-                        }
-                        .padding(8)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
-                    }
-                }
-            } else {
-                Text("No usage tracking running. Enable this to record model calls from LocalClaw Chat.")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(UI.muted)
-            }
+    var modelsInventoryPanel: some View {
+        HStack(alignment: .top, spacing: 14) {
+            modelInventoryList(
+                title: "Cloud catalog",
+                count: vm.openRouterModelsLive.isEmpty ? InstallerViewModel.openRouterModels.count : vm.openRouterModelsLive.count,
+                emptyText: "No cloud catalog loaded.",
+                rows: Array((vm.openRouterModelsLive.isEmpty ? InstallerViewModel.openRouterModels.map(\.displayName) : vm.openRouterModelsLive.map(\.displayName)).prefix(8)),
+                icon: "cloud.fill"
+            )
+            modelInventoryList(
+                title: "Local models",
+                count: vm.localLMStudioModels.count,
+                emptyText: "No local model detected.",
+                rows: Array(vm.localLMStudioModels.prefix(8)),
+                icon: "internaldrive.fill"
+            )
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     func modelSummaryCard(_ title: String, value: String, icon: String) -> some View {
@@ -6736,11 +6716,47 @@ struct ContentView: View {
         .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
     }
 
-    func usageLegend(_ text: String, color: Color) -> some View {
-        HStack(spacing: 5) {
-            Circle().fill(color).frame(width: 8, height: 8)
-            Text(text).font(AppFont.body(11)).foregroundStyle(UI.muted)
+    func modelInventoryList(title: String, count: Int, emptyText: String, rows: [String], icon: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label(title, systemImage: icon)
+                    .font(AppFont.bodySemi(14))
+                    .foregroundStyle(UI.text)
+                Spacer()
+                Text("\(count)")
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(UI.muted)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 999).fill(UI.card))
+            }
+            if rows.isEmpty {
+                Text(emptyText)
+                    .font(AppFont.body(12))
+                    .foregroundStyle(UI.muted)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 9).fill(UI.card))
+            } else {
+                ForEach(rows, id: \.self) { row in
+                    HStack(spacing: 8) {
+                        Circle().fill(UI.accent).frame(width: 6, height: 6)
+                        Text(row)
+                            .font(AppFont.body(12))
+                            .foregroundStyle(UI.text)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 9).fill(UI.card))
+                }
+            }
         }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     var channelSetup: some View {
