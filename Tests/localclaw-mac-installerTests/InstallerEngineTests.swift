@@ -91,6 +91,24 @@ struct InstallerEngineTests {
         #expect(quoted == #"'/Users/cyril/LocalClaw'"'"'s update/localclaw.dmg'"#)
     }
 
+    @Test func canonicalChatRuntimeModelMapsOpenAIGPTModels() {
+        #expect(InstallerViewModel.canonicalChatRuntimeModelID("openrouter/openai/gpt-5.5") == "openrouter/openai/gpt-5.5")
+        #expect(InstallerViewModel.canonicalChatRuntimeModelID("openrouter/openai/gpt-5.4") == "openrouter/openai/gpt-5.4")
+        #expect(InstallerViewModel.canonicalChatRuntimeModelID("openrouter/moonshotai/kimi-k2.5") == "openrouter/moonshotai/kimi-k2.5")
+    }
+
+    @Test func developerRuntimeSessionIDChangesWithModel() {
+        let base = "localclaw-developer-chat-abc"
+
+        let gpt = InstallerViewModel.runtimeSessionID(base: base, modelID: "openai/gpt-5.5", useDeveloperSession: true)
+        let gemma = InstallerViewModel.runtimeSessionID(base: base, modelID: "lmstudio/google/gemma-4-e2b", useDeveloperSession: true)
+
+        #expect(gpt != base)
+        #expect(gemma != base)
+        #expect(gpt != gemma)
+        #expect(InstallerViewModel.runtimeSessionID(base: base, modelID: "openai/gpt-5.5", useDeveloperSession: false) == base)
+    }
+
     @Test func createsRunnableDeveloperPreviewScaffold() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("localclaw-preview-test-\(UUID().uuidString)")

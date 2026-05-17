@@ -3624,11 +3624,11 @@ final class InstallerViewModel: ObservableObject {
         } else {
             requestInferenceMode = selectedChatResponseMode == .local ? .local : (selectedChatResponseMode == .cloud ? .cloud : inferenceMode)
         }
-        let modelOverride = Self.normalizedChatModelID(
+        let modelOverride = Self.canonicalChatRuntimeModelID(Self.normalizedChatModelID(
             selectedModelForRequest,
             inferenceMode: requestInferenceMode,
             localModels: localLMStudioModels
-        )
+        ))
         let developerWorkdir = developerProjectPath
 
         Task.detached {
@@ -3658,13 +3658,24 @@ final class InstallerViewModel: ObservableObject {
             defer { try? FileManager.default.removeItem(atPath: tempMessagePath) }
 
             let workdirPrefix = useDeveloperSession ? "cd \(quote(developerWorkdir)) || exit 1; " : ""
-            let modelArgument = modelOverride.isEmpty ? "" : " --model \(quote(modelOverride))"
-            let command = "\(workdirPrefix)MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(sessionID))\(modelArgument) --message \"$(cat \"$MESSAGE_FILE\")\" --json --timeout 180 2>&1"
+            let runtimeSessionID = Self.runtimeSessionID(base: sessionID, modelID: modelOverride, useDeveloperSession: useDeveloperSession)
+            let modelFlag = modelOverride.isEmpty ? "" : " --model \(quote(modelOverride))"
+            let command = "\(workdirPrefix)MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(runtimeSessionID)) --message \"$(cat \"$MESSAGE_FILE\")\"\(modelFlag) --json --timeout 180 2>&1"
+            let fallbackCommand = "\(workdirPrefix)MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(runtimeSessionID)) --message \"$(cat \"$MESSAGE_FILE\")\" --json --timeout 180 2>&1"
             let startedAt = Date()
             var result = Self.shellCancellable(command) { process in
                 Task { @MainActor in
                     if self.activeChatRequestID == requestID {
                         self.activeChatProcess = process
+                    }
+                }
+            }
+            if result.0 != 0 && Self.isUnsupportedModelFlagError(result.1) && !modelOverride.isEmpty {
+                result = Self.shellCancellable(fallbackCommand) { process in
+                    Task { @MainActor in
+                        if self.activeChatRequestID == requestID {
+                            self.activeChatProcess = process
+                        }
                     }
                 }
             }
@@ -3791,6 +3802,21 @@ final class InstallerViewModel: ObservableObject {
         if inferenceMode == .local { return "lmstudio/\(trimmed)" }
         if localModels.contains(trimmed) { return "lmstudio/\(trimmed)" }
         return trimmed
+    }
+
+    nonisolated static func canonicalChatRuntimeModelID(_ id: String) -> String {
+        id.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    nonisolated static func runtimeSessionID(base: String, modelID: String, useDeveloperSession: Bool) -> String {
+        guard useDeveloperSession else { return base }
+        let cleanModel = modelID
+            .lowercased()
+            .map { character -> Character in
+                character.isLetter || character.isNumber ? character : "-"
+            }
+        let suffix = String(String(cleanModel).split(separator: "-").joined(separator: "-").prefix(72))
+        return suffix.isEmpty ? base : "\(base)-\(suffix)"
     }
 
     func prepareDeveloperWorkspace() {
@@ -4224,6 +4250,10 @@ final class InstallerViewModel: ObservableObject {
 
     nonisolated private static func isBrokenGlobalWhatsAppPluginError(_ raw: String) -> Bool {
         raw.contains("plugin load failed: whatsapp") && raw.contains(".openclaw/extensions/whatsapp")
+    }
+
+    nonisolated private static func isUnsupportedModelFlagError(_ raw: String) -> Bool {
+        stripANSI(raw).lowercased().contains("unknown option '--model'")
     }
 
     nonisolated private static func stripANSI(_ raw: String) -> String {
