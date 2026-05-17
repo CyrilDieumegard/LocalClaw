@@ -622,6 +622,9 @@ final class InstallerViewModel: ObservableObject {
     }
     @Published var chatIsSending = false
     @Published var chatStatus = "Ready"
+    @Published var selectedChatModel = ""
+    @Published var developerProjectPath = NSHomeDirectory() + "/.openclaw/workspace"
+    @Published var developerPreviewURL = "http://localhost:5173"
     private var chatGatewayPrepared = false
     private var activeChatProcess: Process?
     private var activeChatRequestID: UUID?
@@ -3304,6 +3307,7 @@ final class InstallerViewModel: ObservableObject {
         let sessionID = activeChatSessionID
         let shouldPrepareGateway = !chatGatewayPrepared
         chatGatewayPrepared = true
+        let modelOverride = selectedChatModel.trimmingCharacters(in: .whitespacesAndNewlines)
 
         Task.detached {
             let quote: (String) -> String = { value in
@@ -3327,7 +3331,8 @@ final class InstallerViewModel: ObservableObject {
             }
             defer { try? FileManager.default.removeItem(atPath: tempMessagePath) }
 
-            let command = "MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(sessionID)) --message \"$(cat \"$MESSAGE_FILE\")\" --json --timeout 180 2>&1"
+            let modelArg = modelOverride.isEmpty ? "" : " --model \(quote(modelOverride))"
+            let command = "MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(sessionID)) --message \"$(cat \"$MESSAGE_FILE\")\"\(modelArg) --json --timeout 180 2>&1"
             let startedAt = Date()
             var result = Self.shellCancellable(command) { process in
                 Task { @MainActor in
@@ -3394,6 +3399,82 @@ final class InstallerViewModel: ObservableObject {
         appendChatSystemMessageOnce("Generation stopped.")
         chatStatus = "Ready"
         chatIsSending = false
+    }
+
+    var availableChatModels: [OpenRouterModel] {
+        var models: [OpenRouterModel] = []
+        let current = openClawChatModelLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !current.isEmpty && !current.lowercased().contains("not configured") {
+            models.append(OpenRouterModel(id: current, displayName: Self.readableModelName(current)))
+        }
+        for local in localLMStudioModels {
+            models.append(OpenRouterModel(id: "lmstudio/\(local)", displayName: "Local · \(local)"))
+        }
+        models.append(contentsOf: openRouterModelsLive.isEmpty ? Self.openRouterModels : openRouterModelsLive)
+
+        var seen = Set<String>()
+        return models.filter { model in
+            if seen.contains(model.id) { return false }
+            seen.insert(model.id)
+            return true
+        }
+    }
+
+    func ensureSelectedChatModel() {
+        if !selectedChatModel.isEmpty, availableChatModels.contains(where: { $0.id == selectedChatModel }) { return }
+        selectedChatModel = availableChatModels.first?.id ?? ""
+    }
+
+    nonisolated static func readableModelName(_ id: String) -> String {
+        let last = id.split(separator: "/").last.map(String.init) ?? id
+        return last
+            .replacingOccurrences(of: "-", with: " ")
+            .replacingOccurrences(of: "_", with: " ")
+            .capitalized
+    }
+
+    func prepareDeveloperWorkspace() {
+        refreshOpenClawChatInfo()
+        refreshLocalLMStudioModels()
+        refreshOpenRouterModels()
+        ensureSelectedChatModel()
+    }
+
+    func developerNewApp() {
+        newChatProject()
+        chatInput = "Create a new web app in \(developerProjectPath). Set up a minimal runnable project, then tell me how to preview it locally."
+        screen = .developer
+    }
+
+    func developerChooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: developerProjectPath)
+        if panel.runModal() == .OK, let url = panel.url {
+            developerProjectPath = url.path
+            chatInput = "Use this project folder as context: \(url.path). Inspect it and suggest the next development step."
+        }
+    }
+
+    func developerRunPreview() {
+        if let url = URL(string: developerPreviewURL) {
+            NSWorkspace.shared.open(url)
+        }
+        chatInput = "Start or verify the local preview for \(developerProjectPath). If a dev server is needed, use the existing project scripts and report the local URL."
+    }
+
+    func developerOpenExternalPreview() {
+        if let url = URL(string: developerPreviewURL) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    func developerCopyPreviewURL() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(developerPreviewURL, forType: .string)
+        appendChatSystemMessageOnce("Preview URL copied.")
     }
 
     nonisolated private static func shellCancellable(_ command: String, onStart: @escaping (Process) -> Void) -> (Int32, String) {
@@ -5409,9 +5490,9 @@ struct ContentView: View {
                         .foregroundStyle(UI.muted)
                 }
                 Spacer()
-                developerToolbarButton("New app", icon: "plus.square.on.square")
-                developerToolbarButton("Open folder", icon: "folder")
-                developerToolbarButton("Run preview", icon: "play.fill", primary: true)
+                developerToolbarButton("New app", icon: "plus.square.on.square") { vm.developerNewApp() }
+                developerToolbarButton("Open folder", icon: "folder") { vm.developerChooseFolder() }
+                developerToolbarButton("Run preview", icon: "play.fill", primary: true) { vm.developerRunPreview() }
             }
 
             HStack(alignment: .top, spacing: 14) {
@@ -5427,6 +5508,7 @@ struct ContentView: View {
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.06), radius: 6, x: 0, y: 2)
+        .onAppear { vm.prepareDeveloperWorkspace() }
     }
 
     private var developerChatPanel: some View {
@@ -5436,10 +5518,15 @@ struct ContentView: View {
                     Text("AI Developer")
                         .font(AppFont.bodySemi(15))
                         .foregroundStyle(UI.text)
-                    Text(vm.openClawChatModelLabel)
-                        .font(AppFont.body(11))
-                        .foregroundStyle(UI.muted)
-                        .lineLimit(1)
+                    Picker("", selection: $vm.selectedChatModel) {
+                        ForEach(vm.availableChatModels) { model in
+                            Text(model.displayName).tag(model.id)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .frame(maxWidth: 260, alignment: .leading)
+                    .onAppear { vm.ensureSelectedChatModel() }
                 }
                 Spacer()
                 Label(vm.openClawChatStatus, systemImage: vm.chatStatus == "Ready" ? "checkmark.circle.fill" : "circle.fill")
@@ -5461,19 +5548,26 @@ struct ContentView: View {
             .overlay(RoundedRectangle(cornerRadius: 14).stroke(UI.lineSoft, lineWidth: 1))
 
             VStack(alignment: .leading, spacing: 10) {
-                TextField("Ask OpenClaw to build, fix, or improve the app...", text: .constant(""), axis: .vertical)
+                TextField("Ask OpenClaw to build, fix, or improve the app...", text: $vm.chatInput, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(AppFont.body(14))
                     .lineLimit(2...5)
+                    .onSubmit { vm.sendChatMessage() }
                 HStack(spacing: 10) {
-                    developerIconButton("paperclip")
-                    developerIconButton("terminal")
-                    developerIconButton("photo")
+                    developerIconButton("paperclip") { vm.attachChatImage() }
+                    developerIconButton("terminal") { vm.chatInput = "Run the project checks for \(vm.developerProjectPath) and summarize failures with fixes." }
+                    developerIconButton("photo") { vm.attachChatImage() }
+                    Text(vm.selectedChatModel.isEmpty ? vm.openClawChatModelLabel : vm.selectedChatModel)
+                        .font(AppFont.bodySemi(11))
+                        .foregroundStyle(UI.muted)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                     Spacer()
-                    Button(action: {}) {
-                        Label("Send", systemImage: "arrow.up")
+                    Button(action: { vm.chatIsSending ? vm.stopChatGeneration() : vm.sendChatMessage() }) {
+                        Label(vm.chatIsSending ? "Stop" : "Send", systemImage: vm.chatIsSending ? "stop.fill" : "arrow.up")
                     }
                     .buttonStyle(SheetActionButton(primary: true))
+                    .disabled(!vm.chatIsSending && vm.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && vm.chatImagePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
             .padding(12)
@@ -5488,21 +5582,21 @@ struct ContentView: View {
     private var developerPreviewPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                developerTab("Preview", icon: "eye.fill", active: true)
-                developerTab("Files", icon: "doc.text")
-                developerTab("Database", icon: "cylinder.split.1x2")
-                developerTab("Deploy", icon: "icloud.and.arrow.up")
-                developerTab("Logs", icon: "terminal")
+                developerTab("Preview", icon: "eye.fill", active: true) { vm.developerOpenExternalPreview() }
+                developerTab("Files", icon: "doc.text") { vm.developerChooseFolder() }
+                developerTab("Database", icon: "cylinder.split.1x2") { vm.chatInput = "Inspect database/storage needs for this project and propose the simplest local setup." }
+                developerTab("Deploy", icon: "icloud.and.arrow.up") { vm.chatInput = "Prepare this project for deployment. Identify the platform, build command, output directory, and missing environment variables." }
+                developerTab("Logs", icon: "terminal") { vm.chatInput = "Check recent project logs and summarize the actionable errors." }
                 Spacer()
-                developerIconButton("arrow.clockwise")
-                developerIconButton("rectangle.on.rectangle")
-                developerIconButton("arrow.up.right.square")
+                developerIconButton("arrow.clockwise") { vm.developerRunPreview() }
+                developerIconButton("rectangle.on.rectangle") { vm.developerCopyPreviewURL() }
+                developerIconButton("arrow.up.right.square") { vm.developerOpenExternalPreview() }
             }
             .padding(10)
             .background(UI.cardSoft)
 
             HStack(spacing: 8) {
-                Text("localhost:5173")
+                Text(vm.developerPreviewURL.replacingOccurrences(of: "http://", with: ""))
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(UI.muted)
                     .lineLimit(1)
@@ -5510,8 +5604,8 @@ struct ContentView: View {
                     .padding(.vertical, 7)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
-                developerToolbarButton("Desktop", icon: "desktopcomputer")
-                developerToolbarButton("Mobile", icon: "iphone")
+                developerToolbarButton("Desktop", icon: "desktopcomputer") { vm.developerOpenExternalPreview() }
+                developerToolbarButton("Mobile", icon: "iphone") { vm.developerOpenExternalPreview() }
             }
             .padding(10)
             .background(UI.card)
@@ -5563,15 +5657,15 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(UI.lineSoft, lineWidth: 1))
     }
 
-    private func developerToolbarButton(_ title: String, icon: String, primary: Bool = false) -> some View {
-        Button(action: {}) {
+    private func developerToolbarButton(_ title: String, icon: String, primary: Bool = false, action: @escaping () -> Void = {}) -> some View {
+        Button(action: action) {
             Label(title, systemImage: icon)
         }
         .buttonStyle(CompactChatButton(primary: primary))
     }
 
-    private func developerIconButton(_ icon: String) -> some View {
-        Button(action: {}) {
+    private func developerIconButton(_ icon: String, action: @escaping () -> Void = {}) -> some View {
+        Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(UI.muted)
@@ -5581,13 +5675,16 @@ struct ContentView: View {
         .buttonStyle(.plain)
     }
 
-    private func developerTab(_ title: String, icon: String, active: Bool = false) -> some View {
-        Label(title, systemImage: icon)
-            .font(AppFont.bodySemi(12))
-            .foregroundStyle(active ? UI.accent : UI.text)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 8).fill(active ? UI.card : Color.clear))
+    private func developerTab(_ title: String, icon: String, active: Bool = false, action: @escaping () -> Void = {}) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: icon)
+                .font(AppFont.bodySemi(12))
+                .foregroundStyle(active ? UI.accent : UI.text)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 8).fill(active ? UI.card : Color.clear))
+        }
+        .buttonStyle(.plain)
     }
 
     private func developerMessage(role: String, text: String, isUser: Bool) -> some View {
@@ -5855,11 +5952,15 @@ struct ContentView: View {
                 chatComposerIcon("globe", help: "Web context")
                 chatComposerIcon("apps.iphone", help: "Apps")
 
-                Label(vm.openClawChatModelLabel, systemImage: "cpu")
-                    .font(AppFont.bodySemi(12))
-                    .foregroundStyle(UI.muted)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                Picker("", selection: $vm.selectedChatModel) {
+                    ForEach(vm.availableChatModels) { model in
+                        Text(model.displayName).tag(model.id)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(width: 190)
+                .onAppear { vm.ensureSelectedChatModel() }
 
                 Spacer(minLength: 12)
 
