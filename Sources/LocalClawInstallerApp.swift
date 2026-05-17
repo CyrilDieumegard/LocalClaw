@@ -665,6 +665,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var selectedChatResponseMode: ChatResponseMode = .cloud {
         didSet {
             UserDefaults.standard.set(selectedChatResponseMode.rawValue, forKey: Self.selectedChatResponseModeDefaultsKey)
+            prepareModelListForSelectedMode()
             reconcileSelectedChatModelForCurrentMode()
         }
     }
@@ -1502,6 +1503,9 @@ final class InstallerViewModel: ObservableObject {
                     self.openRouterModelsLive = mapped
                     if !self.openRouterModelsLive.contains(where: { $0.id == self.selectedOpenRouterModel }) {
                         self.selectedOpenRouterModel = self.openRouterModelsLive.first?.id ?? ""
+                    }
+                    if self.selectedChatResponseMode != .local {
+                        self.reconcileSelectedChatModelForCurrentMode()
                     }
                     self.append("✓ Loaded \(mapped.count) OpenRouter models")
                 }
@@ -3104,6 +3108,7 @@ final class InstallerViewModel: ObservableObject {
         modeSwitchStatus = "Applying switch..."
 
         if inferenceMode == .local {
+            selectedChatResponseMode = .local
             selectedProvider = .custom
             ensureLMStudioAuthProfileForMainAgent()
 
@@ -3129,10 +3134,8 @@ final class InstallerViewModel: ObservableObject {
                 controlCenterLogs += "[FAIL] Local switch failed: no model found in LM Studio\n"
             }
         } else {
+            prepareCloudModelSelection()
             selectedProvider = .openRouter
-            if selectedOpenRouterModel.isEmpty {
-                selectedOpenRouterModel = "openrouter/moonshotai/kimi-k2.5"
-            }
             writePrimaryAndSecondaryModel(primary: selectedOpenRouterModel, secondary: nil)
             controlCenterLogs += "[OK] Switched to Cloud LLM: \(selectedOpenRouterModel)\n"
         }
@@ -3785,6 +3788,30 @@ final class InstallerViewModel: ObservableObject {
 
     func ensureSelectedChatModel() {
         reconcileSelectedChatModelForCurrentMode()
+    }
+
+    func prepareModelListForSelectedMode() {
+        if selectedChatResponseMode == .local {
+            inferenceMode = .local
+            refreshLocalLMStudioModels()
+        } else {
+            prepareCloudModelSelection()
+        }
+    }
+
+    func prepareCloudModelSelection() {
+        inferenceMode = .cloud
+        selectedProvider = .openRouter
+        let cloudModels = openRouterModelsLive.isEmpty ? Self.openRouterModels : openRouterModelsLive
+        if !cloudModels.contains(where: { $0.id == selectedOpenRouterModel }) {
+            selectedOpenRouterModel = cloudModels.first?.id ?? "openrouter/moonshotai/kimi-k2.5"
+        }
+        if selectedChatModel.isEmpty || !cloudModels.contains(where: { $0.id == selectedChatModel }) {
+            selectedChatModel = selectedOpenRouterModel
+        }
+        if openRouterModelsLive.isEmpty {
+            refreshOpenRouterModels()
+        }
     }
 
     func reconcileSelectedChatModelForCurrentMode() {
@@ -9796,6 +9823,14 @@ struct ContentView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 260)
+                .onChange(of: vm.inferenceMode) { newValue in
+                    if newValue == .cloud {
+                        vm.selectedChatResponseMode = .cloud
+                        vm.prepareCloudModelSelection()
+                    } else {
+                        vm.selectedChatResponseMode = .local
+                    }
+                }
 
                 if vm.inferenceMode == .cloud {
                     Picker("Cloud model", selection: $vm.selectedOpenRouterModel) {
