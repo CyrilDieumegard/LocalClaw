@@ -452,6 +452,8 @@ final class InstallerViewModel: ObservableObject {
     @Published var machineOpenclawMB: Int = 0
     @Published var machineNodeMB: Int = 0
     @Published var topProcesses: [ProcessUsageItem] = []
+    @Published var hasMachineUsageSnapshot: Bool = false
+    @Published var isRefreshingHome: Bool = false
 
     @Published var licenseEmail: String = ""
     @Published var licenseKey: String = ""
@@ -1001,6 +1003,7 @@ final class InstallerViewModel: ObservableObject {
     // MARK: - Control Center
 
     func refreshControlCenter() {
+        hasMachineUsageSnapshot = true
         let status = engine.getGatewayStatus()
         gatewayIsRunning = status.isRunning
         currentModel = engine.getCurrentModel()
@@ -1022,6 +1025,32 @@ final class InstallerViewModel: ObservableObject {
         machineOpenclawMB = usage.openclawMemoryMB
         machineNodeMB = usage.nodeMemoryMB
         topProcesses = engine.topProcesses(limit: 10)
+    }
+
+    func refreshHomeDashboard() {
+        guard !isRefreshingHome else { return }
+        isRefreshingHome = true
+        let status = engine.getGatewayStatus()
+        gatewayIsRunning = status.isRunning
+        currentModel = engine.getCurrentModel()
+        if currentModel.hasPrefix("openrouter/") {
+            selectedControlModel = currentModel
+        }
+        isRefreshingHome = false
+    }
+
+    func refreshMachineUsageSnapshot() {
+        hasMachineUsageSnapshot = true
+        let usage = engine.getSystemUsage()
+        machineCPUPercent = usage.cpuPercent
+        machineMemoryUsedGB = usage.memoryUsedGB
+        machineMemoryAvailableGB = usage.memoryAvailableGB
+        machineMemoryTotalGB = usage.memoryTotalGB
+        machineSwapUsedGB = usage.swapUsedGB
+        machineSwapTotalGB = usage.swapTotalGB
+        machineLMStudioMB = usage.lmStudioMemoryMB
+        machineOpenclawMB = usage.openclawMemoryMB
+        machineNodeMB = usage.nodeMemoryMB
     }
 
     func killHeavyProcess(_ pid: Int) {
@@ -4564,14 +4593,9 @@ struct ContentView: View {
                             .foregroundStyle(UI.muted)
                     }
                     Spacer()
-                    Button("Refresh") {
-                        vm.refreshControlCenter()
-                        vm.runHealthCheck()
-                        vm.refreshUsageCostEstimate()
-                        vm.refreshChannels()
-                        vm.refreshSkills()
-                    }
+                    Button(vm.isRefreshingHome ? "Refreshing..." : "Refresh") { vm.refreshHomeDashboard() }
                     .buttonStyle(CTAButton(primary: true))
+                    .disabled(vm.isRefreshingHome)
                 }
 
                 HStack(spacing: 10) {
@@ -4585,7 +4609,7 @@ struct ContentView: View {
                     dashboardKpiCard(
                         title: "Health",
                         value: vm.healthStatus,
-                        detail: String(format: "CPU %.0f%% · RAM %.1f/%.1f GB", vm.machineCPUPercent, vm.machineMemoryUsedGB, vm.machineMemoryTotalGB),
+                        detail: vm.hasMachineUsageSnapshot ? String(format: "CPU %.0f%% · RAM %.1f/%.1f GB", vm.machineCPUPercent, vm.machineMemoryUsedGB, vm.machineMemoryTotalGB) : "Performance check off",
                         icon: "heart.text.square.fill",
                         tint: dashboardHealthTint
                     )
@@ -4598,8 +4622,8 @@ struct ContentView: View {
                     )
                     dashboardKpiCard(
                         title: "Channels",
-                        value: "(vm.channels.filter { $0.connected || $0.running }.count) active",
-                        detail: "(vm.channels.count) available · (vm.channels.reduce(0) { $0 + $1.accounts.count }) accounts",
+                        value: "\(vm.channels.filter { $0.connected || $0.running }.count) active",
+                        detail: "\(vm.channels.count) available · \(vm.channels.reduce(0) { $0 + $1.accounts.count }) accounts",
                         icon: "bubble.left.and.bubble.right.fill",
                         tint: Color(NSColor.systemBlue)
                     )
@@ -4608,16 +4632,32 @@ struct ContentView: View {
                 HStack(alignment: .top, spacing: 14) {
                     VStack(alignment: .leading, spacing: 14) {
                         dashboardPanel(title: "System load", icon: "gauge.with.dots.needle.bottom.50percent") {
-                            VStack(alignment: .leading, spacing: 12) {
-                                dashboardMeter("CPU", value: vm.machineCPUPercent / 100, label: String(format: "%.0f%%", vm.machineCPUPercent), tint: UI.accent)
-                                let memoryRatio = vm.machineMemoryTotalGB > 0 ? vm.machineMemoryUsedGB / vm.machineMemoryTotalGB : 0
-                                dashboardMeter("RAM", value: memoryRatio, label: String(format: "%.1f / %.1f GB", vm.machineMemoryUsedGB, vm.machineMemoryTotalGB), tint: Color(NSColor.systemBlue))
-                                let swapRatio = vm.machineSwapTotalGB > 0 ? vm.machineSwapUsedGB / vm.machineSwapTotalGB : 0
-                                dashboardMeter("Swap", value: swapRatio, label: String(format: "%.2f / %.2f GB", vm.machineSwapUsedGB, vm.machineSwapTotalGB), tint: vm.machineSwapUsedGB >= 4 ? Color(NSColor.systemRed) : Color(NSColor.systemOrange))
-                                HStack(spacing: 8) {
-                                    dashboardMiniStat("OpenClaw", String(format: "%.0f MB", vm.machineOpenclawMB))
-                                    dashboardMiniStat("LM Studio", String(format: "%.0f MB", vm.machineLMStudioMB))
-                                    dashboardMiniStat("Node", String(format: "%.0f MB", vm.machineNodeMB))
+                            if vm.hasMachineUsageSnapshot {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    dashboardMeter("CPU", value: vm.machineCPUPercent / 100, label: String(format: "%.0f%%", vm.machineCPUPercent), tint: UI.accent)
+                                    let memoryRatio = vm.machineMemoryTotalGB > 0 ? vm.machineMemoryUsedGB / vm.machineMemoryTotalGB : 0
+                                    dashboardMeter("RAM", value: memoryRatio, label: String(format: "%.1f / %.1f GB", vm.machineMemoryUsedGB, vm.machineMemoryTotalGB), tint: Color(NSColor.systemBlue))
+                                    let swapRatio = vm.machineSwapTotalGB > 0 ? vm.machineSwapUsedGB / vm.machineSwapTotalGB : 0
+                                    dashboardMeter("Swap", value: swapRatio, label: String(format: "%.2f / %.2f GB", vm.machineSwapUsedGB, vm.machineSwapTotalGB), tint: vm.machineSwapUsedGB >= 4 ? Color(NSColor.systemRed) : Color(NSColor.systemOrange))
+                                    HStack(spacing: 8) {
+                                        dashboardMiniStat("OpenClaw", String(format: "%.0f MB", vm.machineOpenclawMB))
+                                        dashboardMiniStat("LM Studio", String(format: "%.0f MB", vm.machineLMStudioMB))
+                                        dashboardMiniStat("Node", String(format: "%.0f MB", vm.machineNodeMB))
+                                    }
+                                    Button("Refresh performance") { vm.refreshMachineUsageSnapshot() }
+                                        .buttonStyle(CTAButton(primary: false))
+                                }
+                            } else {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Text("Performance monitoring is paused by default.")
+                                        .font(AppFont.bodySemi(13))
+                                        .foregroundStyle(UI.text)
+                                    Text("Run a manual check when you need CPU, RAM, swap, and process memory details.")
+                                        .font(AppFont.body(12))
+                                        .foregroundStyle(UI.muted)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Button("Check performance") { vm.refreshMachineUsageSnapshot() }
+                                        .buttonStyle(CTAButton(primary: false))
                                 }
                             }
                         }
@@ -4664,7 +4704,7 @@ struct ContentView: View {
                             VStack(alignment: .leading, spacing: 10) {
                                 dashboardConfigLine("Mode", vm.openClawChatModeLabel, icon: vm.inferenceMode == .local ? "desktopcomputer" : "cloud.fill")
                                 dashboardConfigLine("Model", vm.openClawChatModelLabel, icon: "cpu")
-                                dashboardConfigLine("LocalClaw", "v(vm.installerCurrentVersion) · build (vm.installerBuildNumber)", icon: "app.badge")
+                                dashboardConfigLine("LocalClaw", "v\(vm.installerCurrentVersion) · build \(vm.installerBuildNumber)", icon: "app.badge")
                                 dashboardConfigLine("OpenClaw", vm.openclawInstalledVersion, icon: "terminal")
                             }
                         }
@@ -4689,11 +4729,7 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
         .onAppear {
-            vm.refreshControlCenter()
-            vm.refreshUsageCostEstimate()
-            if vm.healthStatus == "Unknown" { vm.runHealthCheck() }
-            if vm.channelsStatus == "Not loaded" { vm.refreshChannels() }
-            if vm.installedSkills.isEmpty { vm.refreshSkills() }
+            vm.refreshHomeDashboard()
         }
     }
 
