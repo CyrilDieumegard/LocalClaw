@@ -641,6 +641,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var developerProjectPath = NSHomeDirectory() + "/.openclaw/workspace"
     @Published var developerPreviewURL = "http://localhost:5173"
     @Published var developerPreviewRefreshID = UUID()
+    @Published var developerActiveTab = "preview"
     private var chatGatewayPrepared = false
     private var activeChatProcess: Process?
     private var activeChatRequestID: UUID?
@@ -3574,6 +3575,65 @@ final class InstallerViewModel: ObservableObject {
         appendChatSystemMessageOnce("Preview URL copied.")
     }
 
+    func developerProjectFiles(limit: Int = 120) -> [URL] {
+        let root = URL(fileURLWithPath: developerProjectPath)
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        var urls: [URL] = []
+        for case let url as URL in enumerator {
+            let name = url.lastPathComponent
+            if [".git", "node_modules", ".build", "dist", ".next", ".vite"].contains(name) {
+                enumerator.skipDescendants()
+                continue
+            }
+            urls.append(url)
+            if urls.count >= limit { break }
+        }
+        return urls.sorted {
+            let aDir = ((try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false)
+            let bDir = ((try? $1.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false)
+            if aDir != bDir { return aDir && !bDir }
+            return $0.path.localizedCaseInsensitiveCompare($1.path) == .orderedAscending
+        }
+    }
+
+    func developerOpenFile(_ url: URL) {
+        NSWorkspace.shared.open(url)
+    }
+
+    func developerRevealFile(_ url: URL) {
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    func developerRelativePath(_ url: URL) -> String {
+        let root = URL(fileURLWithPath: developerProjectPath).standardizedFileURL.path
+        let path = url.standardizedFileURL.path
+        if path.hasPrefix(root + "/") { return String(path.dropFirst(root.count + 1)) }
+        return url.lastPathComponent
+    }
+
+    func developerProjectSummary() -> [String] {
+        let root = URL(fileURLWithPath: developerProjectPath)
+        let fm = FileManager.default
+        let checks = [
+            ("package.json", "Node app"),
+            ("vite.config.js", "Vite"),
+            ("next.config.js", "Next.js"),
+            ("index.html", "Static HTML"),
+            ("supabase", "Supabase folder"),
+            ("prisma", "Prisma folder"),
+            (".env", "Environment file")
+        ]
+        return checks.compactMap { file, label in
+            fm.fileExists(atPath: root.appendingPathComponent(file).path) ? label : nil
+        }
+    }
+
     nonisolated private static func shellCancellable(_ command: String, onStart: @escaping (Process) -> Void) -> (Int32, String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -5765,11 +5825,11 @@ struct ContentView: View {
     private var developerPreviewPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                developerTab("Preview", icon: "eye.fill", active: true) { vm.developerOpenExternalPreview() }
-                developerTab("Files", icon: "doc.text") { vm.developerChooseFolder() }
-                developerTab("Database", icon: "cylinder.split.1x2") { vm.chatInput = "Inspect database/storage needs for this project and propose the simplest local setup." }
-                developerTab("Deploy", icon: "icloud.and.arrow.up") { vm.chatInput = "Prepare this project for deployment. Identify the platform, build command, output directory, and missing environment variables." }
-                developerTab("Logs", icon: "terminal") { vm.chatInput = "Check recent project logs and summarize the actionable errors." }
+                developerTab("Preview", icon: "eye.fill", id: "preview")
+                developerTab("Files", icon: "doc.text", id: "files")
+                developerTab("Database", icon: "cylinder.split.1x2", id: "database")
+                developerTab("Deploy", icon: "icloud.and.arrow.up", id: "deploy")
+                developerTab("Logs", icon: "terminal", id: "logs")
                 Spacer()
                 developerIconButton("arrow.clockwise") { vm.developerRefreshPreview() }
                 developerIconButton("rectangle.on.rectangle") { vm.developerCopyPreviewURL() }
@@ -5778,6 +5838,31 @@ struct ContentView: View {
             .padding(10)
             .background(UI.cardSoft)
 
+            developerTabContent
+        }
+        .background(RoundedRectangle(cornerRadius: 16).fill(UI.card))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    @ViewBuilder
+    private var developerTabContent: some View {
+        switch vm.developerActiveTab {
+        case "files":
+            developerFilesPanel
+        case "database":
+            developerDatabasePanel
+        case "deploy":
+            developerDeployPanel
+        case "logs":
+            developerLogsPanel
+        default:
+            developerPreviewWebPanel
+        }
+    }
+
+    private var developerPreviewWebPanel: some View {
+        VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Text(vm.developerPreviewURL.replacingOccurrences(of: "http://", with: ""))
                     .font(.system(size: 12, design: .monospaced))
@@ -5797,9 +5882,6 @@ struct ContentView: View {
                 .id(vm.developerPreviewRefreshID)
                 .background(Color.black)
         }
-        .background(RoundedRectangle(cornerRadius: 16).fill(UI.card))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     private func developerToolbarButton(_ title: String, icon: String, primary: Bool = false, action: @escaping () -> Void = {}) -> some View {
@@ -5820,8 +5902,9 @@ struct ContentView: View {
         .buttonStyle(.plain)
     }
 
-    private func developerTab(_ title: String, icon: String, active: Bool = false, action: @escaping () -> Void = {}) -> some View {
-        Button(action: action) {
+    private func developerTab(_ title: String, icon: String, id: String) -> some View {
+        let active = vm.developerActiveTab == id
+        return Button(action: { vm.developerActiveTab = id }) {
             Label(title, systemImage: icon)
                 .font(AppFont.bodySemi(12))
                 .foregroundStyle(active ? UI.accent : UI.text)
@@ -5830,6 +5913,165 @@ struct ContentView: View {
                 .background(RoundedRectangle(cornerRadius: 8).fill(active ? UI.card : Color.clear))
         }
         .buttonStyle(.plain)
+    }
+
+    private var developerFilesPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            developerPanelHeader(
+                title: "Files",
+                subtitle: vm.developerProjectPath,
+                icon: "doc.text",
+                actionTitle: "Change folder",
+                action: { vm.developerChooseFolder() }
+            )
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    let files = vm.developerProjectFiles()
+                    if files.isEmpty {
+                        developerEmptyPanel("No files found in this project folder.")
+                    } else {
+                        ForEach(files, id: \.path) { url in
+                            developerFileRow(url)
+                        }
+                    }
+                }
+                .padding(12)
+            }
+            .scrollIndicators(.hidden)
+        }
+        .background(UI.card)
+    }
+
+    private func developerFileRow(_ url: URL) -> some View {
+        let isDir = ((try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false)
+        return HStack(spacing: 10) {
+            Image(systemName: isDir ? "folder.fill" : "doc.text")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(isDir ? Color(NSColor.systemBlue) : UI.muted)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(url.lastPathComponent)
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(UI.text)
+                    .lineLimit(1)
+                Text(vm.developerRelativePath(url))
+                    .font(AppFont.body(10))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Button("Open") { vm.developerOpenFile(url) }
+                .buttonStyle(CompactChatButton(primary: false))
+            Button("Reveal") { vm.developerRevealFile(url) }
+                .buttonStyle(CompactChatButton(primary: false))
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private var developerDatabasePanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            developerPanelHeader(title: "Database", subtitle: "Detect storage setup and ask OpenClaw for schema help.", icon: "cylinder.split.1x2", actionTitle: "Analyze") {
+                vm.chatInput = "Inspect database/storage needs for this project and propose the simplest local setup."
+            }
+            let summary = vm.developerProjectSummary()
+            VStack(alignment: .leading, spacing: 10) {
+                developerInfoCard("Detected", summary.isEmpty ? "No database framework detected yet." : summary.joined(separator: " · "), icon: "magnifyingglass")
+                developerInfoCard("Local options", "SQLite, Supabase local, Prisma, JSON file storage", icon: "externaldrive")
+                developerInfoCard("Next step", "Ask OpenClaw to infer entities, schema, auth needs, and seed data.", icon: "sparkles")
+            }
+            .padding(12)
+            Spacer()
+        }
+        .background(UI.card)
+    }
+
+    private var developerDeployPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            developerPanelHeader(title: "Deploy", subtitle: "Prepare build settings and deployment checklist.", icon: "icloud.and.arrow.up", actionTitle: "Prepare") {
+                vm.chatInput = "Prepare this project for deployment. Identify the platform, build command, output directory, and missing environment variables."
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                developerInfoCard("Project path", vm.developerProjectPath, icon: "folder")
+                developerInfoCard("Recommended flow", "Run checks, identify build command, verify output directory, then deploy.", icon: "checklist")
+                developerInfoCard("Common targets", "Static hosting, Cloudflare Pages, Vercel, Netlify, custom VPS", icon: "network")
+            }
+            .padding(12)
+            Spacer()
+        }
+        .background(UI.card)
+    }
+
+    private var developerLogsPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            developerPanelHeader(title: "Logs", subtitle: "Useful local commands for debugging this project.", icon: "terminal", actionTitle: "Ask OpenClaw") {
+                vm.chatInput = "Check recent project logs and summarize the actionable errors."
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                developerCodeBlock("cd \(vm.developerProjectPath)\nnpm run dev\nnpm run build\nnpm test")
+                developerInfoCard("Preview URL", vm.developerPreviewURL, icon: "link")
+                developerInfoCard("Tip", "Paste failing logs here and OpenClaw will debug them in the Developer chat.", icon: "lightbulb")
+            }
+            .padding(12)
+            Spacer()
+        }
+        .background(UI.card)
+    }
+
+    private func developerPanelHeader(title: String, subtitle: String, icon: String, actionTitle: String, action: @escaping () -> Void) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(UI.accent)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(AppFont.bodySemi(15))
+                    .foregroundStyle(UI.text)
+                Text(subtitle)
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+            Button(actionTitle, action: action)
+                .buttonStyle(CompactChatButton(primary: false))
+        }
+        .padding(12)
+        .background(UI.cardSoft)
+    }
+
+    private func developerInfoCard(_ title: String, _ text: String, icon: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(UI.accent)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(UI.text)
+                Text(text)
+                    .font(AppFont.body(12))
+                    .foregroundStyle(UI.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private func developerEmptyPanel(_ text: String) -> some View {
+        Text(text)
+            .font(AppFont.body(12))
+            .foregroundStyle(UI.muted)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
     }
 
     private func developerChatBubble(_ message: InstallerViewModel.ChatMessage) -> some View {
