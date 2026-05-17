@@ -673,9 +673,15 @@ final class InstallerViewModel: ObservableObject {
         didSet { UserDefaults.standard.set(selectedDeveloperChatSessionID, forKey: "localclaw.developer.selectedSession.v1") }
     }
     @Published var developerProjectPath = NSHomeDirectory() + "/.openclaw/workspace"
+    @Published var developerProjectName = "My App" {
+        didSet { UserDefaults.standard.set(developerProjectName, forKey: Self.developerProjectNameDefaultsKey) }
+    }
     @Published var developerPreviewURL = "http://localhost:5173"
+    @Published var developerPreviewStatus = "Preview not running"
     @Published var developerPreviewRefreshID = UUID()
+    @Published var developerPreviewDevice = "desktop"
     @Published var developerActiveTab = "preview"
+    private var developerPreviewProcess: Process?
     private var chatGatewayPrepared = false
     private var activeChatProcess: Process?
     private var activeChatRequestID: UUID?
@@ -745,6 +751,7 @@ final class InstallerViewModel: ObservableObject {
     private static let selectedChatResponseModeDefaultsKey = "localclaw.chat.responseMode.v1"
     private static let chatMemoryEnabledDefaultsKey = "localclaw.chat.memoryEnabled.v1"
     private static let chatSavedNotesDefaultsKey = "localclaw.chat.savedNotes.v1"
+    private static let developerProjectNameDefaultsKey = "localclaw.developer.projectName.v1"
     private static let modelUsageDefaultsKey = "localclaw.modelUsage.records.v1"
 
     init() {
@@ -754,6 +761,10 @@ final class InstallerViewModel: ObservableObject {
         }
         if UserDefaults.standard.object(forKey: Self.chatMemoryEnabledDefaultsKey) != nil {
             chatMemoryEnabled = UserDefaults.standard.bool(forKey: Self.chatMemoryEnabledDefaultsKey)
+        }
+        if let savedProjectName = UserDefaults.standard.string(forKey: Self.developerProjectNameDefaultsKey),
+           !savedProjectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            developerProjectName = savedProjectName
         }
         restoreChatSessions()
         restoreChatSavedNotes()
@@ -3717,6 +3728,9 @@ final class InstallerViewModel: ObservableObject {
 
     func prepareDeveloperWorkspace() {
         ensureDeveloperChatSession()
+        if developerProjectPath == NSHomeDirectory() + "/.openclaw/workspace" {
+            syncDeveloperProjectFolder()
+        }
         refreshOpenClawChatInfo()
         refreshLocalLMStudioModels()
         refreshOpenRouterModels()
@@ -3727,8 +3741,41 @@ final class InstallerViewModel: ObservableObject {
         let session = ChatSession.developerFresh()
         chatSessions.insert(session, at: 0)
         selectedDeveloperChatSessionID = session.id
-        chatInput = "Create a new web app in \(developerProjectPath). Set up a minimal runnable project, then tell me how to preview it locally."
+        syncDeveloperProjectFolder()
+        chatInput = "Create a new web app named \(developerProjectName) in \(developerProjectPath). Set up a minimal runnable project, then tell me how to preview it locally inside LocalClaw."
         screen = .developer
+    }
+
+    func syncDeveloperProjectFolder() {
+        let cleanName = developerProjectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "My App" : developerProjectName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let slug = Self.slugifyProjectName(cleanName)
+        let baseURL = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".openclaw/workspace/projects", isDirectory: true)
+        let targetURL = baseURL.appendingPathComponent(slug, isDirectory: true)
+        let currentURL = URL(fileURLWithPath: developerProjectPath)
+        let fm = FileManager.default
+        do {
+            try fm.createDirectory(at: baseURL, withIntermediateDirectories: true)
+            if currentURL.path.hasPrefix(baseURL.path + "/"),
+               currentURL.path != targetURL.path,
+               fm.fileExists(atPath: currentURL.path),
+               !fm.fileExists(atPath: targetURL.path) {
+                try fm.moveItem(at: currentURL, to: targetURL)
+            } else {
+                try fm.createDirectory(at: targetURL, withIntermediateDirectories: true)
+            }
+            developerProjectPath = targetURL.path
+            developerPreviewStatus = "Project folder ready: \(slug)"
+        } catch {
+            developerPreviewStatus = "Could not prepare project folder: \(error.localizedDescription)"
+        }
+    }
+
+    nonisolated static func slugifyProjectName(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let folded = value.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+        let mapped = folded.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }
+        let collapsed = String(mapped).lowercased().split(separator: "-").joined(separator: "-")
+        return collapsed.isEmpty ? "my-app" : collapsed
     }
 
     func developerChooseFolder() {
@@ -3739,13 +3786,76 @@ final class InstallerViewModel: ObservableObject {
         panel.directoryURL = URL(fileURLWithPath: developerProjectPath)
         if panel.runModal() == .OK, let url = panel.url {
             developerProjectPath = url.path
+            developerProjectName = url.lastPathComponent
             chatInput = "Use this project folder as context: \(url.path). Inspect it and suggest the next development step."
         }
     }
 
     func developerRunPreview() {
+        syncDeveloperProjectFolder()
         developerPreviewRefreshID = UUID()
+        developerPreviewStatus = "Starting preview..."
+        developerPreviewProcess?.terminate()
+        developerPreviewProcess = nil
+
+        let root = developerProjectPath
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: URL(fileURLWithPath: root).appendingPathComponent("package.json").path) else {
+            developerPreviewStatus = "No package.json found. Ask OpenClaw to create a runnable web app first."
+            chatInput = "Create or fix a runnable web preview for \(developerProjectPath). Add package.json scripts if needed, then report the preview URL."
+            return
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.currentDirectoryURL = URL(fileURLWithPath: root)
+        process.arguments = ["-lc", "export PATH=/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH; if [ -d node_modules ]; then npm run dev -- --host 127.0.0.1; else npm install && npm run dev -- --host 127.0.0.1; fi"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let output = String(data: data, encoding: .utf8) else { return }
+            let detectedURL = Self.detectPreviewURL(in: output)
+            Task { @MainActor in
+                self?.developerPreviewStatus = output.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.suffix(2).joined(separator: " ")
+                if let detectedURL {
+                    self?.developerPreviewURL = detectedURL
+                    self?.developerPreviewRefreshID = UUID()
+                    self?.developerActiveTab = "preview"
+                }
+            }
+        }
+        do {
+            try process.run()
+            developerPreviewProcess = process
+            developerPreviewURL = "http://localhost:5173"
+            developerPreviewStatus = "Preview running in LocalClaw"
+            developerActiveTab = "preview"
+        } catch {
+            developerPreviewStatus = "Preview failed: \(error.localizedDescription)"
+        }
         chatInput = "Start or verify the local preview for \(developerProjectPath). If a dev server is needed, use the existing project scripts and report the local URL."
+    }
+
+    func developerStopPreview() {
+        developerPreviewProcess?.terminate()
+        developerPreviewProcess = nil
+        developerPreviewStatus = "Preview stopped"
+    }
+
+    nonisolated static func detectPreviewURL(in output: String) -> String? {
+        let patterns = ["http://localhost:", "http://127.0.0.1:"]
+        for pattern in patterns {
+            if let range = output.range(of: pattern) {
+                let suffix = output[range.lowerBound...]
+                let value = suffix.prefix { char in
+                    !char.isWhitespace && char != "\"" && char != "'" && char != ")"
+                }
+                return String(value)
+            }
+        }
+        return nil
     }
 
     func developerRefreshPreview() {
@@ -6103,6 +6213,7 @@ struct ContentView: View {
                 Spacer()
                 developerToolbarButton("New app", icon: "plus.square.on.square") { vm.developerNewApp() }
                 developerToolbarButton("Open folder", icon: "folder") { vm.developerChooseFolder() }
+                developerToolbarButton("Sync folder", icon: "folder.badge.gearshape") { vm.syncDeveloperProjectFolder() }
                 developerToolbarButton("Run preview", icon: "play.fill", primary: true) { vm.developerRunPreview() }
             }
 
@@ -6283,24 +6394,72 @@ struct ContentView: View {
 
     private var developerPreviewWebPanel: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text(vm.developerPreviewURL.replacingOccurrences(of: "http://", with: ""))
-                    .font(.system(size: 12, design: .monospaced))
+            HStack(spacing: 10) {
+                Text("Project")
+                    .font(AppFont.bodySemi(12))
                     .foregroundStyle(UI.muted)
-                    .lineLimit(1)
+                TextField("Project name", text: $vm.developerProjectName)
+                    .textFieldStyle(.plain)
+                    .font(AppFont.bodySemi(13))
+                    .foregroundStyle(UI.text)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+                    .onSubmit { vm.syncDeveloperProjectFolder() }
+                developerToolbarButton("Rename folder", icon: "arrow.triangle.2.circlepath") { vm.syncDeveloperProjectFolder() }
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 10)
+            .background(UI.card)
+
+            HStack(spacing: 8) {
+                TextField("http://localhost:5173", text: $vm.developerPreviewURL)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(UI.text)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
-                developerToolbarButton("Desktop", icon: "desktopcomputer") { vm.developerOpenExternalPreview() }
-                developerToolbarButton("Mobile", icon: "iphone") { vm.developerOpenExternalPreview() }
+                    .onSubmit { vm.developerRefreshPreview() }
+                developerToolbarButton("Run", icon: "play.fill") { vm.developerRunPreview() }
+                developerToolbarButton("Stop", icon: "stop.fill") { vm.developerStopPreview() }
+                developerToolbarButton("Desktop", icon: "desktopcomputer") { vm.developerPreviewDevice = "desktop" }
+                developerToolbarButton("Mobile", icon: "iphone") { vm.developerPreviewDevice = "mobile" }
+                developerToolbarButton("Open", icon: "arrow.up.right.square") { vm.developerOpenExternalPreview() }
             }
             .padding(10)
             .background(UI.card)
 
-            DeveloperWebPreview(urlString: vm.developerPreviewURL)
-                .id(vm.developerPreviewRefreshID)
-                .background(Color.black)
+            HStack(spacing: 8) {
+                Label(vm.developerPreviewStatus, systemImage: vm.developerPreviewStatus.lowercased().contains("running") ? "checkmark.circle.fill" : "circle")
+                    .font(AppFont.body(11))
+                    .foregroundStyle(vm.developerPreviewStatus.lowercased().contains("running") ? Color(NSColor.systemGreen) : UI.muted)
+                    .lineLimit(1)
+                Spacer()
+                Text(vm.developerProjectPath)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 10)
+            .background(UI.card)
+
+            HStack {
+                if vm.developerPreviewDevice == "mobile" { Spacer(minLength: 0) }
+                DeveloperWebPreview(urlString: vm.developerPreviewURL)
+                    .id(vm.developerPreviewRefreshID)
+                    .frame(width: vm.developerPreviewDevice == "mobile" ? 390 : nil)
+                    .background(Color.black)
+                    .overlay(RoundedRectangle(cornerRadius: vm.developerPreviewDevice == "mobile" ? 18 : 0).stroke(vm.developerPreviewDevice == "mobile" ? UI.lineSoft : Color.clear, lineWidth: 1))
+                    .clipShape(RoundedRectangle(cornerRadius: vm.developerPreviewDevice == "mobile" ? 18 : 0))
+                if vm.developerPreviewDevice == "mobile" { Spacer(minLength: 0) }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black.opacity(vm.developerPreviewDevice == "mobile" ? 0.08 : 0))
         }
     }
 
@@ -6414,6 +6573,7 @@ struct ContentView: View {
             }
             VStack(alignment: .leading, spacing: 10) {
                 developerInfoCard("Project path", vm.developerProjectPath, icon: "folder")
+                developerInfoCard("Project name", vm.developerProjectName, icon: "tag")
                 developerInfoCard("Recommended flow", "Run checks, identify build command, verify output directory, then deploy.", icon: "checklist")
                 developerInfoCard("Common targets", "Static hosting, Cloudflare Pages, Vercel, Netlify, custom VPS", icon: "network")
             }
@@ -6431,6 +6591,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 10) {
                 developerCodeBlock("cd \(vm.developerProjectPath)\nnpm run dev\nnpm run build\nnpm test")
                 developerInfoCard("Preview URL", vm.developerPreviewURL, icon: "link")
+                developerInfoCard("Preview status", vm.developerPreviewStatus, icon: "eye")
                 developerInfoCard("Tip", "Paste failing logs here and OpenClaw will debug them in the Developer chat.", icon: "lightbulb")
             }
             .padding(12)
