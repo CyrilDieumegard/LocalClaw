@@ -7825,15 +7825,55 @@ struct ContentView: View {
     }
 
     private var updateChangePlanPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("What will change", systemImage: "list.bullet.clipboard.fill")
-                .font(AppFont.bodySemi(14))
-                .foregroundStyle(UI.text)
-            updatePlanRow("LocalClaw", current: "\(vm.installerCurrentVersion) (build \(vm.installerBuildNumber))", target: vm.installerLatestVersion, action: vm.installerUpdateStatus)
-            updatePlanRow("OpenClaw", current: vm.openclawInstalledVersion, target: vm.openclawLatestVersion, action: vm.openclawUpdateStatus)
-            updatePlanRow("Homebrew", current: vm.brewVersion, target: "latest", action: vm.brewVersion == "Not installed" ? "Not installed" : "Manual check")
-            updatePlanRow("Node", current: vm.nodeVersion, target: "latest", action: vm.nodeVersion == "Not installed" ? "Not installed" : "Managed by Dependencies")
-            updatePlanRow("LM Studio", current: vm.lmStudioVersion, target: "latest", action: vm.lmStudioVersion == "Not installed" ? "Not installed" : "Managed by Dependencies")
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("Update summary", systemImage: "list.bullet.clipboard.fill")
+                    .font(AppFont.bodySemi(14))
+                    .foregroundStyle(UI.text)
+                Spacer()
+                Text(updateSummaryStatus)
+                    .font(AppFont.bodySemi(10))
+                    .foregroundStyle(updateSummaryTint)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(RoundedRectangle(cornerRadius: 999).fill(updateSummaryTint.opacity(0.10)))
+            }
+
+            if vm.installerUpdateStatus == "Update available" {
+                compactUpdatePlanRow(
+                    title: "LocalClaw app",
+                    detail: "\(vm.installerCurrentVersion) -> \(vm.installerLatestVersion)",
+                    status: "Will update",
+                    tint: UI.accent
+                )
+            }
+
+            if vm.openclawUpdateStatus == "Needs update" {
+                compactUpdatePlanRow(
+                    title: "OpenClaw runtime",
+                    detail: "\(vm.openclawInstalledVersion) -> \(vm.openclawLatestVersion)",
+                    status: "Will update",
+                    tint: UI.accent
+                )
+            }
+
+            if missingDependencyNames.isEmpty == false {
+                compactUpdatePlanRow(
+                    title: "Dependencies",
+                    detail: missingDependencyNames.joined(separator: ", "),
+                    status: "Needs install",
+                    tint: Color(NSColor.systemOrange)
+                )
+            }
+
+            if updateSummaryStatus == "No changes" {
+                compactUpdatePlanRow(
+                    title: "Everything is current",
+                    detail: "LocalClaw, OpenClaw and dependencies look ready.",
+                    status: "Up to date",
+                    tint: Color(NSColor.systemGreen)
+                )
+            }
         }
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
@@ -7870,6 +7910,25 @@ struct ContentView: View {
     private var updateDependenciesStatus: String {
         let installed = [vm.brewVersion, vm.nodeVersion, vm.lmStudioVersion].filter { $0 != "Not installed" && $0 != "Checking..." }.count
         return "\(installed)/3 installed"
+    }
+
+    private var missingDependencyNames: [String] {
+        [
+            vm.brewVersion == "Not installed" ? "Homebrew" : nil,
+            vm.nodeVersion == "Not installed" ? "Node" : nil,
+            vm.lmStudioVersion == "Not installed" ? "LM Studio" : nil
+        ].compactMap { $0 }
+    }
+
+    private var updateSummaryStatus: String {
+        if vm.installerUpdateStatus == "Update available" || vm.openclawUpdateStatus == "Needs update" || missingDependencyNames.isEmpty == false {
+            return "Changes pending"
+        }
+        return "No changes"
+    }
+
+    private var updateSummaryTint: Color {
+        updateSummaryStatus == "No changes" ? Color(NSColor.systemGreen) : UI.accent
     }
 
     private func updateSafetyRow(_ title: String, ok: Bool, detail: String) -> some View {
@@ -7921,32 +7980,29 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(primary ? UI.accent.opacity(0.35) : UI.lineSoft, lineWidth: 1))
     }
 
-    private func updatePlanRow(_ name: String, current: String, target: String, action: String) -> some View {
+    private func compactUpdatePlanRow(title: String, detail: String, status: String, tint: Color) -> some View {
         HStack(spacing: 10) {
-            Text(name)
-                .font(AppFont.bodySemi(12))
-                .foregroundStyle(UI.text)
-                .frame(width: 82, alignment: .leading)
-            Text(current)
-                .font(AppFont.body(11))
-                .foregroundStyle(UI.muted)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Image(systemName: "arrow.right")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(UI.muted)
-            Text(target)
-                .font(AppFont.body(11))
-                .foregroundStyle(UI.muted)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer()
-            Text(action)
+            Image(systemName: status == "Up to date" ? "checkmark.circle.fill" : "arrow.down.circle.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(tint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(UI.text)
+                Text(detail)
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 8)
+            Text(status)
                 .font(AppFont.bodySemi(10))
-                .foregroundStyle(action == "Up to date" ? Color(NSColor.systemGreen) : UI.accent)
+                .foregroundStyle(tint)
                 .lineLimit(1)
         }
-        .padding(.vertical, 4)
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
     }
 
     var agentsCenter: some View {
