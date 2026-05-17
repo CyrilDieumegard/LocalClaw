@@ -278,6 +278,14 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    private struct ChannelCatalogEntry {
+        let id: String
+        let label: String
+        let detailLabel: String
+        let systemImage: String
+        let origin: String
+    }
+
     enum CloudAuthMode: String, CaseIterable, Identifiable {
         case api = "API"
         case oauth = "OAuth"
@@ -601,6 +609,41 @@ final class InstallerViewModel: ObservableObject {
     init() {
         restoreChatSessions()
         restoreModelUsageRecords()
+        channels = Self.defaultChannelCatalog.map { entry in
+            ChannelInfo(
+                id: entry.id,
+                label: entry.label,
+                detailLabel: entry.detailLabel,
+                systemImage: entry.systemImage,
+                installed: true,
+                configured: false,
+                running: false,
+                connected: false,
+                accounts: [],
+                origin: entry.origin,
+                tokenStatus: nil,
+                tokenSource: nil,
+                lastError: nil,
+                probeOK: nil,
+                botUsername: nil,
+                lastActivity: nil
+            )
+        }
+    }
+
+    private static let defaultChannelCatalog: [ChannelCatalogEntry] = [
+        ChannelCatalogEntry(id: "telegram", label: "Telegram", detailLabel: "Bot token from BotFather", systemImage: "paperplane.fill", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "discord", label: "Discord", detailLabel: "Bot token from Developer Portal", systemImage: "gamecontroller.fill", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "whatsapp", label: "WhatsApp", detailLabel: "QR login with Linked Devices", systemImage: "phone.bubble.left.fill", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "signal", label: "Signal", detailLabel: "Signal bridge or account login", systemImage: "message.badge.filled.fill", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "slack", label: "Slack", detailLabel: "Workspace bot/app token", systemImage: "number", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "mattermost", label: "Mattermost", detailLabel: "Server URL and bot token", systemImage: "bubble.left.and.bubble.right.fill", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "matrix", label: "Matrix", detailLabel: "Homeserver and access token", systemImage: "square.grid.3x3.fill", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "email", label: "Email", detailLabel: "IMAP/SMTP or provider app password", systemImage: "envelope.fill", origin: "OpenClaw channel")
+    ]
+
+    private static func channelSortRank(_ id: String) -> Int {
+        defaultChannelCatalog.firstIndex { $0.id == id } ?? (defaultChannelCatalog.count + 1)
     }
 
     // Installation status tracking (using existing status variables)
@@ -2117,14 +2160,15 @@ final class InstallerViewModel: ObservableObject {
             await MainActor.run {
                 self.channelsIsLoading = false
 
-                guard listResult.0 == 0,
-                      let listData = listResult.1.data(using: .utf8),
-                      let listRoot = try? JSONSerialization.jsonObject(with: listData) as? [String: Any],
-                      let chat = listRoot["chat"] as? [String: Any] else {
-                    self.channelsStatus = "Unable to load channels"
-                    self.channelSetupLogs += "\n\(listResult.1.trimmingCharacters(in: .whitespacesAndNewlines))"
-                    return
-                }
+                let listRoot: [String: Any] = {
+                    guard listResult.0 == 0,
+                          let listData = listResult.1.data(using: .utf8),
+                          let root = try? JSONSerialization.jsonObject(with: listData) as? [String: Any] else {
+                        return [:]
+                    }
+                    return root
+                }()
+                let chat = listRoot["chat"] as? [String: Any] ?? [:]
 
                 let statusRoot: [String: Any] = {
                     guard statusResult.0 == 0,
@@ -2141,11 +2185,18 @@ final class InstallerViewModel: ObservableObject {
                 let channelsStatus = statusRoot["channels"] as? [String: Any] ?? [:]
                 let accountStatus = statusRoot["channelAccounts"] as? [String: Any] ?? [:]
 
-                self.channels = chat.compactMap { key, raw in
-                    guard let item = raw as? [String: Any] else { return nil }
+                let catalog = Dictionary(uniqueKeysWithValues: Self.defaultChannelCatalog.map { ($0.id, $0) })
+                let allChannelIDs = Set(Self.defaultChannelCatalog.map(\.id))
+                    .union(chat.keys)
+                    .union(channelsStatus.keys)
+                    .union(accountStatus.keys)
+
+                self.channels = allChannelIDs.compactMap { key in
+                    let item = chat[key] as? [String: Any] ?? [:]
+                    let catalogItem = catalog[key]
                     let accounts = item["accounts"] as? [String] ?? []
-                    let installed = item["installed"] as? Bool ?? false
-                    let origin = item["origin"] as? String ?? "unknown"
+                    let installed = item["installed"] as? Bool ?? (catalogItem != nil)
+                    let origin = item["origin"] as? String ?? catalogItem?.origin ?? "OpenClaw channel"
                     let status = channelsStatus[key] as? [String: Any] ?? [:]
                     let configured = status["configured"] as? Bool ?? !accounts.isEmpty
                     let running = status["running"] as? Bool ?? false
@@ -2166,9 +2217,9 @@ final class InstallerViewModel: ObservableObject {
 
                     return ChannelInfo(
                         id: key,
-                        label: channelLabels[key] ?? key.replacingOccurrences(of: "-", with: " ").capitalized,
-                        detailLabel: detailLabels[key] ?? origin.capitalized,
-                        systemImage: images[key] ?? "bubble.left.and.bubble.right",
+                        label: channelLabels[key] ?? catalogItem?.label ?? key.replacingOccurrences(of: "-", with: " ").capitalized,
+                        detailLabel: detailLabels[key] ?? catalogItem?.detailLabel ?? origin.capitalized,
+                        systemImage: images[key] ?? catalogItem?.systemImage ?? "bubble.left.and.bubble.right",
                         installed: installed,
                         configured: configured,
                         running: running,
@@ -2186,6 +2237,9 @@ final class InstallerViewModel: ObservableObject {
                 .sorted {
                     if $0.isActive != $1.isActive { return $0.isActive && !$1.isActive }
                     if $0.configured != $1.configured { return $0.configured && !$1.configured }
+                    let leftRank = Self.channelSortRank($0.id)
+                    let rightRank = Self.channelSortRank($1.id)
+                    if leftRank != rightRank { return leftRank < rightRank }
                     if $0.installed != $1.installed { return $0.installed && !$1.installed }
                     return $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending
                 }
@@ -6410,7 +6464,7 @@ struct ContentView: View {
                     Text("CHANNELS")
                         .font(AppFont.heading(28))
                         .foregroundStyle(UI.text)
-                    Text("Connect Telegram, Discord, WhatsApp, Signal, Slack, and other apps with a clear view of status and accounts.")
+                    Text("Pick a channel, connect it in one click, then see immediately whether it is connected, active, configured, or still waiting.")
                         .font(AppFont.body(13))
                         .foregroundStyle(UI.muted)
                 }
@@ -6445,7 +6499,7 @@ struct ContentView: View {
                             .padding(12)
                             .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
                     } else {
-                        Text("Connectable apps")
+                        Text("Available channels")
                             .font(AppFont.bodySemi(13))
                             .foregroundStyle(UI.muted)
                             .padding(.horizontal, 2)
@@ -6483,7 +6537,7 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
         .onAppear {
-            if vm.channels.isEmpty {
+            if vm.channelsStatus == "Not loaded" {
                 vm.refreshChannels()
             }
         }
