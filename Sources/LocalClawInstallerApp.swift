@@ -213,6 +213,48 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    struct ChannelInfo: Identifiable {
+        let id: String
+        let label: String
+        let detailLabel: String
+        let systemImage: String
+        let installed: Bool
+        let configured: Bool
+        let running: Bool
+        let connected: Bool
+        let accounts: [String]
+        let origin: String
+        let tokenStatus: String?
+        let tokenSource: String?
+        let lastError: String?
+        let probeOK: Bool?
+        let botUsername: String?
+        let lastActivity: String?
+
+        var stateLabel: String {
+            if connected { return "Connected" }
+            if running { return "Running" }
+            if configured { return "Configured" }
+            if installed { return "Installed" }
+            return "Not installed"
+        }
+
+        var isActive: Bool {
+            connected || running
+        }
+
+        var detailSummary: String {
+            var parts: [String] = []
+            if !accounts.isEmpty { parts.append("Accounts: \(accounts.joined(separator: ", "))") }
+            if let tokenStatus { parts.append("Token: \(tokenStatus)") }
+            if let tokenSource { parts.append("Source: \(tokenSource)") }
+            if let botUsername { parts.append("Bot: \(botUsername)") }
+            if let lastActivity { parts.append("Last activity: \(lastActivity)") }
+            if let lastError, !lastError.isEmpty { parts.append("Error: \(lastError)") }
+            return parts.isEmpty ? "No connection detail yet." : parts.joined(separator: " · ")
+        }
+    }
+
     enum CloudAuthMode: String, CaseIterable, Identifiable {
         case api = "API"
         case oauth = "OAuth"
@@ -508,6 +550,9 @@ final class InstallerViewModel: ObservableObject {
     @Published var hasNodeInstalled = false
     @Published var hasHomebrewInstalled = false
     @Published var hasConfigCacheInstalled = false
+    @Published var channels: [ChannelInfo] = []
+    @Published var channelsStatus: String = "Not loaded"
+    @Published var channelsIsLoading = false
     @Published var channelSetupLogs: String = ""
     @Published var templateLogs: String = ""
     @Published var healthLogs: String = ""
@@ -2033,6 +2078,109 @@ final class InstallerViewModel: ObservableObject {
 
     func openChannelDocs() {
         _ = engine.shell("open 'https://docs.openclaw.ai/channels' || true")
+    }
+
+    func refreshChannels() {
+        guard !channelsIsLoading else { return }
+        channelsIsLoading = true
+        channelsStatus = "Checking channels..."
+        channelSetupLogs = channelSetupLogs.isEmpty ? "Running channel inventory..." : channelSetupLogs + "\nRunning channel inventory..."
+
+        Task.detached {
+            let engine = InstallerEngine()
+            let listResult = engine.shell("openclaw --no-color channels list --all --json 2>&1")
+            let statusResult = engine.shell("openclaw --no-color channels status --json --probe --timeout 5000 2>&1")
+
+            await MainActor.run {
+                self.channelsIsLoading = false
+
+                guard listResult.0 == 0,
+                      let listData = listResult.1.data(using: .utf8),
+                      let listRoot = try? JSONSerialization.jsonObject(with: listData) as? [String: Any],
+                      let chat = listRoot["chat"] as? [String: Any] else {
+                    self.channelsStatus = "Unable to load channels"
+                    self.channelSetupLogs += "\n\(listResult.1.trimmingCharacters(in: .whitespacesAndNewlines))"
+                    return
+                }
+
+                let statusRoot: [String: Any] = {
+                    guard statusResult.0 == 0,
+                          let data = statusResult.1.data(using: .utf8),
+                          let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                        return [:]
+                    }
+                    return root
+                }()
+
+                let channelLabels = statusRoot["channelLabels"] as? [String: String] ?? [:]
+                let detailLabels = statusRoot["channelDetailLabels"] as? [String: String] ?? [:]
+                let images = statusRoot["channelSystemImages"] as? [String: String] ?? [:]
+                let channelsStatus = statusRoot["channels"] as? [String: Any] ?? [:]
+                let accountStatus = statusRoot["channelAccounts"] as? [String: Any] ?? [:]
+
+                self.channels = chat.compactMap { key, raw in
+                    guard let item = raw as? [String: Any] else { return nil }
+                    let accounts = item["accounts"] as? [String] ?? []
+                    let installed = item["installed"] as? Bool ?? false
+                    let origin = item["origin"] as? String ?? "unknown"
+                    let status = channelsStatus[key] as? [String: Any] ?? [:]
+                    let configured = status["configured"] as? Bool ?? !accounts.isEmpty
+                    let running = status["running"] as? Bool ?? false
+                    let channelLastError = status["lastError"] as? String
+                    let probe = status["probe"] as? [String: Any]
+
+                    let accountItems = accountStatus[key] as? [[String: Any]] ?? []
+                    let primaryAccount = accountItems.first
+                    let connected = primaryAccount?["connected"] as? Bool ?? false
+                    let tokenStatus = primaryAccount?["tokenStatus"] as? String
+                    let tokenSource = (primaryAccount?["tokenSource"] as? String) ?? (status["tokenSource"] as? String)
+                    let lastError = (primaryAccount?["lastError"] as? String) ?? channelLastError
+                    let accountProbe = primaryAccount?["probe"] as? [String: Any]
+                    let probeOK = (accountProbe?["ok"] as? Bool) ?? (probe?["ok"] as? Bool)
+                    let bot = (primaryAccount?["bot"] as? [String: Any]) ?? (probe?["bot"] as? [String: Any])
+                    let botUsername = bot?["username"] as? String
+                    let lastActivityRaw = (primaryAccount?["lastTransportActivityAt"] as? Double) ?? (primaryAccount?["lastEventAt"] as? Double)
+
+                    return ChannelInfo(
+                        id: key,
+                        label: channelLabels[key] ?? key.replacingOccurrences(of: "-", with: " ").capitalized,
+                        detailLabel: detailLabels[key] ?? origin.capitalized,
+                        systemImage: images[key] ?? "bubble.left.and.bubble.right",
+                        installed: installed,
+                        configured: configured,
+                        running: running,
+                        connected: connected,
+                        accounts: accounts,
+                        origin: origin,
+                        tokenStatus: tokenStatus,
+                        tokenSource: tokenSource,
+                        lastError: lastError,
+                        probeOK: probeOK,
+                        botUsername: botUsername,
+                        lastActivity: Self.relativeMillis(lastActivityRaw)
+                    )
+                }
+                .sorted {
+                    if $0.isActive != $1.isActive { return $0.isActive && !$1.isActive }
+                    if $0.configured != $1.configured { return $0.configured && !$1.configured }
+                    if $0.installed != $1.installed { return $0.installed && !$1.installed }
+                    return $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending
+                }
+
+                let activeCount = self.channels.filter { $0.isActive }.count
+                let configuredCount = self.channels.filter { $0.configured }.count
+                self.channelsStatus = "\(activeCount) active · \(configuredCount) configured · \(self.channels.count) available"
+                self.channelSetupLogs += "\nChannel inventory refreshed."
+            }
+        }
+    }
+
+    nonisolated private static func relativeMillis(_ millis: Double?) -> String? {
+        guard let millis, millis > 0 else { return nil }
+        let date = Date(timeIntervalSince1970: millis / 1000)
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: date, relativeTo: Date())
     }
 
     func openTerminalChannelLogin(_ channel: String) {
@@ -6236,48 +6384,160 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("CHANNEL SETUP")
+                    Text("CHANNELS")
                         .font(AppFont.heading(28))
                         .foregroundStyle(UI.text)
-                    Text("Connect messaging channels in one click.")
+                    Text("See what is connected, active, installed, or still available to configure.")
                         .font(AppFont.body(13))
                         .foregroundStyle(UI.muted)
                 }
                 Spacer()
+                Text(vm.channelsStatus)
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(vm.channelsIsLoading ? UI.accent : UI.muted)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
+                Button("Refresh") { vm.refreshChannels() }
+                    .buttonStyle(CTAButton(primary: true))
+                    .disabled(vm.channelsIsLoading)
                 Button("Open docs") { vm.openChannelDocs() }
                     .buttonStyle(CTAButton(primary: false))
             }
 
             HStack(spacing: 10) {
-                Button("Connect Telegram") { vm.openTerminalChannelLogin("telegram") }
-                    .buttonStyle(CTAButton(primary: true))
-                Button("Connect WhatsApp") { vm.openTerminalChannelLogin("whatsapp") }
-                    .buttonStyle(CTAButton(primary: false))
-                Button("Connect Discord") { vm.openTerminalChannelLogin("discord") }
-                    .buttonStyle(CTAButton(primary: false))
+                channelMetricCard("Active", value: "\(vm.channels.filter { $0.isActive }.count)", icon: "bolt.fill", tint: UI.accent)
+                channelMetricCard("Connected", value: "\(vm.channels.filter { $0.connected }.count)", icon: "checkmark.seal.fill", tint: Color(NSColor.systemGreen))
+                channelMetricCard("Configured", value: "\(vm.channels.filter { $0.configured }.count)", icon: "slider.horizontal.3", tint: Color(NSColor.systemBlue))
+                channelMetricCard("Available", value: "\(vm.channels.filter { !$0.configured }.count)", icon: "plus.circle.fill", tint: UI.muted)
             }
-
-            Text("Live log")
-                .font(AppFont.bodySemi(14))
-                .foregroundStyle(UI.muted)
 
             ScrollView {
-                Text(vm.channelSetupLogs.isEmpty ? "No channel setup started yet." : vm.channelSetupLogs)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(UI.text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    if vm.channels.isEmpty {
+                        Text(vm.channelsIsLoading ? "Checking channels..." : "No channel inventory loaded yet.")
+                            .font(AppFont.body(12))
+                            .foregroundStyle(UI.muted)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+                    } else {
+                        ForEach(vm.channels) { channel in
+                            channelRow(channel)
+                        }
+                    }
+                }
+                .padding(2)
             }
             .scrollIndicators(.hidden)
-            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
-            .frame(maxHeight: .infinity)
+
+            if !vm.channelSetupLogs.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Activity")
+                        .font(AppFont.bodySemi(13))
+                        .foregroundStyle(UI.muted)
+                    ScrollView {
+                        Text(vm.channelSetupLogs)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(UI.text)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                    }
+                    .frame(maxHeight: 110)
+                    .scrollIndicators(.hidden)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+                }
+            }
         }
         .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
+        .onAppear {
+            if vm.channels.isEmpty {
+                vm.refreshChannels()
+            }
+        }
+    }
+
+    private func channelMetricCard(_ title: String, value: String, icon: String, tint: Color) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(value)
+                    .font(AppFont.bodySemi(18))
+                    .foregroundStyle(UI.text)
+                Text(title)
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private func channelRow(_ channel: InstallerViewModel.ChannelInfo) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: channel.systemImage)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(channel.isActive ? UI.accent : UI.muted)
+                .frame(width: 36, height: 36)
+                .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 8) {
+                    Text(channel.label)
+                        .font(AppFont.bodySemi(14))
+                        .foregroundStyle(UI.text)
+                    Text(channel.detailLabel)
+                        .font(AppFont.body(11))
+                        .foregroundStyle(UI.muted)
+                    Spacer(minLength: 4)
+                }
+
+                HStack(spacing: 6) {
+                    channelBadge(channel.stateLabel, color: channel.connected ? Color(NSColor.systemGreen) : (channel.running ? UI.accent : UI.muted), icon: channel.connected ? "checkmark.circle.fill" : (channel.running ? "bolt.fill" : "circle"))
+                    channelBadge(channel.installed ? "Installed" : "Not installed", color: channel.installed ? Color(NSColor.systemGreen) : UI.muted, icon: channel.installed ? "checkmark.seal.fill" : "tray.and.arrow.down")
+                    if let probeOK = channel.probeOK {
+                        channelBadge(probeOK ? "Probe OK" : "Probe failed", color: probeOK ? Color(NSColor.systemGreen) : Color(NSColor.systemOrange), icon: probeOK ? "antenna.radiowaves.left.and.right" : "exclamationmark.triangle.fill")
+                    }
+                }
+
+                Text(channel.detailSummary)
+                    .font(AppFont.body(12))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 8)
+
+            Button(channel.configured ? "Reconnect" : "Connect") {
+                vm.openTerminalChannelLogin(channel.id)
+            }
+            .buttonStyle(CTAButton(primary: channel.connected == false && channel.configured == false))
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(channel.isActive ? UI.accent.opacity(0.35) : UI.lineSoft, lineWidth: 1))
+    }
+
+    private func channelBadge(_ label: String, color: Color, icon: String) -> some View {
+        Label(label, systemImage: icon)
+            .font(AppFont.bodySemi(10))
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 999).stroke(color.opacity(0.25), lineWidth: 1))
     }
 
     var uninstallCenter: some View {
