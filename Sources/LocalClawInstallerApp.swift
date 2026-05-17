@@ -1133,6 +1133,9 @@ final class InstallerViewModel: ObservableObject {
         if currentModel.hasPrefix("openrouter/") {
             selectedControlModel = currentModel
         }
+        if channelsStatus == "Not loaded" { refreshChannels() }
+        if skillsStatus == "Not loaded" { refreshSkills() }
+        if cronJobsStatus == "Not loaded" { refreshCronJobs() }
         isRefreshingHome = false
     }
 
@@ -5382,8 +5385,18 @@ struct ContentView: View {
                     )
                 }
 
+                dashboardReadinessPanel
+
                 HStack(alignment: .top, spacing: 14) {
                     VStack(alignment: .leading, spacing: 14) {
+                        dashboardPanel(title: "Next best actions", icon: "checklist") {
+                            VStack(alignment: .leading, spacing: 9) {
+                                ForEach(dashboardActionItems) { item in
+                                    dashboardChecklistRow(item)
+                                }
+                            }
+                        }
+
                         dashboardPanel(title: "System load", icon: "gauge.with.dots.needle.bottom.50percent") {
                             if vm.hasMachineUsageSnapshot {
                                 VStack(alignment: .leading, spacing: 12) {
@@ -5440,6 +5453,26 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .topLeading)
 
                     VStack(alignment: .leading, spacing: 14) {
+                        dashboardPanel(title: "Working now", icon: "checkmark.seal.fill") {
+                            VStack(alignment: .leading, spacing: 9) {
+                                dashboardWorkingRow("Chat", value: vm.openClawChatStatus, icon: "message.badge.waveform", healthy: vm.openClawChatStatus == "Ready") {
+                                    vm.openOpenClawChat()
+                                }
+                                dashboardWorkingRow("Channels", value: dashboardChannelsSummary, icon: "bubble.left.and.bubble.right.fill", healthy: dashboardConnectedChannels > 0) {
+                                    vm.screen = .channelSetup
+                                }
+                                dashboardWorkingRow("Skills", value: dashboardSkillsSummary, icon: "wand.and.stars", healthy: dashboardActiveSkills > 0) {
+                                    vm.screen = .skills
+                                }
+                                dashboardWorkingRow("Models", value: vm.openClawChatModelLabel, icon: "cpu.fill", healthy: !dashboardModelNeedsSetup) {
+                                    vm.screen = .models
+                                }
+                                dashboardWorkingRow("Automation", value: dashboardCronSummary, icon: "calendar.badge.clock", healthy: dashboardActiveCronJobs > 0) {
+                                    vm.screen = .cronJobs
+                                }
+                            }
+                        }
+
                         dashboardPanel(title: "Operations", icon: "bolt.horizontal.circle.fill") {
                             VStack(alignment: .leading, spacing: 10) {
                                 dashboardActionRow(title: "OpenClaw Chat", detail: vm.openClawChatStatus, icon: "message.badge.waveform") {
@@ -5495,6 +5528,207 @@ struct ContentView: View {
         if vm.healthStatus == "Critical" { return Color(NSColor.systemRed) }
         if vm.healthStatus == "Warning" { return Color(NSColor.systemOrange) }
         return UI.muted
+    }
+
+    private var dashboardConnectedChannels: Int {
+        vm.channels.filter { $0.connected || $0.running }.count
+    }
+
+    private var dashboardActiveSkills: Int {
+        vm.installedSkills.filter { $0.isActive }.count
+    }
+
+    private var dashboardActiveCronJobs: Int {
+        vm.cronJobs.filter { $0.enabled }.count
+    }
+
+    private var dashboardModelNeedsSetup: Bool {
+        let model = vm.openClawChatModelLabel.lowercased()
+        return model.contains("not configured") || model == "unknown" || model.hasPrefix("error:")
+    }
+
+    private var dashboardChannelsSummary: String {
+        if vm.channels.isEmpty { return "Not loaded" }
+        return "\(dashboardConnectedChannels) connected · \(vm.channels.count) available"
+    }
+
+    private var dashboardSkillsSummary: String {
+        if vm.installedSkills.isEmpty { return "Not loaded" }
+        return "\(dashboardActiveSkills) active · \(vm.installedSkills.count) installed"
+    }
+
+    private var dashboardCronSummary: String {
+        if vm.cronJobs.isEmpty { return "No active jobs" }
+        return "\(dashboardActiveCronJobs) active · \(vm.cronJobs.count) jobs"
+    }
+
+    private var dashboardReadinessChecks: [(String, Bool)] {
+        [
+            ("Gateway", vm.gatewayIsRunning),
+            ("Chat", vm.openClawChatStatus == "Ready"),
+            ("Model", !dashboardModelNeedsSetup),
+            ("Channel", dashboardConnectedChannels > 0),
+            ("Skill", dashboardActiveSkills > 0)
+        ]
+    }
+
+    private var dashboardReadinessCount: Int {
+        dashboardReadinessChecks.filter { $0.1 }.count
+    }
+
+    private var dashboardReadinessTitle: String {
+        if dashboardReadinessCount == dashboardReadinessChecks.count { return "Ready" }
+        if dashboardReadinessCount >= 3 { return "Partially ready" }
+        return "Needs setup"
+    }
+
+    private var dashboardReadinessTint: Color {
+        if dashboardReadinessTitle == "Ready" { return Color(NSColor.systemGreen) }
+        if dashboardReadinessTitle == "Partially ready" { return Color(NSColor.systemOrange) }
+        return Color(NSColor.systemRed)
+    }
+
+    private var dashboardReadinessPanel: some View {
+        HStack(alignment: .center, spacing: 14) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(dashboardReadinessTint)
+                        .frame(width: 10, height: 10)
+                    Text("OpenClaw readiness")
+                        .font(AppFont.bodySemi(13))
+                        .foregroundStyle(UI.muted)
+                }
+                Text(dashboardReadinessTitle)
+                    .font(AppFont.heading(24))
+                    .foregroundStyle(UI.text)
+                Text("\(dashboardReadinessCount)/\(dashboardReadinessChecks.count) checks passing")
+                    .font(AppFont.body(12))
+                    .foregroundStyle(UI.muted)
+            }
+            .frame(width: 220, alignment: .leading)
+
+            HStack(spacing: 8) {
+                ForEach(dashboardReadinessChecks, id: \.0) { check in
+                    dashboardReadinessChip(check.0, ok: check.1)
+                }
+            }
+
+            Spacer()
+
+            Button("Fix issues") {
+                if !vm.gatewayIsRunning || vm.openClawChatStatus != "Ready" {
+                    vm.screen = .healthCenter
+                } else if dashboardModelNeedsSetup {
+                    vm.screen = .models
+                } else if dashboardConnectedChannels == 0 {
+                    vm.screen = .channelSetup
+                } else if dashboardActiveSkills == 0 {
+                    vm.screen = .skills
+                } else {
+                    vm.screen = .commandCenter
+                }
+            }
+            .buttonStyle(CTAButton(primary: true))
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(dashboardReadinessTint.opacity(0.35), lineWidth: 1))
+    }
+
+    private func dashboardReadinessChip(_ title: String, ok: Bool) -> some View {
+        Label(title, systemImage: ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+            .font(AppFont.bodySemi(11))
+            .foregroundStyle(ok ? Color(NSColor.systemGreen) : Color(NSColor.systemOrange))
+            .lineLimit(1)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 999).fill(UI.card))
+    }
+
+    private struct DashboardActionItem: Identifiable {
+        let id = UUID()
+        let title: String
+        let detail: String
+        let icon: String
+        let tint: Color
+        let action: () -> Void
+    }
+
+    private var dashboardActionItems: [DashboardActionItem] {
+        var items: [DashboardActionItem] = []
+        if !vm.gatewayIsRunning || vm.openClawChatStatus != "Ready" {
+            items.append(DashboardActionItem(title: "Repair OpenClaw health", detail: "Gateway or chat is not fully ready.", icon: "cross.case.fill", tint: Color(NSColor.systemRed)) { vm.screen = .healthCenter })
+        }
+        if dashboardModelNeedsSetup {
+            items.append(DashboardActionItem(title: "Choose a working model", detail: vm.openClawChatModelLabel, icon: "cpu.fill", tint: Color(NSColor.systemOrange)) { vm.screen = .models })
+        }
+        if dashboardConnectedChannels == 0 {
+            items.append(DashboardActionItem(title: "Connect first channel", detail: "Telegram, Discord, WhatsApp, Slack and more.", icon: "plus.message.fill", tint: Color(NSColor.systemBlue)) { vm.screen = .channelSetup })
+        }
+        if dashboardActiveSkills == 0 {
+            items.append(DashboardActionItem(title: "Activate useful skills", detail: "Add tools OpenClaw can use immediately.", icon: "wand.and.stars", tint: UI.accent) { vm.screen = .skills })
+        }
+        if dashboardActiveCronJobs == 0 {
+            items.append(DashboardActionItem(title: "Create first automation", detail: "Schedule recurring checks or reminders.", icon: "calendar.badge.plus", tint: Color(NSColor.systemPurple)) { vm.screen = .cronJobs })
+        }
+        if items.isEmpty {
+            items.append(DashboardActionItem(title: "Open OpenClaw Chat", detail: "Everything essential is ready.", icon: "message.badge.waveform", tint: Color(NSColor.systemGreen)) { vm.openOpenClawChat() })
+        }
+        return Array(items.prefix(4))
+    }
+
+    private func dashboardChecklistRow(_ item: DashboardActionItem) -> some View {
+        Button(action: item.action) {
+            HStack(spacing: 10) {
+                Image(systemName: item.icon)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(item.tint)
+                    .frame(width: 22)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.title)
+                        .font(AppFont.bodySemi(12))
+                        .foregroundStyle(UI.text)
+                    Text(item.detail)
+                        .font(AppFont.body(10))
+                        .foregroundStyle(UI.muted)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(UI.muted)
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 9).fill(UI.card))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func dashboardWorkingRow(_ title: String, value: String, icon: String, healthy: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 9) {
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(healthy ? Color(NSColor.systemGreen) : Color(NSColor.systemOrange))
+                    .frame(width: 18)
+                Text(title)
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(UI.text)
+                Spacer()
+                Text(value)
+                    .font(AppFont.body(10))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Image(systemName: healthy ? "checkmark.circle.fill" : "circle.dashed")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(healthy ? Color(NSColor.systemGreen) : UI.muted)
+            }
+            .padding(9)
+            .background(RoundedRectangle(cornerRadius: 9).fill(UI.card))
+        }
+        .buttonStyle(.plain)
     }
 
     private var dashboardActivityItems: [String] {
@@ -6746,6 +6980,10 @@ struct ContentView: View {
                 .padding(.vertical, 8)
                 .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
 
+                installRecommendedPaths
+
+                installPreflightPanel
+
                 // Section 1: Inference mode
                 VStack(alignment: .leading, spacing: 12) {
                     Text("1. Inference mode")
@@ -6830,11 +7068,11 @@ struct ContentView: View {
                     Button("Back") { vm.screen = .home }
                         .buttonStyle(CTAButton(primary: false))
 
-                    Button(vm.isRunning ? "Installing in Terminal..." : "Install Everything") {
+                    Button(vm.isRunning ? "Installing in Terminal..." : (installBlockingPreflightCount > 0 ? "Fix preflight first" : "Install Everything")) {
                         vm.openTerminalAndInstallFull()
                     }
                     .buttonStyle(CTAButton(primary: true))
-                    .disabled(!vm.canStartInstall)
+                    .disabled(!vm.canStartInstall || installBlockingPreflightCount > 0)
                 }
             }
             .padding(22)
@@ -6844,6 +7082,177 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .scrollIndicators(.hidden)
+    }
+
+    private var installRecommendedPaths: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Recommended setup")
+                .font(AppFont.bodySemi(14))
+                .foregroundStyle(UI.text)
+            HStack(spacing: 10) {
+                installPathCard(
+                    title: "Fast setup",
+                    detail: "Cloud LLM, quickest install, low Mac load.",
+                    icon: "bolt.fill",
+                    selected: vm.inferenceMode == .cloud && vm.selectedProvider == .openRouter
+                ) {
+                    vm.inferenceMode = .cloud
+                    vm.selectedProvider = .openRouter
+                    vm.selectedCloudAuthMode = .api
+                    vm.selectedModel = ""
+                }
+                installPathCard(
+                    title: "Private setup",
+                    detail: "Local LLM with LM Studio, more private.",
+                    icon: "lock.desktopcomputer",
+                    selected: vm.inferenceMode == .local
+                ) {
+                    vm.inferenceMode = .local
+                    if vm.selectedModel.isEmpty { vm.selectedModel = vm.recommendation }
+                    vm.selectedProvider = .custom
+                }
+                installPathCard(
+                    title: "Advanced",
+                    detail: "Custom provider and model choices.",
+                    icon: "slider.horizontal.3",
+                    selected: vm.selectedProvider != .openRouter && vm.inferenceMode == .cloud
+                ) {
+                    vm.inferenceMode = .cloud
+                    if vm.selectedProvider == .custom { vm.selectedProvider = .openAI }
+                }
+            }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
+    }
+
+    private func installPathCard(title: String, detail: String, icon: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: icon)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(selected ? UI.accent : UI.muted)
+                    Spacer()
+                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(selected ? UI.accent : UI.muted)
+                }
+                Text(title)
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(UI.text)
+                Text(detail)
+                    .font(AppFont.body(10))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(11)
+            .frame(maxWidth: .infinity, minHeight: 104, alignment: .topLeading)
+            .background(RoundedRectangle(cornerRadius: 9).fill(selected ? UI.accent.opacity(0.10) : UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(selected ? UI.accent.opacity(0.45) : UI.lineSoft, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var installPreflightPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Preflight", systemImage: installBlockingPreflightCount == 0 ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                    .font(AppFont.bodySemi(14))
+                    .foregroundStyle(installBlockingPreflightCount == 0 ? Color(NSColor.systemGreen) : Color(NSColor.systemOrange))
+                Spacer()
+                Text(installBlockingPreflightCount == 0 ? "Ready to install" : "\(installBlockingPreflightCount) item(s) to fix")
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(UI.muted)
+            }
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                installPreflightRow("Homebrew", installComponentInstalled(name: "Homebrew"), detail: vm.brewVersion)
+                installPreflightRow("Xcode tools", true, detail: "Checked during install")
+                installPreflightRow("Node", installComponentInstalled(name: "Node"), detail: vm.nodeVersion)
+                installPreflightRow("OpenClaw", installComponentInstalled(name: "OpenClaw"), detail: vm.openclawInstalledVersion)
+                installPreflightRow("LM Studio", vm.inferenceMode == .cloud || installComponentInstalled(name: "LM Studio"), detail: vm.inferenceMode == .cloud ? "Optional for cloud" : vm.lmStudioVersion)
+                installPreflightRow("API key", installApiKeyReady, detail: vm.inferenceMode == .local ? "Not needed for local" : vm.selectedProvider.rawValue)
+                installPreflightRow("Disk space", installDiskSpaceReady, detail: installDiskSpaceLabel)
+                installPreflightRow("Model", vm.inferenceMode == .cloud || !vm.selectedModel.isEmpty, detail: vm.inferenceMode == .cloud ? vm.selectedOpenRouterModel : vm.selectedModel)
+            }
+            HStack(spacing: 8) {
+                Button("Refresh checks") { vm.refreshVersions() }
+                    .buttonStyle(CTAButton(primary: false))
+                if installBlockingPreflightCount > 0 {
+                    Button("Fix first issue") { installFixFirstIssue() }
+                        .buttonStyle(CTAButton(primary: true))
+                }
+            }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
+    }
+
+    private var installApiKeyReady: Bool {
+        vm.inferenceMode == .local || !vm.providerNeedsApiKey() || !vm.requiredProviderKey().isEmpty
+    }
+
+    private var installDiskSpaceBytes: Int64? {
+        try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage
+    }
+
+    private var installDiskSpaceReady: Bool {
+        guard let bytes = installDiskSpaceBytes else { return true }
+        let minimum: Int64 = vm.inferenceMode == .local ? 20_000_000_000 : 5_000_000_000
+        return bytes >= minimum
+    }
+
+    private var installDiskSpaceLabel: String {
+        guard let bytes = installDiskSpaceBytes else { return "Unknown" }
+        return String(format: "%.0f GB free", Double(bytes) / 1_000_000_000)
+    }
+
+    private var installBlockingPreflightCount: Int {
+        var count = 0
+        if !installApiKeyReady { count += 1 }
+        if !installDiskSpaceReady { count += 1 }
+        if vm.inferenceMode == .local && vm.selectedModel.isEmpty { count += 1 }
+        return count
+    }
+
+    private func installComponentInstalled(name: String) -> Bool {
+        switch name {
+        case "Homebrew": return vm.brewVersion != "Not installed" && vm.brewVersion != "Checking..."
+        case "Node": return vm.nodeVersion != "Not installed" && vm.nodeVersion != "Checking..."
+        case "OpenClaw": return vm.openclawInstalledVersion != "Not installed" && vm.openclawInstalledVersion != "Checking..."
+        case "LM Studio": return vm.lmStudioVersion != "Not installed" && vm.lmStudioVersion != "Checking..."
+        default: return false
+        }
+    }
+
+    private func installPreflightRow(_ title: String, _ ok: Bool, detail: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: ok ? "checkmark.circle.fill" : "circle.dashed")
+                .foregroundStyle(ok ? Color(NSColor.systemGreen) : UI.muted)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(UI.text)
+                Text(detail.isEmpty ? "Pending" : detail)
+                    .font(AppFont.body(10))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(9)
+        .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+    }
+
+    private func installFixFirstIssue() {
+        if !installApiKeyReady {
+            vm.openProviderURL()
+        } else if vm.inferenceMode == .local && vm.selectedModel.isEmpty {
+            vm.selectedModel = vm.recommendation
+        } else {
+            vm.screen = .healthCenter
+        }
     }
 
     private func bindingForProviderKey() -> Binding<String> {
@@ -7070,18 +7479,26 @@ struct ContentView: View {
                 Text("Step 3: Installing")
                     .font(AppFont.heading(30)).foregroundStyle(UI.text)
                 ProgressView(value: vm.progress).tint(UI.accent)
-                statusRow("Homebrew", vm.statusHomebrew)
-                statusRow("LM Studio", vm.statusLMStudio)
-                statusRow("Model", vm.statusModel)
-                statusRow("Node", vm.statusNode)
-                statusRow("OpenClaw", vm.statusOpenClaw)
-                statusRow("OpenClaw Check", vm.statusOpenClawCheck)
-                ScrollView {
-                    Text(vm.logs).font(.system(size: 12, design: .monospaced)).foregroundStyle(UI.muted)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 8) {
+                    installTimelineRow("1/7", "Homebrew", vm.statusHomebrew)
+                    installTimelineRow("2/7", "LM Studio", vm.statusLMStudio)
+                    installTimelineRow("3/7", "Model", vm.statusModel)
+                    installTimelineRow("4/7", "Node", vm.statusNode)
+                    installTimelineRow("5/7", "OpenClaw", vm.statusOpenClaw)
+                    installTimelineRow("6/7", "Gateway + config", vm.statusService == "PENDING" ? vm.statusConfig : vm.statusService)
+                    installTimelineRow("7/7", "Final check", vm.statusOpenClawCheck)
                 }
-                .scrollIndicators(.hidden)
-                .frame(height: 180)
+
+                DisclosureGroup("Installation logs") {
+                    ScrollView {
+                        Text(vm.logs).font(.system(size: 12, design: .monospaced)).foregroundStyle(UI.muted)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .scrollIndicators(.hidden)
+                    .frame(height: 180)
+                }
+                .font(AppFont.bodySemi(12))
+                .foregroundStyle(UI.text)
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Downloading: \(vm.currentDownloadFile.isEmpty ? "Waiting..." : vm.currentDownloadFile)")
@@ -7096,6 +7513,15 @@ struct ContentView: View {
                         .foregroundStyle(UI.muted)
                 }
                 .padding(.top, 4)
+
+                HStack(spacing: 10) {
+                    Button("Back to setup") { vm.screen = .options }
+                        .buttonStyle(CTAButton(primary: false))
+                    if installHasFailedStep {
+                        Button("Retry failed step") { vm.openTerminalAndInstallFull() }
+                            .buttonStyle(CTAButton(primary: true))
+                    }
+                }
             }
             .padding(18)
             .frame(width: 600)
@@ -7104,6 +7530,43 @@ struct ContentView: View {
             .shadow(color: Color.black.opacity(0.25), radius: 12, x: 0, y: 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+
+    private var installHasFailedStep: Bool {
+        [vm.statusHomebrew, vm.statusLMStudio, vm.statusModel, vm.statusNode, vm.statusOpenClaw, vm.statusOpenClawCheck, vm.statusConfig, vm.statusService]
+            .contains { $0.uppercased() == "FAIL" }
+    }
+
+    private func installTimelineRow(_ step: String, _ title: String, _ state: String) -> some View {
+        let normalized = state.uppercased()
+        let isDone = normalized == "OK" || normalized == "SKIP"
+        let isFailed = normalized == "FAIL"
+        let isRunning = vm.isRunning && !isDone && !isFailed
+        let icon = isDone ? "checkmark.circle.fill" : (isFailed ? "xmark.circle.fill" : (isRunning ? "arrow.triangle.2.circlepath.circle.fill" : "circle"))
+        let tint: Color = isDone ? Color(NSColor.systemGreen) : (isFailed ? Color(NSColor.systemRed) : (isRunning ? UI.accent : UI.muted))
+        let label = isDone ? (normalized == "SKIP" ? "Skipped" : "Done") : (isFailed ? "Failed" : (isRunning ? "Running" : "Pending"))
+
+        return HStack(spacing: 10) {
+            Text(step)
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundStyle(UI.muted)
+                .frame(width: 34, alignment: .leading)
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 20)
+            Text(title)
+                .font(AppFont.bodySemi(13))
+                .foregroundStyle(UI.text)
+            Spacer()
+            Text(label)
+                .font(AppFont.bodySemi(11))
+                .foregroundStyle(tint)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .background(RoundedRectangle(cornerRadius: 9).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(tint.opacity(isDone || isFailed ? 0.28 : 0.12), lineWidth: 1))
     }
 
     var ready: some View {
