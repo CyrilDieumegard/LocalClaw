@@ -2295,6 +2295,41 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    func updateOpenClawRuntime() {
+        if isRunning { return }
+        isRunning = true
+        append("Updating OpenClaw runtime")
+        let engine = self.engine
+        Task.detached {
+            _ = await self.runStep(name: "OpenClaw") { engine.updateOpenClawIfInstalled() }
+            _ = await self.runStep(name: "Gateway Service") { engine.installGatewayService() }
+            _ = await self.runStep(name: "Start Gateway") { engine.startGateway() }
+            _ = await self.runStep(name: "OpenClaw Check") { engine.verifyOpenClawSetup() }
+            await MainActor.run {
+                self.isRunning = false
+                self.refreshVersions()
+                self.append("OpenClaw runtime update finished")
+            }
+        }
+    }
+
+    func updateDependenciesOnly() {
+        if isRunning { return }
+        isRunning = true
+        append("Updating dependencies")
+        let engine = self.engine
+        Task.detached {
+            _ = await self.runStep(name: "Homebrew") { engine.updateHomebrew() }
+            _ = await self.runStep(name: "Node") { engine.upgradeNodeIfInstalled() }
+            _ = await self.runStep(name: "LM Studio") { engine.upgradeLMStudioIfInstalled() }
+            await MainActor.run {
+                self.isRunning = false
+                self.refreshVersions()
+                self.append("Dependencies update finished")
+            }
+        }
+    }
+
     func openLMStudio() { _ = engine.shell("open -a 'LM Studio' || true") }
     func openOpenClaw() { _ = engine.shell("openclaw || true") }
 
@@ -7690,6 +7725,10 @@ struct ContentView: View {
                     .background(RoundedRectangle(cornerRadius: 7).fill(UI.cardSoft))
             }
 
+            updateSafetyPanel
+
+            updateGroupsPanel
+
             VStack(spacing: 8) {
                 versionRow("OpenClaw", vm.openclawInstalledVersion, vm.openclawLatestVersion, isUpToDate: vm.openclawUpdateStatus == "Up to date")
                 versionRow("Homebrew", vm.brewVersion, "latest via brew update", isUpToDate: vm.brewUpToDate)
@@ -7698,17 +7737,13 @@ struct ContentView: View {
                 versionRow("LocalClaw", "\(vm.installerCurrentVersion) (build \(vm.installerBuildNumber))", vm.installerLatestVersion, isUpToDate: vm.installerUpdateStatus == "Up to date")
             }
 
+            updateChangePlanPanel
+
             HStack(spacing: 10) {
                 Button(vm.isRunning ? "UPDATING..." : "UPDATE ALL") { vm.updateAll() }
                     .buttonStyle(CTAButton(primary: true))
                     .disabled(vm.isRunning)
                 Button("CHECK") { vm.refreshVersions() }.buttonStyle(CTAButton(primary: false))
-                Button("UPDATE LOCALCLAW") { vm.updateLocalClawFromDMG() }
-                    .buttonStyle(CTAButton(primary: false))
-                    .disabled(vm.isRunning || vm.installerUpdateStatus == "Up to date")
-                Button("ADVANCED GIT UPDATE") { vm.updateLocalClaw() }
-                    .buttonStyle(CTAButton(primary: false))
-                    .disabled(vm.isRunning)
                 Button("BACK") { vm.screen = .home }.buttonStyle(CTAButton(primary: false))
             }
 
@@ -7735,6 +7770,183 @@ struct ContentView: View {
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
+    }
+
+    private var updateSafetyPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Update safety", systemImage: updateRiskIcon)
+                    .font(AppFont.bodySemi(14))
+                    .foregroundStyle(updateRiskTint)
+                Spacer()
+                Text(updateRiskLabel)
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(updateRiskTint)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(RoundedRectangle(cornerRadius: 999).fill(updateRiskTint.opacity(0.10)))
+            }
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                updateSafetyRow("Config backup", ok: updateConfigExists, detail: updateConfigExists ? "OpenClaw config found" : "No config found")
+                updateSafetyRow("Gateway", ok: vm.gatewayIsRunning, detail: vm.gatewayIsRunning ? "Running" : "Offline")
+                updateSafetyRow("LocalClaw app", ok: updateAppInApplications, detail: updateAppInApplications ? "Installed app path" : "Dev or custom path")
+                updateSafetyRow("DMG checksum", ok: updateHasValidChecksum, detail: updateHasValidChecksum ? "SHA256 available" : "Missing checksum")
+            }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(updateRiskTint.opacity(0.25), lineWidth: 1))
+    }
+
+    private var updateGroupsPanel: some View {
+        HStack(spacing: 10) {
+            updateGroupCard(
+                title: "App update",
+                detail: "Update LocalClaw only.",
+                status: vm.installerUpdateStatus,
+                icon: "app.badge",
+                primary: vm.installerUpdateStatus == "Update available"
+            ) { vm.updateLocalClawFromDMG() }
+            updateGroupCard(
+                title: "OpenClaw runtime",
+                detail: "Update CLI, gateway service, config check.",
+                status: vm.openclawUpdateStatus,
+                icon: "terminal",
+                primary: vm.openclawUpdateStatus == "Needs update"
+            ) { vm.updateOpenClawRuntime() }
+            updateGroupCard(
+                title: "Dependencies",
+                detail: "Homebrew, Node, LM Studio.",
+                status: updateDependenciesStatus,
+                icon: "shippingbox.fill",
+                primary: false
+            ) { vm.updateDependenciesOnly() }
+        }
+    }
+
+    private var updateChangePlanPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("What will change", systemImage: "list.bullet.clipboard.fill")
+                .font(AppFont.bodySemi(14))
+                .foregroundStyle(UI.text)
+            updatePlanRow("LocalClaw", current: "\(vm.installerCurrentVersion) (build \(vm.installerBuildNumber))", target: vm.installerLatestVersion, action: vm.installerUpdateStatus)
+            updatePlanRow("OpenClaw", current: vm.openclawInstalledVersion, target: vm.openclawLatestVersion, action: vm.openclawUpdateStatus)
+            updatePlanRow("Homebrew", current: vm.brewVersion, target: "latest", action: vm.brewVersion == "Not installed" ? "Not installed" : "Manual check")
+            updatePlanRow("Node", current: vm.nodeVersion, target: "latest", action: vm.nodeVersion == "Not installed" ? "Not installed" : "Managed by Dependencies")
+            updatePlanRow("LM Studio", current: vm.lmStudioVersion, target: "latest", action: vm.lmStudioVersion == "Not installed" ? "Not installed" : "Managed by Dependencies")
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private var updateConfigExists: Bool {
+        FileManager.default.fileExists(atPath: NSHomeDirectory() + "/.openclaw/openclaw.json")
+    }
+
+    private var updateAppInApplications: Bool {
+        let path = Bundle.main.bundlePath
+        return path == "/Applications/LocalClaw.app" || path == NSHomeDirectory() + "/Applications/LocalClaw.app"
+    }
+
+    private var updateHasValidChecksum: Bool {
+        vm.installerExpectedSHA256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil
+    }
+
+    private var updateRiskLabel: String {
+        if updateHasValidChecksum && updateAppInApplications && updateConfigExists { return "Safe" }
+        if updateConfigExists || updateHasValidChecksum { return "Caution" }
+        return "Risky"
+    }
+
+    private var updateRiskIcon: String {
+        updateRiskLabel == "Safe" ? "checkmark.seal.fill" : (updateRiskLabel == "Caution" ? "exclamationmark.triangle.fill" : "xmark.octagon.fill")
+    }
+
+    private var updateRiskTint: Color {
+        updateRiskLabel == "Safe" ? Color(NSColor.systemGreen) : (updateRiskLabel == "Caution" ? Color(NSColor.systemOrange) : Color(NSColor.systemRed))
+    }
+
+    private var updateDependenciesStatus: String {
+        let installed = [vm.brewVersion, vm.nodeVersion, vm.lmStudioVersion].filter { $0 != "Not installed" && $0 != "Checking..." }.count
+        return "\(installed)/3 installed"
+    }
+
+    private func updateSafetyRow(_ title: String, ok: Bool, detail: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: ok ? "checkmark.circle.fill" : "circle.dashed")
+                .foregroundStyle(ok ? Color(NSColor.systemGreen) : UI.muted)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(UI.text)
+                Text(detail)
+                    .font(AppFont.body(10))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(1)
+            }
+            Spacer()
+        }
+        .padding(9)
+        .background(RoundedRectangle(cornerRadius: 9).fill(UI.card))
+    }
+
+    private func updateGroupCard(title: String, detail: String, status: String, icon: String, primary: Bool, action: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Image(systemName: icon)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(primary ? UI.accent : UI.muted)
+                Spacer()
+                Text(status)
+                    .font(AppFont.bodySemi(10))
+                    .foregroundStyle(primary ? UI.accent : UI.muted)
+                    .lineLimit(1)
+            }
+            Text(title)
+                .font(AppFont.bodySemi(13))
+                .foregroundStyle(UI.text)
+            Text(detail)
+                .font(AppFont.body(10))
+                .foregroundStyle(UI.muted)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(primary ? "Update" : "Run") { action() }
+                .buttonStyle(CTAButton(primary: primary))
+                .disabled(vm.isRunning || status == "Up to date")
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(primary ? UI.accent.opacity(0.35) : UI.lineSoft, lineWidth: 1))
+    }
+
+    private func updatePlanRow(_ name: String, current: String, target: String, action: String) -> some View {
+        HStack(spacing: 10) {
+            Text(name)
+                .font(AppFont.bodySemi(12))
+                .foregroundStyle(UI.text)
+                .frame(width: 82, alignment: .leading)
+            Text(current)
+                .font(AppFont.body(11))
+                .foregroundStyle(UI.muted)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Image(systemName: "arrow.right")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(UI.muted)
+            Text(target)
+                .font(AppFont.body(11))
+                .foregroundStyle(UI.muted)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+            Text(action)
+                .font(AppFont.bodySemi(10))
+                .foregroundStyle(action == "Up to date" ? Color(NSColor.systemGreen) : UI.accent)
+                .lineLimit(1)
+        }
+        .padding(.vertical, 4)
     }
 
     var agentsCenter: some View {
