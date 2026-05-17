@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class InstallerViewModel: ObservableObject {
-    enum Screen { case license, onboarding, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, templates, healthCenter, usageCenter, chat, models, skills }
+    enum Screen { case license, onboarding, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, agents, healthCenter, usageCenter, chat, models, skills }
     enum InstallMode: String {
         case llmOnly = "Install Local LLM only"
         case openClawOnly = "Install OpenClaw only"
@@ -287,6 +287,44 @@ final class InstallerViewModel: ObservableObject {
         let detailLabel: String
         let systemImage: String
         let origin: String
+    }
+
+    struct AgentInfo: Identifiable {
+        let id: String
+        let identityName: String
+        let identityEmoji: String?
+        let workspace: String?
+        let agentDir: String?
+        let model: String?
+        let bindings: Int
+        let isDefault: Bool
+
+        var displayName: String {
+            identityName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? id : identityName
+        }
+
+        var roleSummary: String {
+            if isDefault { return "Main assistant" }
+            if bindings > 0 { return "Routed agent" }
+            return "Isolated agent"
+        }
+
+        var statusLabel: String {
+            isDefault ? "Active default" : (bindings > 0 ? "Active route" : "Available")
+        }
+
+        var statusTint: Color {
+            isDefault || bindings > 0 ? Color(NSColor.systemGreen) : UI.accent
+        }
+
+        var detailSummary: String {
+            var parts: [String] = []
+            if let model, !model.isEmpty { parts.append("Model: \(model)") }
+            parts.append("Bindings: \(bindings)")
+            if let workspace, !workspace.isEmpty { parts.append("Workspace: \(workspace)") }
+            if let agentDir, !agentDir.isEmpty { parts.append("State: \(agentDir)") }
+            return parts.joined(separator: " · ")
+        }
     }
 
     enum CloudAuthMode: String, CaseIterable, Identifiable {
@@ -591,7 +629,10 @@ final class InstallerViewModel: ObservableObject {
     @Published var channelsStatus: String = "Not loaded"
     @Published var channelsIsLoading = false
     @Published var channelSetupLogs: String = ""
-    @Published var templateLogs: String = ""
+    @Published var agents: [AgentInfo] = []
+    @Published var agentsStatus: String = "Not loaded"
+    @Published var agentsIsLoading = false
+    @Published var agentLogs: String = ""
     @Published var healthLogs: String = ""
     @Published var healthStatus: String = "Unknown"
     @Published var usageLogs: String = ""
@@ -2202,6 +2243,147 @@ final class InstallerViewModel: ObservableObject {
         _ = engine.shell("open 'https://docs.openclaw.ai/channels' || true")
     }
 
+    func openAgentsDocs() {
+        _ = engine.shell("open 'https://docs.openclaw.ai/cli/agents' || true")
+    }
+
+    func refreshAgents() {
+        guard !agentsIsLoading else { return }
+        agentsIsLoading = true
+        agentsStatus = "Checking agents..."
+        agentLogs = agentLogs.isEmpty ? "Running agent inventory..." : agentLogs + "\nRunning agent inventory..."
+
+        Task.detached {
+            let engine = InstallerEngine()
+            let result = engine.shell("openclaw --no-color agents list --json 2>&1")
+
+            await MainActor.run {
+                self.agentsIsLoading = false
+
+                guard result.0 == 0,
+                      let data = result.1.data(using: .utf8),
+                      let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                    self.agentsStatus = "Could not load agents"
+                    self.agentLogs += "\nFailed to load agents: \(result.1.trimmingCharacters(in: .whitespacesAndNewlines))"
+                    return
+                }
+
+                self.agents = rows.compactMap { row in
+                    guard let id = row["id"] as? String else { return nil }
+                    return AgentInfo(
+                        id: id,
+                        identityName: row["identityName"] as? String ?? id,
+                        identityEmoji: row["identityEmoji"] as? String,
+                        workspace: row["workspace"] as? String,
+                        agentDir: row["agentDir"] as? String,
+                        model: row["model"] as? String,
+                        bindings: row["bindings"] as? Int ?? 0,
+                        isDefault: row["isDefault"] as? Bool ?? false
+                    )
+                }
+                .sorted {
+                    if $0.isDefault != $1.isDefault { return $0.isDefault && !$1.isDefault }
+                    if $0.bindings != $1.bindings { return $0.bindings > $1.bindings }
+                    return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+                }
+
+                let activeCount = self.agents.filter { $0.isDefault || $0.bindings > 0 }.count
+                self.agentsStatus = "\(activeCount) active · \(self.agents.count) agents"
+                self.agentLogs += "\nAgent inventory refreshed."
+            }
+        }
+    }
+
+    func openTerminalAgentCreate() {
+        let script = """
+        #!/bin/zsh
+        clear
+        export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+        OPENCLAW_BIN="$(command -v openclaw 2>/dev/null || true)"
+
+        echo "=========================================="
+        echo "  LocalClaw Agent Setup"
+        echo "=========================================="
+        echo ""
+
+        if [ -z "$OPENCLAW_BIN" ]; then
+            echo "[ERROR] openclaw command not found in PATH"
+            echo "Try reinstalling OpenClaw from LocalClaw first."
+        else
+            read -r "AGENT_ID?Agent id, ex: sales, support, dev: "
+            if [ -z "$AGENT_ID" ]; then
+                echo "[ERROR] No agent id provided. Setup canceled."
+            else
+                DEFAULT_WORKSPACE="$HOME/.openclaw/workspaces/$AGENT_ID"
+                read -r "WORKSPACE?Workspace path [$DEFAULT_WORKSPACE]: "
+                WORKSPACE="${WORKSPACE:-$DEFAULT_WORKSPACE}"
+                read -r "MODEL?Model id, optional: "
+
+                mkdir -p "$WORKSPACE"
+                echo ""
+                if [ -n "$MODEL" ]; then
+                    echo "Running: $OPENCLAW_BIN agents add $AGENT_ID --workspace $WORKSPACE --model $MODEL --non-interactive"
+                    "$OPENCLAW_BIN" agents add "$AGENT_ID" --workspace "$WORKSPACE" --model "$MODEL" --non-interactive
+                else
+                    echo "Running: $OPENCLAW_BIN agents add $AGENT_ID --workspace $WORKSPACE --non-interactive"
+                    "$OPENCLAW_BIN" agents add "$AGENT_ID" --workspace "$WORKSPACE" --non-interactive
+                fi
+            fi
+        fi
+
+        echo ""
+        read -r "REPLY?Press Enter to close..."
+        """
+
+        let path = "/tmp/localclaw_agent_create.sh"
+        try? script.write(toFile: path, atomically: true, encoding: .utf8)
+        _ = engine.shell("chmod +x \(path)")
+        _ = engine.shell("open -a Terminal \(path)")
+        agentLogs = agentLogs.isEmpty ? "Started agent creation in Terminal" : agentLogs + "\nStarted agent creation in Terminal"
+    }
+
+    func openTerminalAgentIdentity(_ agentID: String) {
+        let script = """
+        #!/bin/zsh
+        clear
+        export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+        OPENCLAW_BIN="$(command -v openclaw 2>/dev/null || true)"
+
+        echo "=========================================="
+        echo "  LocalClaw Agent Identity: \(agentID)"
+        echo "=========================================="
+        echo ""
+
+        if [ -z "$OPENCLAW_BIN" ]; then
+            echo "[ERROR] openclaw command not found in PATH"
+        else
+            read -r "NAME?Display name, optional: "
+            read -r "EMOJI?Emoji, optional: "
+
+            ARGS=(agents set-identity --agent "\(agentID)")
+            if [ -n "$NAME" ]; then ARGS+=(--name "$NAME"); fi
+            if [ -n "$EMOJI" ]; then ARGS+=(--emoji "$EMOJI"); fi
+
+            if [ -z "$NAME" ] && [ -z "$EMOJI" ]; then
+                echo "Nothing to update."
+            else
+                echo "Running: $OPENCLAW_BIN ${ARGS[*]}"
+                "$OPENCLAW_BIN" "${ARGS[@]}"
+            fi
+        fi
+
+        echo ""
+        read -r "REPLY?Press Enter to close..."
+        """
+
+        let safeID = agentID.replacingOccurrences(of: "/", with: "_")
+        let path = "/tmp/localclaw_agent_identity_\(safeID).sh"
+        try? script.write(toFile: path, atomically: true, encoding: .utf8)
+        _ = engine.shell("chmod +x \(path)")
+        _ = engine.shell("open -a Terminal \(path)")
+        agentLogs = agentLogs.isEmpty ? "Started identity edit for \(agentID)" : agentLogs + "\nStarted identity edit for \(agentID)"
+    }
+
     func refreshChannels() {
         guard !channelsIsLoading else { return }
         channelsIsLoading = true
@@ -2448,28 +2630,28 @@ final class InstallerViewModel: ObservableObject {
             selectedProvider = .openRouter
             selectedOpenRouterModel = "openrouter/moonshotai/kimi-k2.5"
             _ = engine.writeModelToConfig(modelIdentifier: selectedOpenRouterModel)
-            templateLogs = "Applied Founder mode: Kimi K2.5 + Cloud LLM"
+            agentLogs = "Applied legacy Founder preset: Kimi K2.5 + Cloud LLM"
         case "support":
             inferenceMode = .cloud
             selectedProvider = .openRouter
             selectedOpenRouterModel = "openrouter/google/gemini-2.5-flash-preview"
             _ = engine.writeModelToConfig(modelIdentifier: selectedOpenRouterModel)
-            templateLogs = "Applied Support mode: Gemini 2.5 Flash + Cloud LLM"
+            agentLogs = "Applied legacy Support preset: Gemini 2.5 Flash + Cloud LLM"
         case "growth":
             inferenceMode = .cloud
             selectedProvider = .openRouter
             selectedOpenRouterModel = "openrouter/openai/gpt-4o-mini"
             _ = engine.writeModelToConfig(modelIdentifier: selectedOpenRouterModel)
-            templateLogs = "Applied Growth mode: GPT-4o Mini + Cloud LLM"
+            agentLogs = "Applied legacy Growth preset: GPT-4o Mini + Cloud LLM"
         case "dev":
             inferenceMode = .local
             selectedModel = !recommendation.isEmpty ? recommendation : (modelOptions.first ?? "")
             if let localId = localProviderModelIds[selectedModel] {
                 _ = engine.writeModelToConfig(modelIdentifier: "lmstudio/\(localId)")
             }
-            templateLogs = "Applied Dev mode: local \(selectedModel)"
+            agentLogs = "Applied legacy Dev preset: local \(selectedModel)"
         default:
-            templateLogs = "Unknown template"
+            agentLogs = "Unknown legacy preset"
         }
 
         _ = engine.shell("openclaw gateway restart --preserve-token 2>/dev/null || openclaw gateway restart 2>/dev/null || true")
@@ -4197,7 +4379,7 @@ struct ProgressSteps: View {
         case .commandCenter: return 0
         case .uninstallCenter: return 0
         case .channelSetup: return 0
-        case .templates: return 0
+        case .agents: return 0
         case .healthCenter: return 0
         case .usageCenter: return 0
         case .chat: return 0
@@ -4313,7 +4495,7 @@ struct ContentView: View {
                             case .commandCenter: commandCenter
                             case .uninstallCenter: uninstallCenter
                             case .channelSetup: channelSetup
-                            case .templates: templates
+                            case .agents: agentsCenter
                             case .healthCenter: healthCenter
                             case .usageCenter: usageCenter
                             case .chat: openClawChat
@@ -4434,7 +4616,7 @@ struct ContentView: View {
             sidebarButton("Models", icon: "cpu", isActive: vm.screen == .models) { vm.screen = .models }
             sidebarButton("Skills", icon: "wand.and.stars", isActive: vm.screen == .skills) { vm.screen = .skills }
             sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup) { vm.screen = .channelSetup }
-            sidebarButton("Templates", icon: "square.grid.2x2", isActive: vm.screen == .templates) { vm.screen = .templates }
+            sidebarButton("Agents", icon: "person.2.wave.2", isActive: vm.screen == .agents) { vm.screen = .agents }
             sidebarButton("Help", icon: "cross.case", isActive: vm.screen == .healthCenter) { vm.screen = .healthCenter }
             sidebarButton("Uninstall", icon: "trash", isActive: vm.screen == .uninstallCenter) { vm.screen = .uninstallCenter }
 
@@ -6050,92 +6232,172 @@ struct ContentView: View {
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
     }
 
-    var templates: some View {
+    var agentsCenter: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("AGENT TEMPLATES")
+                    Text("AGENTS")
                         .font(AppFont.heading(28))
                         .foregroundStyle(UI.text)
-                    Text("One-click presets by use-case.")
+                    Text("Manage OpenClaw agents, see who does what, which model they use, and whether they are active or routed.")
                         .font(AppFont.body(13))
                         .foregroundStyle(UI.muted)
                 }
                 Spacer()
+                Text(vm.agentsStatus)
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(vm.agentsIsLoading ? UI.accent : UI.muted)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
+                Button("New Agent") { vm.openTerminalAgentCreate() }
+                    .buttonStyle(CTAButton(primary: true))
+                Button("Refresh") { vm.refreshAgents() }
+                    .buttonStyle(CTAButton(primary: false))
+                    .disabled(vm.agentsIsLoading)
+                Button("Open docs") { vm.openAgentsDocs() }
+                    .buttonStyle(CTAButton(primary: false))
             }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("What is this?")
-                    .font(AppFont.bodySemi(13))
-                    .foregroundStyle(UI.text)
-                Text("Templates are shortcuts that auto-configure mode + model for a specific goal. Use one if you want a fast default. You can still change everything manually after.")
-                    .font(AppFont.body(12))
-                    .foregroundStyle(UI.muted)
-            }
-            .padding(12)
-            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
 
             HStack(spacing: 10) {
-                Button("Founder mode") { vm.applyAgentTemplate("founder") }
-                    .buttonStyle(CTAButton(primary: true))
-                Button("Support mode") { vm.applyAgentTemplate("support") }
-                    .buttonStyle(CTAButton(primary: false))
-                Button("Growth mode") { vm.applyAgentTemplate("growth") }
-                    .buttonStyle(CTAButton(primary: false))
-                Button("Dev mode") { vm.applyAgentTemplate("dev") }
-                    .buttonStyle(CTAButton(primary: false))
+                agentMetricCard("Agents", value: "\(vm.agents.count)", icon: "person.2.fill", tint: UI.accent)
+                agentMetricCard("Active", value: "\(vm.agents.filter { $0.isDefault || $0.bindings > 0 }.count)", icon: "bolt.fill", tint: Color(NSColor.systemGreen))
+                agentMetricCard("Routed", value: "\(vm.agents.filter { $0.bindings > 0 }.count)", icon: "arrow.triangle.branch", tint: Color(NSColor.systemBlue))
+                agentMetricCard("Models", value: "\(Set(vm.agents.compactMap { $0.model }).count)", icon: "cpu.fill", tint: Color(NSColor.systemPurple))
             }
-
-            VStack(alignment: .leading, spacing: 8) {
-                templateHintRow(title: "Founder mode", detail: "Best for strategy, business decisions, and product direction.")
-                templateHintRow(title: "Support mode", detail: "Best for quick, clear answers and customer help.")
-                templateHintRow(title: "Growth mode", detail: "Best for marketing, content, and audience growth tasks.")
-                templateHintRow(title: "Dev mode", detail: "Best for coding, debugging, and technical implementation.")
-            }
-            .padding(12)
-            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
-
-            Text("Applied template log")
-                .font(AppFont.bodySemi(14))
-                .foregroundStyle(UI.muted)
 
             ScrollView {
-                Text(vm.templateLogs.isEmpty ? "No template applied yet." : vm.templateLogs)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(UI.text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    if vm.agents.isEmpty {
+                        Text(vm.agentsIsLoading ? "Checking agents..." : "No agent inventory loaded yet.")
+                            .font(AppFont.body(12))
+                            .foregroundStyle(UI.muted)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+                    } else {
+                        Text("OpenClaw agents")
+                            .font(AppFont.bodySemi(13))
+                            .foregroundStyle(UI.muted)
+                            .padding(.horizontal, 2)
+                        ForEach(vm.agents) { agent in
+                            agentRow(agent)
+                        }
+                    }
+                }
+                .padding(2)
             }
             .scrollIndicators(.hidden)
-            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
-            .frame(maxHeight: .infinity)
+
+            if !vm.agentLogs.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Activity")
+                        .font(AppFont.bodySemi(13))
+                        .foregroundStyle(UI.muted)
+                    ScrollView {
+                        Text(vm.agentLogs)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(UI.text)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                    }
+                    .frame(maxHeight: 110)
+                    .scrollIndicators(.hidden)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+                }
+            }
         }
         .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
+        .onAppear {
+            if vm.agentsStatus == "Not loaded" {
+                vm.refreshAgents()
+            }
+        }
     }
 
-    private func templateHintRow(title: String, detail: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "info.circle.fill")
-                .font(.system(size: 12))
-                .foregroundStyle(UI.accent)
-                .padding(.top, 1)
+    private func agentMetricCard(_ title: String, value: String, icon: String, tint: Color) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 22)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(AppFont.bodySemi(12))
+                Text(value)
+                    .font(AppFont.bodySemi(18))
                     .foregroundStyle(UI.text)
-                Text(detail)
+                Text(title)
                     .font(AppFont.body(11))
                     .foregroundStyle(UI.muted)
             }
-            Spacer()
+            Spacer(minLength: 0)
         }
+        .padding(11)
+        .frame(maxWidth: .infinity)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private func agentRow(_ agent: InstallerViewModel.AgentInfo) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(agent.identityEmoji ?? "🤖")
+                .font(.system(size: 24))
+                .frame(width: 44, height: 44)
+                .background(Circle().fill(UI.cardSoft))
+                .overlay(Circle().stroke(UI.lineSoft, lineWidth: 1))
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Text(agent.displayName)
+                        .font(AppFont.bodySemi(17))
+                        .foregroundStyle(UI.text)
+                    Text(agent.id)
+                        .font(AppFont.bodySemi(11))
+                        .foregroundStyle(UI.muted)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
+                    agentBadge(agent.statusLabel, color: agent.statusTint, icon: agent.isDefault ? "star.fill" : (agent.bindings > 0 ? "point.3.connected.trianglepath.dotted" : "circle"))
+                }
+
+                Text(agent.roleSummary)
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(UI.text)
+
+                Text(agent.detailSummary)
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: 8)
+
+            Button {
+                vm.openTerminalAgentIdentity(agent.id)
+            } label: {
+                Label("Edit", systemImage: "pencil")
+            }
+            .buttonStyle(CTAButton(primary: false))
+        }
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 14).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(agent.statusTint.opacity(0.35), lineWidth: 1))
+    }
+
+    private func agentBadge(_ label: String, color: Color, icon: String) -> some View {
+        Label(label, systemImage: icon)
+            .font(AppFont.bodySemi(10))
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 999).stroke(color.opacity(0.25), lineWidth: 1))
     }
 
     @ViewBuilder
