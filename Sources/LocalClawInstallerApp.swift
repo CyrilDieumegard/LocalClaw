@@ -3548,13 +3548,26 @@ final class InstallerViewModel: ObservableObject {
         let requestID = UUID()
         activeChatRequestID = requestID
         let userText = text.isEmpty ? "Image attached" : text
-        let projectContext = chatProjectContext(for: activeChatSessionID)
+        let targetSessionID = useDeveloperSession ? sessionID : activeChatSessionID
+        let projectContext = chatProjectContext(for: targetSessionID)
         var agentTextParts: [String] = []
         if !projectContext.isEmpty {
             agentTextParts.append("""
             [LocalClaw project context]
             \(projectContext)
             [/LocalClaw project context]
+            """)
+        }
+        if useDeveloperSession {
+            agentTextParts.append("""
+            [LocalClaw developer workspace]
+            You are coding inside this local project folder:
+            \(developerProjectPath)
+
+            Make concrete file edits in that folder when the user asks to build, fix, or improve the app.
+            Keep the app runnable from this folder and make sure the preview can be served by the existing package scripts.
+            After code changes, mention the changed files and any command needed only if LocalClaw cannot run it automatically.
+            [/LocalClaw developer workspace]
             """)
         }
         agentTextParts.append("""
@@ -3604,6 +3617,7 @@ final class InstallerViewModel: ObservableObject {
             inferenceMode: requestInferenceMode,
             localModels: localLMStudioModels
         )
+        let developerWorkdir = developerProjectPath
 
         Task.detached {
             let quote: (String) -> String = { value in
@@ -3631,7 +3645,8 @@ final class InstallerViewModel: ObservableObject {
             }
             defer { try? FileManager.default.removeItem(atPath: tempMessagePath) }
 
-            let command = "MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(sessionID)) --message \"$(cat \"$MESSAGE_FILE\")\" --json --timeout 180 2>&1"
+            let workdirPrefix = useDeveloperSession ? "cd \(quote(developerWorkdir)) || exit 1; " : ""
+            let command = "\(workdirPrefix)MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(sessionID)) --message \"$(cat \"$MESSAGE_FILE\")\" --json --timeout 180 2>&1"
             let startedAt = Date()
             var result = Self.shellCancellable(command) { process in
                 Task { @MainActor in
@@ -3683,6 +3698,13 @@ final class InstallerViewModel: ObservableObject {
                 if useDeveloperSession { self.developerChatMessages.append(responseMessage) } else { self.chatMessages.append(responseMessage) }
                 if result.0 == 0 {
                     self.recordModelUsage(model: runtimeModel ?? self.currentModel, input: usage.input, output: usage.output, total: usage.total)
+                }
+                if useDeveloperSession && result.0 == 0 {
+                    self.developerPreviewRefreshID = UUID()
+                    self.developerActiveTab = "preview"
+                    if self.developerPreviewProcess != nil {
+                        self.developerPreviewStatus = "Preview refreshed after code changes"
+                    }
                 }
                 self.chatStatus = result.0 == 0 ? "Ready" : (knownDiagnostic == nil ? "Error" : "Needs setup")
                 self.chatIsSending = false
