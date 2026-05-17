@@ -3,6 +3,7 @@ import Foundation
 import AppKit
 import CryptoKit
 import UniformTypeIdentifiers
+import WebKit
 
 @MainActor
 final class InstallerViewModel: ObservableObject {
@@ -639,6 +640,7 @@ final class InstallerViewModel: ObservableObject {
     }
     @Published var developerProjectPath = NSHomeDirectory() + "/.openclaw/workspace"
     @Published var developerPreviewURL = "http://localhost:5173"
+    @Published var developerPreviewRefreshID = UUID()
     private var chatGatewayPrepared = false
     private var activeChatProcess: Process?
     private var activeChatRequestID: UUID?
@@ -3552,10 +3554,12 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func developerRunPreview() {
-        if let url = URL(string: developerPreviewURL) {
-            NSWorkspace.shared.open(url)
-        }
+        developerPreviewRefreshID = UUID()
         chatInput = "Start or verify the local preview for \(developerProjectPath). If a dev server is needed, use the existing project scripts and report the local URL."
+    }
+
+    func developerRefreshPreview() {
+        developerPreviewRefreshID = UUID()
     }
 
     func developerOpenExternalPreview() {
@@ -4814,6 +4818,40 @@ struct PresetPillButton: ButtonStyle {
     }
 }
 
+struct DeveloperWebPreview: NSViewRepresentable {
+    let urlString: String
+
+    func makeNSView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.allowsBackForwardNavigationGestures = true
+        webView.setValue(false, forKey: "drawsBackground")
+        load(webView)
+        return webView
+    }
+
+    func updateNSView(_ webView: WKWebView, context: Context) {
+        if webView.url?.absoluteString != normalizedURL?.absoluteString {
+            load(webView)
+        }
+    }
+
+    private var normalizedURL: URL? {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
+            return URL(string: trimmed)
+        }
+        return URL(string: "http://\(trimmed)")
+    }
+
+    private func load(_ webView: WKWebView) {
+        guard let url = normalizedURL else { return }
+        webView.load(URLRequest(url: url))
+    }
+}
+
 struct ProgressSteps: View {
     let screen: InstallerViewModel.Screen
 
@@ -5733,7 +5771,7 @@ struct ContentView: View {
                 developerTab("Deploy", icon: "icloud.and.arrow.up") { vm.chatInput = "Prepare this project for deployment. Identify the platform, build command, output directory, and missing environment variables." }
                 developerTab("Logs", icon: "terminal") { vm.chatInput = "Check recent project logs and summarize the actionable errors." }
                 Spacer()
-                developerIconButton("arrow.clockwise") { vm.developerRunPreview() }
+                developerIconButton("arrow.clockwise") { vm.developerRefreshPreview() }
                 developerIconButton("rectangle.on.rectangle") { vm.developerCopyPreviewURL() }
                 developerIconButton("arrow.up.right.square") { vm.developerOpenExternalPreview() }
             }
@@ -5755,47 +5793,9 @@ struct ContentView: View {
             .padding(10)
             .background(UI.card)
 
-            ZStack {
-                RoundedRectangle(cornerRadius: 0)
-                    .fill(Color.black)
-                VStack(alignment: .leading, spacing: 18) {
-                    HStack {
-                        Label("LOCALCLAW", systemImage: "app.fill")
-                            .font(AppFont.heading(20))
-                            .foregroundStyle(.white)
-                        Spacer()
-                        Text("LIVE PREVIEW")
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
-                            .foregroundStyle(UI.accent)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 5)
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(UI.accent, lineWidth: 1))
-                    }
-
-                    Spacer()
-
-                    Text("Build visually with OpenClaw")
-                        .font(AppFont.heading(46))
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-                    Text("Prompt changes, inspect files, run previews, and deploy from one local workspace.")
-                        .font(AppFont.body(15))
-                        .foregroundStyle(Color.white.opacity(0.68))
-                        .frame(maxWidth: 520, alignment: .leading)
-
-                    HStack(spacing: 10) {
-                        Label("index.html", systemImage: "doc.text")
-                        Label("Preview running", systemImage: "checkmark.circle.fill")
-                        Label("3 files changed", systemImage: "square.and.pencil")
-                    }
-                    .font(AppFont.bodySemi(12))
-                    .foregroundStyle(Color.white.opacity(0.75))
-
-                    Spacer()
-                }
-                .padding(32)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 0))
+            DeveloperWebPreview(urlString: vm.developerPreviewURL)
+                .id(vm.developerPreviewRefreshID)
+                .background(Color.black)
         }
         .background(RoundedRectangle(cornerRadius: 16).fill(UI.card))
         .clipShape(RoundedRectangle(cornerRadius: 16))
