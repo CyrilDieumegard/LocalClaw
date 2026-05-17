@@ -1053,6 +1053,19 @@ final class InstallerViewModel: ObservableObject {
         machineNodeMB = usage.nodeMemoryMB
     }
 
+    func stopHomePerformanceMonitoring() {
+        hasMachineUsageSnapshot = false
+        machineCPUPercent = 0
+        machineMemoryUsedGB = 0
+        machineMemoryAvailableGB = 0
+        machineMemoryTotalGB = 0
+        machineSwapUsedGB = 0
+        machineSwapTotalGB = 0
+        machineLMStudioMB = 0
+        machineOpenclawMB = 0
+        machineNodeMB = 0
+    }
+
     func killHeavyProcess(_ pid: Int) {
         guard confirmProcessAction(
             title: "Kill process?",
@@ -4644,8 +4657,12 @@ struct ContentView: View {
                                         dashboardMiniStat("LM Studio", String(format: "%.0f MB", vm.machineLMStudioMB))
                                         dashboardMiniStat("Node", String(format: "%.0f MB", vm.machineNodeMB))
                                     }
-                                    Button("Refresh performance") { vm.refreshMachineUsageSnapshot() }
-                                        .buttonStyle(CTAButton(primary: false))
+                                    HStack(spacing: 8) {
+                                        Button("Refresh performance") { vm.refreshMachineUsageSnapshot() }
+                                            .buttonStyle(CTAButton(primary: false))
+                                        Button("Stop monitoring") { vm.stopHomePerformanceMonitoring() }
+                                            .buttonStyle(CTAButton(primary: false))
+                                    }
                                 }
                             } else {
                                 VStack(alignment: .leading, spacing: 10) {
