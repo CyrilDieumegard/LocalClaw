@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class InstallerViewModel: ObservableObject {
-    enum Screen { case license, onboarding, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, agents, healthCenter, usageCenter, chat, models, skills }
+    enum Screen { case license, onboarding, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, agents, cronJobs, healthCenter, usageCenter, chat, models, skills }
     enum InstallMode: String {
         case llmOnly = "Install Local LLM only"
         case openClawOnly = "Install OpenClaw only"
@@ -327,6 +327,31 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    struct CronJobInfo: Identifiable {
+        let id: String
+        let name: String
+        let description: String?
+        let enabled: Bool
+        let scheduleLabel: String
+        let payloadLabel: String
+        let sessionTarget: String?
+        let nextRun: String?
+        let lastRun: String?
+        let deliveryLabel: String?
+
+        var statusLabel: String { enabled ? "Active" : "Disabled" }
+        var statusTint: Color { enabled ? Color(NSColor.systemGreen) : UI.muted }
+
+        var detailSummary: String {
+            var parts: [String] = [scheduleLabel, payloadLabel]
+            if let sessionTarget, !sessionTarget.isEmpty { parts.append("Session: \(sessionTarget)") }
+            if let deliveryLabel, !deliveryLabel.isEmpty { parts.append("Delivery: \(deliveryLabel)") }
+            if let nextRun, !nextRun.isEmpty { parts.append("Next: \(nextRun)") }
+            if let lastRun, !lastRun.isEmpty { parts.append("Last: \(lastRun)") }
+            return parts.joined(separator: " · ")
+        }
+    }
+
     enum CloudAuthMode: String, CaseIterable, Identifiable {
         case api = "API"
         case oauth = "OAuth"
@@ -633,6 +658,10 @@ final class InstallerViewModel: ObservableObject {
     @Published var agentsStatus: String = "Not loaded"
     @Published var agentsIsLoading = false
     @Published var agentLogs: String = ""
+    @Published var cronJobs: [CronJobInfo] = []
+    @Published var cronJobsStatus: String = "Not loaded"
+    @Published var cronJobsIsLoading = false
+    @Published var cronJobLogs: String = ""
     @Published var healthLogs: String = ""
     @Published var healthStatus: String = "Unknown"
     @Published var usageLogs: String = ""
@@ -2245,6 +2274,191 @@ final class InstallerViewModel: ObservableObject {
 
     func openAgentsDocs() {
         _ = engine.shell("open 'https://docs.openclaw.ai/cli/agents' || true")
+    }
+
+    func openCronDocs() {
+        _ = engine.shell("open 'https://docs.openclaw.ai/cli/cron' || true")
+    }
+
+    func refreshCronJobs() {
+        guard !cronJobsIsLoading else { return }
+        cronJobsIsLoading = true
+        cronJobsStatus = "Checking cron jobs..."
+        cronJobLogs = cronJobLogs.isEmpty ? "Running cron inventory..." : cronJobLogs + "\nRunning cron inventory..."
+
+        Task.detached {
+            let engine = InstallerEngine()
+            let result = engine.shell("openclaw --no-color cron list --json 2>&1")
+
+            await MainActor.run {
+                self.cronJobsIsLoading = false
+
+                guard result.0 == 0,
+                      let data = result.1.data(using: .utf8),
+                      let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    self.cronJobsStatus = "Could not load cron jobs"
+                    self.cronJobLogs += "\nFailed to load cron jobs: \(result.1.trimmingCharacters(in: .whitespacesAndNewlines))"
+                    return
+                }
+
+                let jobs = root["jobs"] as? [[String: Any]] ?? []
+                self.cronJobs = jobs.compactMap { Self.parseCronJob($0) }
+                    .sorted {
+                        if $0.enabled != $1.enabled { return $0.enabled && !$1.enabled }
+                        return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                    }
+
+                let activeCount = self.cronJobs.filter(\.enabled).count
+                self.cronJobsStatus = "\(activeCount) active · \(self.cronJobs.count) jobs"
+                self.cronJobLogs += "\nCron inventory refreshed."
+            }
+        }
+    }
+
+    nonisolated private static func parseCronJob(_ row: [String: Any]) -> CronJobInfo? {
+        guard let id = row["id"] as? String ?? row["jobId"] as? String else { return nil }
+        let schedule = row["schedule"] as? [String: Any] ?? [:]
+        let payload = row["payload"] as? [String: Any] ?? [:]
+        let delivery = row["delivery"] as? [String: Any] ?? [:]
+
+        let scheduleLabel: String = {
+            let kind = schedule["kind"] as? String ?? row["scheduleKind"] as? String ?? "schedule"
+            if let expr = schedule["expr"] as? String {
+                let tz = schedule["tz"] as? String
+                return tz == nil || tz == "" ? "Cron: \(expr)" : "Cron: \(expr) · \(tz!)"
+            }
+            if let everyMs = (schedule["everyMs"] as? Double) ?? (schedule["everyMs"] as? Int).map(Double.init) {
+                return "Every \(Self.durationLabel(milliseconds: everyMs))"
+            }
+            if let at = schedule["at"] as? String { return "At \(at)" }
+            return kind.capitalized
+        }()
+
+        let payloadLabel: String = {
+            let kind = payload["kind"] as? String ?? "payload"
+            if let message = payload["message"] as? String, !message.isEmpty {
+                return "\(kind): \(message)"
+            }
+            if let text = payload["text"] as? String, !text.isEmpty {
+                return "\(kind): \(text)"
+            }
+            return kind
+        }()
+
+        let deliveryLabel: String? = {
+            guard !delivery.isEmpty else { return nil }
+            let mode = delivery["mode"] as? String ?? "delivery"
+            let channel = delivery["channel"] as? String
+            let to = delivery["to"] as? String
+            return [mode, channel, to].compactMap { $0 }.joined(separator: " / ")
+        }()
+
+        return CronJobInfo(
+            id: id,
+            name: row["name"] as? String ?? id,
+            description: row["description"] as? String,
+            enabled: row["enabled"] as? Bool ?? true,
+            scheduleLabel: scheduleLabel,
+            payloadLabel: payloadLabel,
+            sessionTarget: row["sessionTarget"] as? String,
+            nextRun: row["nextRunAt"] as? String ?? row["nextRun"] as? String,
+            lastRun: row["lastRunAt"] as? String ?? row["lastRun"] as? String,
+            deliveryLabel: deliveryLabel
+        )
+    }
+
+    nonisolated private static func durationLabel(milliseconds: Double) -> String {
+        let seconds = Int(milliseconds / 1000)
+        if seconds % 86400 == 0 { return "\(seconds / 86400)d" }
+        if seconds % 3600 == 0 { return "\(seconds / 3600)h" }
+        if seconds % 60 == 0 { return "\(seconds / 60)m" }
+        return "\(seconds)s"
+    }
+
+    func openTerminalCronCreate() {
+        let script = """
+        #!/bin/zsh
+        clear
+        export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+        OPENCLAW_BIN="$(command -v openclaw 2>/dev/null || true)"
+
+        echo "=========================================="
+        echo "  LocalClaw Cron Job Setup"
+        echo "=========================================="
+        echo ""
+
+        if [ -z "$OPENCLAW_BIN" ]; then
+            echo "[ERROR] openclaw command not found in PATH"
+        else
+            read -r "NAME?Job name: "
+            read -r "SCHEDULE?Schedule, examples: every 30m / cron 0 9 * * * / at +1h: "
+            read -r "MESSAGE?Agent message to run: "
+
+            if [ -z "$NAME" ] || [ -z "$SCHEDULE" ] || [ -z "$MESSAGE" ]; then
+                echo "[ERROR] Name, schedule and message are required."
+            else
+                ARGS=(cron add --name "$NAME" --message "$MESSAGE" --session isolated --json)
+                case "$SCHEDULE" in
+                    every\\ *) ARGS+=(--every "${SCHEDULE#every }") ;;
+                    cron\\ *) ARGS+=(--cron "${SCHEDULE#cron }") ;;
+                    at\\ *) ARGS+=(--at "${SCHEDULE#at }") ;;
+                    *) ARGS+=(--every "$SCHEDULE") ;;
+                esac
+
+                echo "Running: $OPENCLAW_BIN cron add ..."
+                "$OPENCLAW_BIN" "${ARGS[@]}"
+            fi
+        fi
+
+        echo ""
+        read -r "REPLY?Press Enter to close..."
+        """
+
+        let path = "/tmp/localclaw_cron_create.sh"
+        try? script.write(toFile: path, atomically: true, encoding: .utf8)
+        _ = engine.shell("chmod +x \(path)")
+        _ = engine.shell("open -a Terminal \(path)")
+        cronJobLogs = cronJobLogs.isEmpty ? "Started cron creation in Terminal" : cronJobLogs + "\nStarted cron creation in Terminal"
+    }
+
+    func openTerminalCronRemove(_ jobID: String) {
+        let script = """
+        #!/bin/zsh
+        clear
+        export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+        OPENCLAW_BIN="$(command -v openclaw 2>/dev/null || true)"
+
+        echo "Remove cron job: \(jobID)"
+        echo ""
+        read -r "CONFIRM?Type DELETE to confirm: "
+        if [ "$CONFIRM" = "DELETE" ] && [ -n "$OPENCLAW_BIN" ]; then
+            "$OPENCLAW_BIN" cron rm "\(jobID)" --json
+        else
+            echo "Canceled."
+        fi
+
+        echo ""
+        read -r "REPLY?Press Enter to close..."
+        """
+        let safeID = jobID.replacingOccurrences(of: "/", with: "_")
+        let path = "/tmp/localclaw_cron_remove_\(safeID).sh"
+        try? script.write(toFile: path, atomically: true, encoding: .utf8)
+        _ = engine.shell("chmod +x \(path)")
+        _ = engine.shell("open -a Terminal \(path)")
+        cronJobLogs = cronJobLogs.isEmpty ? "Started remove flow for \(jobID)" : cronJobLogs + "\nStarted remove flow for \(jobID)"
+    }
+
+    func runCronJobNow(_ jobID: String) {
+        cronJobLogs = cronJobLogs.isEmpty ? "Running cron job \(jobID)..." : cronJobLogs + "\nRunning cron job \(jobID)..."
+        let quotedID = Self.shellSingleQuote(jobID)
+        Task.detached {
+            let engine = InstallerEngine()
+            let result = engine.shell("openclaw --no-color cron run \(quotedID) 2>&1")
+            await MainActor.run {
+                self.cronJobLogs += "\n\(result.1.trimmingCharacters(in: .whitespacesAndNewlines))"
+                self.refreshCronJobs()
+            }
+        }
     }
 
     func refreshAgents() {
@@ -4380,6 +4594,7 @@ struct ProgressSteps: View {
         case .uninstallCenter: return 0
         case .channelSetup: return 0
         case .agents: return 0
+        case .cronJobs: return 0
         case .healthCenter: return 0
         case .usageCenter: return 0
         case .chat: return 0
@@ -4496,6 +4711,7 @@ struct ContentView: View {
                             case .uninstallCenter: uninstallCenter
                             case .channelSetup: channelSetup
                             case .agents: agentsCenter
+                            case .cronJobs: cronJobsCenter
                             case .healthCenter: healthCenter
                             case .usageCenter: usageCenter
                             case .chat: openClawChat
@@ -4617,6 +4833,7 @@ struct ContentView: View {
             sidebarButton("Skills", icon: "wand.and.stars", isActive: vm.screen == .skills) { vm.screen = .skills }
             sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup) { vm.screen = .channelSetup }
             sidebarButton("Agents", icon: "person.2.wave.2", isActive: vm.screen == .agents) { vm.screen = .agents }
+            sidebarButton("Cron Jobs", icon: "calendar.badge.clock", isActive: vm.screen == .cronJobs) { vm.screen = .cronJobs }
             sidebarButton("Help", icon: "cross.case", isActive: vm.screen == .healthCenter) { vm.screen = .healthCenter }
             sidebarButton("Uninstall", icon: "trash", isActive: vm.screen == .uninstallCenter) { vm.screen = .uninstallCenter }
 
@@ -6390,6 +6607,175 @@ struct ContentView: View {
     }
 
     private func agentBadge(_ label: String, color: Color, icon: String) -> some View {
+        Label(label, systemImage: icon)
+            .font(AppFont.bodySemi(10))
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 999).stroke(color.opacity(0.25), lineWidth: 1))
+    }
+
+    var cronJobsCenter: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("CRON JOBS")
+                        .font(AppFont.heading(28))
+                        .foregroundStyle(UI.text)
+                    Text("See scheduled OpenClaw jobs, what they run, when they run, and remove or add jobs from one place.")
+                        .font(AppFont.body(13))
+                        .foregroundStyle(UI.muted)
+                }
+                Spacer()
+                Text(vm.cronJobsStatus)
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(vm.cronJobsIsLoading ? UI.accent : UI.muted)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
+                Button("New Job") { vm.openTerminalCronCreate() }
+                    .buttonStyle(CTAButton(primary: true))
+                Button("Refresh") { vm.refreshCronJobs() }
+                    .buttonStyle(CTAButton(primary: false))
+                    .disabled(vm.cronJobsIsLoading)
+                Button("Open docs") { vm.openCronDocs() }
+                    .buttonStyle(CTAButton(primary: false))
+            }
+
+            HStack(spacing: 10) {
+                cronMetricCard("Jobs", value: "\(vm.cronJobs.count)", icon: "calendar", tint: UI.accent)
+                cronMetricCard("Active", value: "\(vm.cronJobs.filter { $0.enabled }.count)", icon: "checkmark.seal.fill", tint: Color(NSColor.systemGreen))
+                cronMetricCard("Disabled", value: "\(vm.cronJobs.filter { !$0.enabled }.count)", icon: "pause.circle.fill", tint: UI.muted)
+                cronMetricCard("Scheduled", value: "\(vm.cronJobs.filter { $0.nextRun != nil || $0.scheduleLabel != "Schedule" }.count)", icon: "clock.fill", tint: Color(NSColor.systemBlue))
+            }
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    if vm.cronJobs.isEmpty {
+                        Text(vm.cronJobsIsLoading ? "Checking cron jobs..." : "No cron jobs configured yet.")
+                            .font(AppFont.body(12))
+                            .foregroundStyle(UI.muted)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+                    } else {
+                        Text("Scheduled jobs")
+                            .font(AppFont.bodySemi(13))
+                            .foregroundStyle(UI.muted)
+                            .padding(.horizontal, 2)
+                        ForEach(vm.cronJobs) { job in
+                            cronJobRow(job)
+                        }
+                    }
+                }
+                .padding(2)
+            }
+            .scrollIndicators(.hidden)
+
+            if !vm.cronJobLogs.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Activity")
+                        .font(AppFont.bodySemi(13))
+                        .foregroundStyle(UI.muted)
+                    ScrollView {
+                        Text(vm.cronJobLogs)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(UI.text)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                    }
+                    .frame(maxHeight: 110)
+                    .scrollIndicators(.hidden)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+                }
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
+        .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
+        .onAppear {
+            if vm.cronJobsStatus == "Not loaded" {
+                vm.refreshCronJobs()
+            }
+        }
+    }
+
+    private func cronMetricCard(_ title: String, value: String, icon: String, tint: Color) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(value)
+                    .font(AppFont.bodySemi(18))
+                    .foregroundStyle(UI.text)
+                Text(title)
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private func cronJobRow(_ job: InstallerViewModel.CronJobInfo) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "calendar.badge.clock")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(job.statusTint)
+                    .frame(width: 44, height: 44)
+                    .background(Circle().fill(UI.cardSoft))
+                    .overlay(Circle().stroke(UI.lineSoft, lineWidth: 1))
+
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(spacing: 8) {
+                        Text(job.name)
+                            .font(AppFont.bodySemi(17))
+                            .foregroundStyle(UI.text)
+                        cronBadge(job.statusLabel, color: job.statusTint, icon: job.enabled ? "checkmark.circle.fill" : "pause.circle.fill")
+                    }
+                    Text(job.id)
+                        .font(AppFont.bodySemi(11))
+                        .foregroundStyle(UI.muted)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let description = job.description, !description.isEmpty {
+                        Text(description)
+                            .font(AppFont.body(12))
+                            .foregroundStyle(UI.text)
+                            .lineLimit(2)
+                    }
+                    Text(job.detailSummary)
+                        .font(AppFont.body(11))
+                        .foregroundStyle(UI.muted)
+                        .lineLimit(3)
+                        .truncationMode(.middle)
+                }
+
+                Spacer(minLength: 8)
+
+                Button("Run") { vm.runCronJobNow(job.id) }
+                    .buttonStyle(CTAButton(primary: false))
+                Button("Delete") { vm.openTerminalCronRemove(job.id) }
+                    .buttonStyle(CTAButton(primary: false))
+            }
+        }
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 14).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(job.statusTint.opacity(0.35), lineWidth: 1))
+    }
+
+    private func cronBadge(_ label: String, color: Color, icon: String) -> some View {
         Label(label, systemImage: icon)
             .font(AppFont.bodySemi(10))
             .foregroundStyle(color)
