@@ -253,6 +253,29 @@ final class InstallerViewModel: ObservableObject {
             if let lastError, !lastError.isEmpty { parts.append("Error: \(lastError)") }
             return parts.isEmpty ? "No connection detail yet." : parts.joined(separator: " · ")
         }
+
+        var connectionLabel: String {
+            if connected { return "Connected" }
+            if running { return "Active" }
+            if configured { return "Configured" }
+            if installed { return "Ready to connect" }
+            return "Install required"
+        }
+
+        var connectionTint: Color {
+            if connected || running { return Color(NSColor.systemGreen) }
+            if configured { return Color(NSColor.systemBlue) }
+            if installed { return UI.accent }
+            return UI.muted
+        }
+
+        var accountRows: [String] {
+            accounts.isEmpty ? ["No account connected yet"] : accounts
+        }
+
+        var primaryActionLabel: String {
+            configured ? "Add Account" : "Connect"
+        }
     }
 
     enum CloudAuthMode: String, CaseIterable, Identifiable {
@@ -6387,7 +6410,7 @@ struct ContentView: View {
                     Text("CHANNELS")
                         .font(AppFont.heading(28))
                         .foregroundStyle(UI.text)
-                    Text("See what is connected, active, installed, or still available to configure.")
+                    Text("Connect Telegram, Discord, WhatsApp, Signal, Slack, and other apps with a clear view of status and accounts.")
                         .font(AppFont.body(13))
                         .foregroundStyle(UI.muted)
                 }
@@ -6406,10 +6429,10 @@ struct ContentView: View {
             }
 
             HStack(spacing: 10) {
-                channelMetricCard("Active", value: "\(vm.channels.filter { $0.isActive }.count)", icon: "bolt.fill", tint: UI.accent)
-                channelMetricCard("Connected", value: "\(vm.channels.filter { $0.connected }.count)", icon: "checkmark.seal.fill", tint: Color(NSColor.systemGreen))
-                channelMetricCard("Configured", value: "\(vm.channels.filter { $0.configured }.count)", icon: "slider.horizontal.3", tint: Color(NSColor.systemBlue))
-                channelMetricCard("Available", value: "\(vm.channels.filter { !$0.configured }.count)", icon: "plus.circle.fill", tint: UI.muted)
+                channelMetricCard("Apps", value: "\(vm.channels.count)", icon: "square.grid.2x2.fill", tint: UI.accent)
+                channelMetricCard("Connected", value: "\(vm.channels.filter { $0.connected || $0.running }.count)", icon: "checkmark.seal.fill", tint: Color(NSColor.systemGreen))
+                channelMetricCard("Accounts", value: "\(vm.channels.reduce(0) { $0 + $1.accounts.count })", icon: "person.2.fill", tint: Color(NSColor.systemBlue))
+                channelMetricCard("To connect", value: "\(vm.channels.filter { !$0.configured }.count)", icon: "plus.circle.fill", tint: UI.muted)
             }
 
             ScrollView {
@@ -6422,6 +6445,10 @@ struct ContentView: View {
                             .padding(12)
                             .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
                     } else {
+                        Text("Connectable apps")
+                            .font(AppFont.bodySemi(13))
+                            .foregroundStyle(UI.muted)
+                            .padding(.horizontal, 2)
                         ForEach(vm.channels) { channel in
                             channelRow(channel)
                         }
@@ -6485,48 +6512,98 @@ struct ContentView: View {
     }
 
     private func channelRow(_ channel: InstallerViewModel.ChannelInfo) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: channel.systemImage)
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(channel.isActive ? UI.accent : UI.muted)
-                .frame(width: 36, height: 36)
-                .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: channel.systemImage)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(channel.connected || channel.running ? Color(NSColor.systemGreen) : UI.text)
+                    .frame(width: 44, height: 44)
+                    .background(Circle().fill(UI.cardSoft))
+                    .overlay(Circle().stroke(UI.lineSoft, lineWidth: 1))
 
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(channel.label)
-                        .font(AppFont.bodySemi(14))
+                        .font(AppFont.bodySemi(17))
                         .foregroundStyle(UI.text)
-                    Text(channel.detailLabel)
-                        .font(AppFont.body(11))
-                        .foregroundStyle(UI.muted)
-                    Spacer(minLength: 4)
-                }
-
-                HStack(spacing: 6) {
-                    channelBadge(channel.stateLabel, color: channel.connected ? Color(NSColor.systemGreen) : (channel.running ? UI.accent : UI.muted), icon: channel.connected ? "checkmark.circle.fill" : (channel.running ? "bolt.fill" : "circle"))
-                    channelBadge(channel.installed ? "Installed" : "Not installed", color: channel.installed ? Color(NSColor.systemGreen) : UI.muted, icon: channel.installed ? "checkmark.seal.fill" : "tray.and.arrow.down")
-                    if let probeOK = channel.probeOK {
-                        channelBadge(probeOK ? "Probe OK" : "Probe failed", color: probeOK ? Color(NSColor.systemGreen) : Color(NSColor.systemOrange), icon: probeOK ? "antenna.radiowaves.left.and.right" : "exclamationmark.triangle.fill")
+                    HStack(spacing: 7) {
+                        Text(channel.id)
+                            .font(AppFont.bodySemi(12))
+                            .foregroundStyle(UI.muted)
+                        Circle()
+                            .fill(UI.muted.opacity(0.35))
+                            .frame(width: 4, height: 4)
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(channel.connectionTint)
+                                .frame(width: 8, height: 8)
+                            Text(channel.connectionLabel)
+                                .font(AppFont.bodySemi(12))
+                                .foregroundStyle(channel.connectionTint)
+                        }
                     }
                 }
 
-                Text(channel.detailSummary)
-                    .font(AppFont.body(12))
-                    .foregroundStyle(UI.muted)
-                    .lineLimit(2)
+                Spacer(minLength: 8)
+
+                Button {
+                    vm.openTerminalChannelLogin(channel.id)
+                } label: {
+                    Label(channel.primaryActionLabel, systemImage: "plus")
+                }
+                .buttonStyle(CTAButton(primary: !channel.configured))
+
+                Image(systemName: "trash")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(UI.muted.opacity(channel.configured ? 0.85 : 0.30))
+                    .help(channel.configured ? "Remove account from OpenClaw config" : "No account to remove")
             }
+
+            VStack(spacing: 8) {
+                ForEach(channel.accountRows, id: \.self) { account in
+                    channelAccountRow(channel: channel, account: account)
+                }
+            }
+        }
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 14).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(channel.isActive ? Color(NSColor.systemGreen).opacity(0.35) : UI.lineSoft, lineWidth: 1))
+    }
+
+    private func channelAccountRow(channel: InstallerViewModel.ChannelInfo, account: String) -> some View {
+        HStack(spacing: 12) {
+            Text(account)
+                .font(AppFont.bodySemi(13))
+                .foregroundStyle(channel.accounts.isEmpty ? UI.muted : UI.text)
+                .lineLimit(1)
+                .truncationMode(.middle)
 
             Spacer(minLength: 8)
 
-            Button(channel.configured ? "Reconnect" : "Connect") {
+            channelBadge(channel.stateLabel, color: channel.connectionTint, icon: channel.connected ? "checkmark.circle.fill" : (channel.running ? "bolt.fill" : "circle"))
+
+            if let probeOK = channel.probeOK {
+                channelBadge(probeOK ? "Probe OK" : "Probe failed", color: probeOK ? Color(NSColor.systemGreen) : Color(NSColor.systemOrange), icon: probeOK ? "antenna.radiowaves.left.and.right" : "exclamationmark.triangle.fill")
+            }
+
+            Text(channel.detailLabel)
+                .font(AppFont.body(11))
+                .foregroundStyle(UI.muted)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Button("Edit") {
                 vm.openTerminalChannelLogin(channel.id)
             }
-            .buttonStyle(CTAButton(primary: channel.connected == false && channel.configured == false))
+            .buttonStyle(CTAButton(primary: false))
+            .disabled(channel.accounts.isEmpty)
+
+            Image(systemName: "trash")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(UI.muted.opacity(channel.accounts.isEmpty ? 0.25 : 0.85))
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(channel.isActive ? UI.accent.opacity(0.35) : UI.lineSoft, lineWidth: 1))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
     }
 
     private func channelBadge(_ label: String, color: Color, icon: String) -> some View {
