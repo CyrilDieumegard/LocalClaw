@@ -109,6 +109,42 @@ struct InstallerEngineTests {
         #expect(InstallerViewModel.runtimeSessionID(base: base, modelID: "openai/gpt-5.5", useDeveloperSession: false) == base)
     }
 
+    @MainActor
+    @Test func chatModelListShowsOnlyLocalModelsInLocalMode() {
+        let vm = InstallerViewModel()
+        vm.inferenceMode = .local
+        vm.selectedChatResponseMode = .local
+        vm.currentModel = "openrouter/openai/gpt-5.5"
+        vm.localLMStudioModels = ["google/gemma-4-e2b", "nvidia/nemotron-3-nano-4b"]
+        vm.selectedChatModel = "openrouter/openai/gpt-5.5"
+
+        vm.ensureSelectedChatModel()
+
+        #expect(vm.availableChatModels.allSatisfy { $0.id.hasPrefix("lmstudio/") })
+        #expect(vm.availableChatModels.map(\.id) == ["lmstudio/google/gemma-4-e2b", "lmstudio/nvidia/nemotron-3-nano-4b"])
+        #expect(vm.selectedChatModel == "lmstudio/google/gemma-4-e2b")
+    }
+
+    @MainActor
+    @Test func chatModelListShowsOnlyCloudModelsInCloudMode() {
+        let vm = InstallerViewModel()
+        vm.inferenceMode = .cloud
+        vm.selectedChatResponseMode = .cloud
+        vm.currentModel = "lmstudio/google/gemma-4-e2b"
+        vm.localLMStudioModels = ["google/gemma-4-e2b"]
+        vm.openRouterModelsLive = [
+            InstallerViewModel.OpenRouterModel(id: "openrouter/openai/gpt-5.5", displayName: "GPT-5.5"),
+            InstallerViewModel.OpenRouterModel(id: "openrouter/moonshotai/kimi-k2.5", displayName: "Kimi K2.5")
+        ]
+        vm.selectedChatModel = "lmstudio/google/gemma-4-e2b"
+
+        vm.ensureSelectedChatModel()
+
+        #expect(vm.availableChatModels.allSatisfy { $0.id.hasPrefix("openrouter/") })
+        #expect(vm.availableChatModels.map(\.id) == ["openrouter/openai/gpt-5.5", "openrouter/moonshotai/kimi-k2.5"])
+        #expect(vm.selectedChatModel == "openrouter/openai/gpt-5.5")
+    }
+
     @Test func createsRunnableDeveloperPreviewScaffold() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("localclaw-preview-test-\(UUID().uuidString)")

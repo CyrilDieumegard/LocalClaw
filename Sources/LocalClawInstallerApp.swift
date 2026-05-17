@@ -663,7 +663,10 @@ final class InstallerViewModel: ObservableObject {
     @Published var chatStatus = "Ready"
     @Published var selectedChatModel = ""
     @Published var selectedChatResponseMode: ChatResponseMode = .cloud {
-        didSet { UserDefaults.standard.set(selectedChatResponseMode.rawValue, forKey: Self.selectedChatResponseModeDefaultsKey) }
+        didSet {
+            UserDefaults.standard.set(selectedChatResponseMode.rawValue, forKey: Self.selectedChatResponseModeDefaultsKey)
+            reconcileSelectedChatModelForCurrentMode()
+        }
     }
     @Published var chatMemoryEnabled = true {
         didSet { UserDefaults.standard.set(chatMemoryEnabled, forKey: Self.chatMemoryEnabledDefaultsKey) }
@@ -3611,8 +3614,12 @@ final class InstallerViewModel: ObservableObject {
             selectedModelForRequest = "openrouter/openai/gpt-5.4-mini"
         } else if selectedChatResponseMode == .deep, inferenceMode == .cloud {
             selectedModelForRequest = "openrouter/openai/gpt-5.4"
-        } else if selectedChatResponseMode == .local, let firstLocal = localLMStudioModels.first, !firstLocal.isEmpty {
-            selectedModelForRequest = firstLocal
+        } else if selectedChatResponseMode == .local {
+            if selectedModelForRequest.hasPrefix("lmstudio/") || localLMStudioModels.contains(selectedModelForRequest) {
+                // Keep the local model chosen in the picker.
+            } else if let firstLocal = localLMStudioModels.first, !firstLocal.isEmpty {
+                selectedModelForRequest = "lmstudio/\(firstLocal)"
+            }
         }
         let selectedModelLooksLocal = selectedModelForRequest.hasPrefix("lmstudio/") || localLMStudioModels.contains(selectedModelForRequest)
         let selectedModelLooksCloud = selectedModelForRequest.hasPrefix("openrouter/")
@@ -3751,14 +3758,22 @@ final class InstallerViewModel: ObservableObject {
     var availableChatModels: [OpenRouterModel] {
         var models: [OpenRouterModel] = []
         let current = openClawChatModelLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let showingLocalModels = selectedChatResponseMode == .local
         if !current.isEmpty && !current.lowercased().contains("not configured") {
             let currentID = Self.normalizedChatModelID(current, inferenceMode: inferenceMode, localModels: localLMStudioModels)
-            models.append(OpenRouterModel(id: currentID, displayName: Self.readableModelName(currentID)))
+            let currentIsLocal = currentID.hasPrefix("lmstudio/") || localLMStudioModels.contains(currentID)
+            if currentIsLocal == showingLocalModels {
+                models.append(OpenRouterModel(id: currentID, displayName: Self.readableModelName(currentID)))
+            }
         }
-        for local in localLMStudioModels {
-            models.append(OpenRouterModel(id: "lmstudio/\(local)", displayName: "Local · \(local)"))
+
+        if showingLocalModels {
+            for local in localLMStudioModels {
+                models.append(OpenRouterModel(id: "lmstudio/\(local)", displayName: "Local · \(local)"))
+            }
+        } else {
+            models.append(contentsOf: openRouterModelsLive.isEmpty ? Self.openRouterModels : openRouterModelsLive)
         }
-        models.append(contentsOf: openRouterModelsLive.isEmpty ? Self.openRouterModels : openRouterModelsLive)
 
         var seen = Set<String>()
         return models.filter { model in
@@ -3769,9 +3784,13 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func ensureSelectedChatModel() {
-        if !selectedChatModel.isEmpty, availableChatModels.contains(where: { $0.id == selectedChatModel }) { return }
-        selectedChatModel = availableChatModels.first?.id ?? ""
-        syncChatModelModeWithSelection()
+        reconcileSelectedChatModelForCurrentMode()
+    }
+
+    func reconcileSelectedChatModelForCurrentMode() {
+        let models = availableChatModels
+        if !selectedChatModel.isEmpty, models.contains(where: { $0.id == selectedChatModel }) { return }
+        selectedChatModel = models.first?.id ?? ""
     }
 
     func syncChatModelModeWithSelection() {
@@ -9853,20 +9872,23 @@ struct ContentView: View {
 
     var modelsInventoryPanel: some View {
         HStack(alignment: .top, spacing: 14) {
-            modelInventoryList(
-                title: "Cloud catalog",
-                count: vm.openRouterModelsLive.isEmpty ? InstallerViewModel.openRouterModels.count : vm.openRouterModelsLive.count,
-                emptyText: "No cloud catalog loaded.",
-                rows: Array((vm.openRouterModelsLive.isEmpty ? InstallerViewModel.openRouterModels.map(\.displayName) : vm.openRouterModelsLive.map(\.displayName)).prefix(8)),
-                icon: "cloud.fill"
-            )
-            modelInventoryList(
-                title: "Local models",
-                count: vm.localLMStudioModels.count,
-                emptyText: "No local model detected.",
-                rows: Array(vm.localLMStudioModels.prefix(8)),
-                icon: "internaldrive.fill"
-            )
+            if vm.inferenceMode == .cloud {
+                modelInventoryList(
+                    title: "Cloud catalog",
+                    count: vm.openRouterModelsLive.isEmpty ? InstallerViewModel.openRouterModels.count : vm.openRouterModelsLive.count,
+                    emptyText: "No cloud catalog loaded.",
+                    rows: Array((vm.openRouterModelsLive.isEmpty ? InstallerViewModel.openRouterModels.map(\.displayName) : vm.openRouterModelsLive.map(\.displayName)).prefix(8)),
+                    icon: "cloud.fill"
+                )
+            } else {
+                modelInventoryList(
+                    title: "Local models",
+                    count: vm.localLMStudioModels.count,
+                    emptyText: "No local model detected.",
+                    rows: Array(vm.localLMStudioModels.prefix(8)),
+                    icon: "internaldrive.fill"
+                )
+            }
         }
     }
 
