@@ -292,16 +292,14 @@ final class InstallerViewModel: ObservableObject {
         }
 
         var connectionLabel: String {
-            if id == "teams" { return "Not supported yet" }
             if connected { return "Connected" }
             if running { return "Active" }
             if configured { return "Configured" }
             if installed { return "Ready to connect" }
-            return "Install required"
+            return "Not connected"
         }
 
         var connectionTint: Color {
-            if id == "teams" { return Color(NSColor.systemOrange) }
             if connected || running { return Color(NSColor.systemGreen) }
             if configured { return Color(NSColor.systemBlue) }
             if installed { return UI.accent }
@@ -313,8 +311,9 @@ final class InstallerViewModel: ObservableObject {
         }
 
         var primaryActionLabel: String {
-            if id == "teams" { return "Not available" }
-            return configured ? "Add Account" : "Connect"
+            if connected || running { return "Add Account" }
+            if configured { return "Reconnect" }
+            return "Connect"
         }
     }
 
@@ -800,16 +799,50 @@ final class InstallerViewModel: ObservableObject {
         ChannelCatalogEntry(id: "mattermost", label: "Mattermost", detailLabel: "Server URL and bot token", systemImage: "bubble.left.and.bubble.right.fill", origin: "OpenClaw channel"),
         ChannelCatalogEntry(id: "matrix", label: "Matrix", detailLabel: "Homeserver and access token", systemImage: "square.grid.3x3.fill", origin: "OpenClaw channel"),
         ChannelCatalogEntry(id: "imessage", label: "iMessage", detailLabel: "macOS Messages bridge", systemImage: "message.fill", origin: "OpenClaw channel"),
-        ChannelCatalogEntry(id: "github", label: "GitHub", detailLabel: "GitHub app / token connection", systemImage: "chevron.left.forwardslash.chevron.right", origin: "OpenClaw connector"),
-        ChannelCatalogEntry(id: "gmail", label: "Gmail", detailLabel: "Gmail Pub/Sub webhook", systemImage: "envelope.badge.fill", origin: "OpenClaw webhook"),
-        ChannelCatalogEntry(id: "email", label: "Email", detailLabel: "IMAP/SMTP or provider app password", systemImage: "envelope.fill", origin: "OpenClaw channel"),
-        ChannelCatalogEntry(id: "webhooks", label: "Webhooks", detailLabel: "Inbound HTTP integrations", systemImage: "point.3.connected.trianglepath.dotted", origin: "OpenClaw webhook"),
+        ChannelCatalogEntry(id: "googlechat", label: "Google Chat", detailLabel: "Google Chat bot credentials", systemImage: "message.badge.fill", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "msteams", label: "Microsoft Teams", detailLabel: "Microsoft Teams bot credentials", systemImage: "person.3.fill", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "feishu", label: "Feishu", detailLabel: "Feishu bot app credentials", systemImage: "paperplane.circle.fill", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "wecom", label: "WeCom", detailLabel: "WeCom app credentials", systemImage: "building.2.fill", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "line", label: "LINE", detailLabel: "LINE channel token", systemImage: "bubble.left.fill", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "zalo", label: "Zalo", detailLabel: "Zalo app credentials", systemImage: "bubble.right.fill", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "nextcloud-talk", label: "Nextcloud Talk", detailLabel: "Nextcloud Talk bot config", systemImage: "cloud.fill", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "twitch", label: "Twitch", detailLabel: "Twitch chat token", systemImage: "play.tv.fill", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "nostr", label: "Nostr", detailLabel: "Nostr relay credentials", systemImage: "network", origin: "OpenClaw channel"),
         ChannelCatalogEntry(id: "irc", label: "IRC", detailLabel: "Server, nick, and channel config", systemImage: "terminal.fill", origin: "OpenClaw channel"),
-        ChannelCatalogEntry(id: "teams", label: "Microsoft Teams", detailLabel: "Not available in this OpenClaw build", systemImage: "person.3.fill", origin: "Not supported yet")
+        ChannelCatalogEntry(id: "qqbot", label: "QQ Bot", detailLabel: "QQ bot credentials", systemImage: "q.circle.fill", origin: "OpenClaw channel")
     ]
 
     private static func channelSortRank(_ id: String) -> Int {
         defaultChannelCatalog.firstIndex { $0.id == id } ?? (defaultChannelCatalog.count + 1)
+    }
+
+    private static func humanChannelLabel(_ id: String) -> String {
+        let special: [String: String] = [
+            "googlechat": "Google Chat",
+            "msteams": "Microsoft Teams",
+            "nextcloud-talk": "Nextcloud Talk",
+            "openclaw-weixin": "Weixin",
+            "qqbot": "QQ Bot",
+            "synology-chat": "Synology Chat"
+        ]
+        if let label = special[id] { return label }
+        return id
+            .replacingOccurrences(of: "-", with: " ")
+            .replacingOccurrences(of: "_", with: " ")
+            .capitalized
+    }
+
+    private static func channelDetailLabel(id: String, origin: String) -> String {
+        switch origin {
+        case "configured":
+            return "Configured in OpenClaw"
+        case "available":
+            return "Installed locally, ready to connect"
+        case "installable":
+            return "Available to install and connect"
+        default:
+            return origin.isEmpty ? "OpenClaw channel" : origin.capitalized
+        }
     }
 
     // Installation status tracking (using existing status variables)
@@ -2791,7 +2824,7 @@ final class InstallerViewModel: ObservableObject {
                     let item = chat[key] as? [String: Any] ?? [:]
                     let catalogItem = catalog[key]
                     let accounts = item["accounts"] as? [String] ?? []
-                    let installed = item["installed"] as? Bool ?? (catalogItem != nil)
+                    let installed = item["installed"] as? Bool ?? false
                     let origin = item["origin"] as? String ?? catalogItem?.origin ?? "OpenClaw channel"
                     let status = channelsStatus[key] as? [String: Any] ?? [:]
                     let configured = status["configured"] as? Bool ?? !accounts.isEmpty
@@ -2813,8 +2846,8 @@ final class InstallerViewModel: ObservableObject {
 
                     return ChannelInfo(
                         id: key,
-                        label: channelLabels[key] ?? catalogItem?.label ?? key.replacingOccurrences(of: "-", with: " ").capitalized,
-                        detailLabel: detailLabels[key] ?? catalogItem?.detailLabel ?? origin.capitalized,
+                        label: channelLabels[key] ?? catalogItem?.label ?? Self.humanChannelLabel(key),
+                        detailLabel: detailLabels[key] ?? catalogItem?.detailLabel ?? Self.channelDetailLabel(id: key, origin: origin),
                         systemImage: images[key] ?? catalogItem?.systemImage ?? "bubble.left.and.bubble.right",
                         installed: installed,
                         configured: configured,
@@ -2909,38 +2942,23 @@ final class InstallerViewModel: ObservableObject {
             echo ""
             "$OPENCLAW_BIN" channels login --channel whatsapp
             """
-        } else if channel == "github" {
-            setupFlow = """
-            echo "GitHub is exposed as an OpenClaw app/connector, not a chat channel."
-            echo "Opening the OpenClaw dashboard so you can connect or refresh GitHub auth."
-            echo ""
-            "$OPENCLAW_BIN" dashboard || "$OPENCLAW_BIN" configure
-            """
-        } else if channel == "gmail" {
-            setupFlow = """
-            echo "Gmail setup uses OpenClaw webhook helpers."
-            echo ""
-            echo "Running: $OPENCLAW_BIN webhooks gmail"
-            "$OPENCLAW_BIN" webhooks gmail
-            """
-        } else if channel == "webhooks" {
-            setupFlow = """
-            echo "Webhooks are configured through OpenClaw webhook helpers."
-            echo ""
-            "$OPENCLAW_BIN" webhooks --help
-            """
-        } else if channel == "teams" {
-            setupFlow = """
-            echo "Microsoft Teams is not exposed as a native OpenClaw channel in this installed build."
-            echo ""
-            echo "I checked the installed OpenClaw channel extensions and did not find a Teams connector."
-            echo "When OpenClaw adds one, this screen can enable it the same way as the others."
-            """
         } else {
             setupFlow = """
-            echo "Running: $OPENCLAW_BIN channels login --channel \(channel)"
+            echo "Opening guided setup for \(channel)."
+            echo "If this channel is not installed yet, OpenClaw will prepare the connector first."
             echo ""
-            "$OPENCLAW_BIN" channels login --channel \(channel)
+            echo "Running: $OPENCLAW_BIN channels add --channel \(channel)"
+            echo ""
+            "$OPENCLAW_BIN" channels add --channel \(channel)
+            ADD_EXIT=$?
+            echo ""
+            if [ "$ADD_EXIT" -eq 0 ]; then
+                echo "Checking whether this channel has a login flow..."
+                "$OPENCLAW_BIN" channels login --channel \(channel) || true
+            else
+                echo "[ERROR] Channel setup failed with exit code $ADD_EXIT."
+                exit "$ADD_EXIT"
+            fi
             """
         }
 
@@ -9988,7 +10006,6 @@ struct ContentView: View {
                     Label(channel.primaryActionLabel, systemImage: "plus")
                 }
                 .buttonStyle(CTAButton(primary: !channel.configured))
-                .disabled(channel.id == "teams")
 
                 Image(systemName: "trash")
                     .font(.system(size: 15, weight: .semibold))
