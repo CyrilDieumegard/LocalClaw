@@ -5534,18 +5534,47 @@ struct ContentView: View {
                     .foregroundStyle(vm.chatStatus == "Ready" ? Color(NSColor.systemGreen) : UI.accent)
             }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    developerMessage(role: "You", text: "Create a landing page for LocalClaw with model recommendations and a download CTA.", isUser: true)
-                    developerMessage(role: "OpenClaw", text: "I’ll create the page, run the preview, then iterate from your feedback. The preview updates on the right so you can judge layout, copy, and responsive behavior directly.", isUser: false)
-                    developerCodeBlock("Modified files\n• index.html\n• styles.css\n• scripts/app.js")
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if vm.chatMessages.isEmpty {
+                            developerEmptyState
+                        } else {
+                            ForEach(vm.chatMessages) { message in
+                                developerChatBubble(message)
+                                    .id(message.id)
+                            }
+                        }
+                        if vm.chatIsSending {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .scaleEffect(0.7)
+                                Text("OpenClaw is working...")
+                                    .font(AppFont.body(12))
+                                    .foregroundStyle(UI.muted)
+                            }
+                            .padding(.horizontal, 10)
+                        }
+                        Color.clear
+                            .frame(height: 10)
+                            .id("developer-chat-bottom")
+                    }
+                    .padding(12)
                 }
-                .padding(12)
+                .scrollIndicators(.hidden)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(RoundedRectangle(cornerRadius: 14).fill(UI.cardSoft))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(UI.lineSoft, lineWidth: 1))
+                .onChange(of: vm.chatMessages.count) { _ in
+                    scrollDeveloperChatToBottom(proxy)
+                }
+                .onChange(of: vm.chatIsSending) { _ in
+                    scrollDeveloperChatToBottom(proxy)
+                }
+                .onAppear {
+                    scrollDeveloperChatToBottom(proxy)
+                }
             }
-            .scrollIndicators(.hidden)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(RoundedRectangle(cornerRadius: 14).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(UI.lineSoft, lineWidth: 1))
 
             VStack(alignment: .leading, spacing: 10) {
                 TextField("Ask OpenClaw to build, fix, or improve the app...", text: $vm.chatInput, axis: .vertical)
@@ -5577,6 +5606,29 @@ struct ContentView: View {
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 16).fill(UI.cardSoft.opacity(0.65)))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private var developerEmptyState: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Start by describing what you want to build or change.")
+                .font(AppFont.bodySemi(13))
+                .foregroundStyle(UI.text)
+            Text("Messages sent here use the selected model and appear in this panel.")
+                .font(AppFont.body(12))
+                .foregroundStyle(UI.muted)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private func scrollDeveloperChatToBottom(_ proxy: ScrollViewProxy) {
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.22)) {
+                proxy.scrollTo("developer-chat-bottom", anchor: .bottom)
+            }
+        }
     }
 
     private var developerPreviewPanel: some View {
@@ -5685,6 +5737,52 @@ struct ContentView: View {
                 .background(RoundedRectangle(cornerRadius: 8).fill(active ? UI.card : Color.clear))
         }
         .buttonStyle(.plain)
+    }
+
+    private func developerChatBubble(_ message: InstallerViewModel.ChatMessage) -> some View {
+        let isUser = message.role == "user"
+        let isError = message.role == "error"
+        let senderName = isUser ? "You" : (isError ? "Error" : "OpenClaw")
+        let bubbleFill = isError ? Color(NSColor.systemRed).opacity(0.08) : (isUser ? UI.accent.opacity(0.15) : UI.card)
+        let bubbleStroke = isError ? Color(NSColor.systemRed).opacity(0.35) : (isUser ? UI.accent.opacity(0.28) : UI.lineSoft)
+        let modelName = message.modelName?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 7) {
+                Text(senderName)
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(isUser ? UI.accent : (isError ? Color(NSColor.systemRed) : UI.muted))
+                if !isUser, let modelName, !modelName.isEmpty {
+                    Text(modelName)
+                        .font(AppFont.bodySemi(10))
+                        .foregroundStyle(UI.muted)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer()
+                Button(action: { copyChatMessage(message.text) }) {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(UI.muted)
+                }
+                .buttonStyle(.plain)
+            }
+            Text(message.text)
+                .font(AppFont.body(13))
+                .foregroundStyle(UI.text)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            if let metadata = message.metadata, !metadata.isEmpty {
+                Text(metadata)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(2)
+            }
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(bubbleFill))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(bubbleStroke, lineWidth: 1))
     }
 
     private func developerMessage(role: String, text: String, isUser: Bool) -> some View {
