@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class InstallerViewModel: ObservableObject {
-    enum Screen { case license, onboarding, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, agents, cronJobs, healthCenter, usageCenter, chat, models, skills }
+    enum Screen { case license, onboarding, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, agents, cronJobs, healthCenter, usageCenter, chat, models, skills, developer }
     enum InstallMode: String {
         case llmOnly = "Install Local LLM only"
         case openClawOnly = "Install OpenClaw only"
@@ -4607,6 +4607,39 @@ struct HomeTile: View {
     }
 }
 
+struct SheetActionButton: ButtonStyle {
+    var primary: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(AppFont.bodySemi(14))
+            .foregroundStyle(primary ? .white : UI.text)
+            .lineLimit(1)
+            .frame(minWidth: primary ? 150 : 96, minHeight: 42)
+            .padding(.horizontal, 14)
+            .background(RoundedRectangle(cornerRadius: 10).fill(primary ? UI.accent : UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(primary ? UI.accent : UI.lineSoft, lineWidth: 1))
+            .opacity(configuration.isPressed ? 0.86 : 1)
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+    }
+}
+
+struct PresetPillButton: ButtonStyle {
+    var selected: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(AppFont.bodySemi(12))
+            .foregroundStyle(selected ? .white : UI.text)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, minHeight: 34)
+            .padding(.horizontal, 10)
+            .background(RoundedRectangle(cornerRadius: 9).fill(selected ? UI.accent : UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(selected ? UI.accent : UI.lineSoft, lineWidth: 1))
+            .opacity(configuration.isPressed ? 0.88 : 1)
+    }
+}
+
 struct ProgressSteps: View {
     let screen: InstallerViewModel.Screen
 
@@ -4630,6 +4663,7 @@ struct ProgressSteps: View {
         case .chat: return 0
         case .models: return 0
         case .skills: return 0
+        case .developer: return 0
         }
     }
 
@@ -4747,6 +4781,7 @@ struct ContentView: View {
                             case .chat: openClawChat
                             case .models: modelsCenter
                             case .skills: skillsCenter
+                            case .developer: developerCenter
                             }
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -4862,6 +4897,7 @@ struct ContentView: View {
             sidebarButton("Updates", icon: "arrow.clockwise", isActive: vm.screen == .updates) { vm.screen = .updates }
             sidebarButton("Control Center", icon: "slider.horizontal.3", isActive: vm.screen == .commandCenter) { vm.screen = .commandCenter }
             sidebarButton("OpenClaw Chat", icon: "message.badge.waveform", isActive: vm.screen == .chat) { vm.screen = .chat }
+            sidebarButton("Developer", icon: "curlybraces.square", isActive: vm.screen == .developer) { vm.screen = .developer }
             sidebarButton("Models", icon: "cpu", isActive: vm.screen == .models) { vm.screen = .models }
             sidebarButton("Skills", icon: "wand.and.stars", isActive: vm.screen == .skills) { vm.screen = .skills }
             sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup) { vm.screen = .channelSetup }
@@ -5356,6 +5392,228 @@ struct ContentView: View {
                 .background(RoundedRectangle(cornerRadius: 9).fill(UI.card))
         }
         .buttonStyle(.plain)
+    }
+
+    var developerCenter: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "curlybraces.square.fill")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(UI.accent)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Developer")
+                        .font(AppFont.heading(28))
+                        .foregroundStyle(UI.text)
+                    Text("Build with OpenClaw: chat-driven coding on the left, live app preview and project context on the right.")
+                        .font(AppFont.body(13))
+                        .foregroundStyle(UI.muted)
+                }
+                Spacer()
+                developerToolbarButton("New app", icon: "plus.square.on.square")
+                developerToolbarButton("Open folder", icon: "folder")
+                developerToolbarButton("Run preview", icon: "play.fill", primary: true)
+            }
+
+            HStack(alignment: .top, spacing: 14) {
+                developerChatPanel
+                    .frame(minWidth: 360, idealWidth: 430, maxWidth: 500)
+                developerPreviewPanel
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
+        .shadow(color: Color.black.opacity(0.06), radius: 6, x: 0, y: 2)
+    }
+
+    private var developerChatPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("AI Developer")
+                        .font(AppFont.bodySemi(15))
+                        .foregroundStyle(UI.text)
+                    Text(vm.openClawChatModelLabel)
+                        .font(AppFont.body(11))
+                        .foregroundStyle(UI.muted)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Label(vm.openClawChatStatus, systemImage: vm.chatStatus == "Ready" ? "checkmark.circle.fill" : "circle.fill")
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(vm.chatStatus == "Ready" ? Color(NSColor.systemGreen) : UI.accent)
+            }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    developerMessage(role: "You", text: "Create a landing page for LocalClaw with model recommendations and a download CTA.", isUser: true)
+                    developerMessage(role: "OpenClaw", text: "I’ll create the page, run the preview, then iterate from your feedback. The preview updates on the right so you can judge layout, copy, and responsive behavior directly.", isUser: false)
+                    developerCodeBlock("Modified files\n• index.html\n• styles.css\n• scripts/app.js")
+                }
+                .padding(12)
+            }
+            .scrollIndicators(.hidden)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(RoundedRectangle(cornerRadius: 14).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(UI.lineSoft, lineWidth: 1))
+
+            VStack(alignment: .leading, spacing: 10) {
+                TextField("Ask OpenClaw to build, fix, or improve the app...", text: .constant(""), axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(AppFont.body(14))
+                    .lineLimit(2...5)
+                HStack(spacing: 10) {
+                    developerIconButton("paperclip")
+                    developerIconButton("terminal")
+                    developerIconButton("photo")
+                    Spacer()
+                    Button(action: {}) {
+                        Label("Send", systemImage: "arrow.up")
+                    }
+                    .buttonStyle(SheetActionButton(primary: true))
+                }
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 16).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(UI.lineSoft, lineWidth: 1))
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 16).fill(UI.cardSoft.opacity(0.65)))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private var developerPreviewPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                developerTab("Preview", icon: "eye.fill", active: true)
+                developerTab("Files", icon: "doc.text")
+                developerTab("Database", icon: "cylinder.split.1x2")
+                developerTab("Deploy", icon: "icloud.and.arrow.up")
+                developerTab("Logs", icon: "terminal")
+                Spacer()
+                developerIconButton("arrow.clockwise")
+                developerIconButton("rectangle.on.rectangle")
+                developerIconButton("arrow.up.right.square")
+            }
+            .padding(10)
+            .background(UI.cardSoft)
+
+            HStack(spacing: 8) {
+                Text("localhost:5173")
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(1)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+                developerToolbarButton("Desktop", icon: "desktopcomputer")
+                developerToolbarButton("Mobile", icon: "iphone")
+            }
+            .padding(10)
+            .background(UI.card)
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 0)
+                    .fill(Color.black)
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack {
+                        Label("LOCALCLAW", systemImage: "app.fill")
+                            .font(AppFont.heading(20))
+                            .foregroundStyle(.white)
+                        Spacer()
+                        Text("LIVE PREVIEW")
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundStyle(UI.accent)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(UI.accent, lineWidth: 1))
+                    }
+
+                    Spacer()
+
+                    Text("Build visually with OpenClaw")
+                        .font(AppFont.heading(46))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                    Text("Prompt changes, inspect files, run previews, and deploy from one local workspace.")
+                        .font(AppFont.body(15))
+                        .foregroundStyle(Color.white.opacity(0.68))
+                        .frame(maxWidth: 520, alignment: .leading)
+
+                    HStack(spacing: 10) {
+                        Label("index.html", systemImage: "doc.text")
+                        Label("Preview running", systemImage: "checkmark.circle.fill")
+                        Label("3 files changed", systemImage: "square.and.pencil")
+                    }
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(Color.white.opacity(0.75))
+
+                    Spacer()
+                }
+                .padding(32)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 0))
+        }
+        .background(RoundedRectangle(cornerRadius: 16).fill(UI.card))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private func developerToolbarButton(_ title: String, icon: String, primary: Bool = false) -> some View {
+        Button(action: {}) {
+            Label(title, systemImage: icon)
+        }
+        .buttonStyle(CompactChatButton(primary: primary))
+    }
+
+    private func developerIconButton(_ icon: String) -> some View {
+        Button(action: {}) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(UI.muted)
+                .frame(width: 30, height: 30)
+                .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func developerTab(_ title: String, icon: String, active: Bool = false) -> some View {
+        Label(title, systemImage: icon)
+            .font(AppFont.bodySemi(12))
+            .foregroundStyle(active ? UI.accent : UI.text)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 8).fill(active ? UI.card : Color.clear))
+    }
+
+    private func developerMessage(role: String, text: String, isUser: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(role)
+                .font(AppFont.bodySemi(11))
+                .foregroundStyle(isUser ? UI.accent : UI.muted)
+            Text(text)
+                .font(AppFont.body(13))
+                .foregroundStyle(UI.text)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(isUser ? UI.accent.opacity(0.10) : UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(isUser ? UI.accent.opacity(0.25) : UI.lineSoft, lineWidth: 1))
+    }
+
+    private func developerCodeBlock(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12, design: .monospaced))
+            .foregroundStyle(UI.text)
+            .padding(11)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.30)))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     var openClawChat: some View {
@@ -6776,7 +7034,7 @@ struct ContentView: View {
                     vm.showCronJobCreator = false
                     vm.resetCronJobCreator()
                 }
-                .buttonStyle(CTAButton(primary: false))
+                .buttonStyle(SheetActionButton(primary: false))
             }
 
             VStack(alignment: .leading, spacing: 12) {
@@ -6838,13 +7096,13 @@ struct ContentView: View {
                             .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
                     }
 
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], spacing: 8) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], spacing: 8) {
                         ForEach(schedulePresets, id: \.label) { preset in
                             Button(preset.label) {
                                 vm.cronCreateScheduleKind = preset.kind
                                 vm.cronCreateScheduleValue = preset.value
                             }
-                            .buttonStyle(CTAButton(primary: false))
+                            .buttonStyle(PresetPillButton(selected: vm.cronCreateScheduleKind == preset.kind && vm.cronCreateScheduleValue == preset.value))
                         }
                     }
                 }
@@ -6882,12 +7140,12 @@ struct ContentView: View {
                 Button(vm.cronCreateIsRunning ? "Creating..." : "Create Job") {
                     vm.createCronJobFromForm()
                 }
-                .buttonStyle(CTAButton(primary: true))
+                .buttonStyle(SheetActionButton(primary: true))
                 .disabled(vm.cronCreateIsRunning)
             }
         }
         .padding(22)
-        .frame(width: 620)
+        .frame(width: 680)
         .background(UI.bg)
     }
 
