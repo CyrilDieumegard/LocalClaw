@@ -255,6 +255,7 @@ final class InstallerViewModel: ObservableObject {
         }
 
         var connectionLabel: String {
+            if id == "teams" { return "Not supported yet" }
             if connected { return "Connected" }
             if running { return "Active" }
             if configured { return "Configured" }
@@ -263,6 +264,7 @@ final class InstallerViewModel: ObservableObject {
         }
 
         var connectionTint: Color {
+            if id == "teams" { return Color(NSColor.systemOrange) }
             if connected || running { return Color(NSColor.systemGreen) }
             if configured { return Color(NSColor.systemBlue) }
             if installed { return UI.accent }
@@ -274,7 +276,8 @@ final class InstallerViewModel: ObservableObject {
         }
 
         var primaryActionLabel: String {
-            configured ? "Add Account" : "Connect"
+            if id == "teams" { return "Not available" }
+            return configured ? "Add Account" : "Connect"
         }
     }
 
@@ -639,7 +642,13 @@ final class InstallerViewModel: ObservableObject {
         ChannelCatalogEntry(id: "slack", label: "Slack", detailLabel: "Workspace bot/app token", systemImage: "number", origin: "OpenClaw channel"),
         ChannelCatalogEntry(id: "mattermost", label: "Mattermost", detailLabel: "Server URL and bot token", systemImage: "bubble.left.and.bubble.right.fill", origin: "OpenClaw channel"),
         ChannelCatalogEntry(id: "matrix", label: "Matrix", detailLabel: "Homeserver and access token", systemImage: "square.grid.3x3.fill", origin: "OpenClaw channel"),
-        ChannelCatalogEntry(id: "email", label: "Email", detailLabel: "IMAP/SMTP or provider app password", systemImage: "envelope.fill", origin: "OpenClaw channel")
+        ChannelCatalogEntry(id: "imessage", label: "iMessage", detailLabel: "macOS Messages bridge", systemImage: "message.fill", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "github", label: "GitHub", detailLabel: "GitHub app / token connection", systemImage: "chevron.left.forwardslash.chevron.right", origin: "OpenClaw connector"),
+        ChannelCatalogEntry(id: "gmail", label: "Gmail", detailLabel: "Gmail Pub/Sub webhook", systemImage: "envelope.badge.fill", origin: "OpenClaw webhook"),
+        ChannelCatalogEntry(id: "email", label: "Email", detailLabel: "IMAP/SMTP or provider app password", systemImage: "envelope.fill", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "webhooks", label: "Webhooks", detailLabel: "Inbound HTTP integrations", systemImage: "point.3.connected.trianglepath.dotted", origin: "OpenClaw webhook"),
+        ChannelCatalogEntry(id: "irc", label: "IRC", detailLabel: "Server, nick, and channel config", systemImage: "terminal.fill", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "teams", label: "Microsoft Teams", detailLabel: "Not available in this OpenClaw build", systemImage: "person.3.fill", origin: "Not supported yet")
     ]
 
     private static func channelSortRank(_ id: String) -> Int {
@@ -2312,6 +2321,33 @@ final class InstallerViewModel: ObservableObject {
             echo "Running: $OPENCLAW_BIN channels login --channel whatsapp"
             echo ""
             "$OPENCLAW_BIN" channels login --channel whatsapp
+            """
+        } else if channel == "github" {
+            setupFlow = """
+            echo "GitHub is exposed as an OpenClaw app/connector, not a chat channel."
+            echo "Opening the OpenClaw dashboard so you can connect or refresh GitHub auth."
+            echo ""
+            "$OPENCLAW_BIN" dashboard || "$OPENCLAW_BIN" configure
+            """
+        } else if channel == "gmail" {
+            setupFlow = """
+            echo "Gmail setup uses OpenClaw webhook helpers."
+            echo ""
+            echo "Running: $OPENCLAW_BIN webhooks gmail"
+            "$OPENCLAW_BIN" webhooks gmail
+            """
+        } else if channel == "webhooks" {
+            setupFlow = """
+            echo "Webhooks are configured through OpenClaw webhook helpers."
+            echo ""
+            "$OPENCLAW_BIN" webhooks --help
+            """
+        } else if channel == "teams" {
+            setupFlow = """
+            echo "Microsoft Teams is not exposed as a native OpenClaw channel in this installed build."
+            echo ""
+            echo "I checked the installed OpenClaw channel extensions and did not find a Teams connector."
+            echo "When OpenClaw adds one, this screen can enable it the same way as the others."
             """
         } else {
             setupFlow = """
@@ -6605,6 +6641,7 @@ struct ContentView: View {
                     Label(channel.primaryActionLabel, systemImage: "plus")
                 }
                 .buttonStyle(CTAButton(primary: !channel.configured))
+                .disabled(channel.id == "teams")
 
                 Image(systemName: "trash")
                     .font(.system(size: 15, weight: .semibold))
