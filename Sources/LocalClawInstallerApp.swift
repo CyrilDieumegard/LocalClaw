@@ -5788,41 +5788,45 @@ struct ContentView: View {
     }
 
     var install: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Step 3: Installing")
-                .font(AppFont.heading(30)).foregroundStyle(UI.text)
-            ProgressView(value: vm.progress).tint(UI.accent)
-            statusRow("Homebrew", vm.statusHomebrew)
-            statusRow("LM Studio", vm.statusLMStudio)
-            statusRow("Model", vm.statusModel)
-            statusRow("Node", vm.statusNode)
-            statusRow("OpenClaw", vm.statusOpenClaw)
-            statusRow("OpenClaw Check", vm.statusOpenClawCheck)
-            ScrollView {
-                Text(vm.logs).font(.system(size: 12, design: .monospaced)).foregroundStyle(UI.muted)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .scrollIndicators(.hidden)
-            .frame(height: 180)
+        ZStack {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Step 3: Installing")
+                    .font(AppFont.heading(30)).foregroundStyle(UI.text)
+                ProgressView(value: vm.progress).tint(UI.accent)
+                statusRow("Homebrew", vm.statusHomebrew)
+                statusRow("LM Studio", vm.statusLMStudio)
+                statusRow("Model", vm.statusModel)
+                statusRow("Node", vm.statusNode)
+                statusRow("OpenClaw", vm.statusOpenClaw)
+                statusRow("OpenClaw Check", vm.statusOpenClawCheck)
+                ScrollView {
+                    Text(vm.logs).font(.system(size: 12, design: .monospaced)).foregroundStyle(UI.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .scrollIndicators(.hidden)
+                .frame(height: 180)
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Downloading: \(vm.currentDownloadFile.isEmpty ? "Waiting..." : vm.currentDownloadFile)")
-                    .font(AppFont.bodySemi(13))
-                    .foregroundStyle(UI.text)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                ProgressView(value: vm.downloadProgress, total: 1.0)
-                    .tint(UI.accent)
-                Text("\(Int(vm.downloadProgress * 100))%")
-                    .font(AppFont.body(12))
-                    .foregroundStyle(UI.muted)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Downloading: \(vm.currentDownloadFile.isEmpty ? "Waiting..." : vm.currentDownloadFile)")
+                        .font(AppFont.bodySemi(13))
+                        .foregroundStyle(UI.text)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    ProgressView(value: vm.downloadProgress, total: 1.0)
+                        .tint(UI.accent)
+                    Text("\(Int(vm.downloadProgress * 100))%")
+                        .font(AppFont.body(12))
+                        .foregroundStyle(UI.muted)
+                }
+                .padding(.top, 4)
             }
-            .padding(.top, 4)
+            .padding(18)
+            .frame(width: 600)
+            .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
+            .shadow(color: Color.black.opacity(0.25), radius: 12, x: 0, y: 8)
         }
-        .padding(18)
-        .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
-        .shadow(color: Color.black.opacity(0.25), radius: 12, x: 0, y: 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
     var ready: some View {
