@@ -908,14 +908,14 @@ struct AdvancedCommandCenterView: View {
                         Text("Back")
                             .font(AppFont.bodySemi(12))
                     }
-                    .foregroundStyle(UI.text)
+                    .foregroundStyle(UI.accent)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
-                    .background(UI.card)
+                    .background(UI.accent.opacity(0.10))
                     .cornerRadius(6)
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
-                            .stroke(UI.lineSoft, lineWidth: 1)
+                            .stroke(UI.accent.opacity(0.35), lineWidth: 1)
                     )
                 }
                 .buttonStyle(.plain)

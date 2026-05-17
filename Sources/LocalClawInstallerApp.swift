@@ -4726,15 +4726,15 @@ struct CTAButton: ButtonStyle {
         configuration.label
             .font(AppFont.heading(15))
             .kerning(0.6)
-            .foregroundStyle(primary ? .white : UI.text)
+            .foregroundStyle(primary ? .white : UI.accent)
             .padding(.vertical, 14)
             .padding(.horizontal, 26)
             .background(
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(primary ? UI.accent : UI.cardSoft)
+                    .fill(primary ? UI.accent : UI.accent.opacity(0.10))
             )
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(primary ? UI.accent : Color.black.opacity(0.12), lineWidth: 1))
-            .shadow(color: Color.black.opacity(primary ? 0.10 : 0.06), radius: 4, x: 0, y: 2)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(primary ? UI.accent : UI.accent.opacity(0.35), lineWidth: 1))
+            .shadow(color: primary ? UI.accent.opacity(0.18) : Color.clear, radius: 5, x: 0, y: 2)
             .scaleEffect(configuration.isPressed ? 0.985 : 1)
             .opacity(configuration.isPressed ? 0.94 : 1)
     }
