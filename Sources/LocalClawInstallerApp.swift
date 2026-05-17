@@ -563,6 +563,7 @@ final class InstallerViewModel: ObservableObject {
     private var chatStopRequested = false
     @Published var localLMStudioModels: [String] = []
     @Published var selectedLocalLMStudioModel: String = ""
+    @Published var activeLocalLMStudioModel: String = ""
     @Published var localLMStudioSetupStatus = ""
     @Published var localLMStudioSetupLog = ""
     @Published var localLMStudioSetupInProgress = false
@@ -1097,8 +1098,12 @@ final class InstallerViewModel: ObservableObject {
         modelsApplyStatus = "Applying \(targetModel)..."
         Task.detached {
             let result = InstallerEngine().changeModel(targetModel)
+            let activeLocal = InstallerEngine().loadedLMStudioModelInfo()?.model
             await MainActor.run {
                 self.currentModel = targetModel
+                if self.inferenceMode == .local {
+                    self.activeLocalLMStudioModel = activeLocal ?? self.selectedLocalLMStudioModel
+                }
                 self.modelsApplyStatus = "[\(result.state.rawValue)] \(result.message)"
                 self.modelsApplyInProgress = false
             }
@@ -3120,6 +3125,13 @@ final class InstallerViewModel: ObservableObject {
     }
 
     var openClawChatModelLabel: String {
+        if inferenceMode == .local {
+            let activeLocal = activeLocalLMStudioModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !activeLocal.isEmpty {
+                return activeLocal
+            }
+        }
+
         let current = currentModel.trimmingCharacters(in: .whitespacesAndNewlines)
         if !current.isEmpty && current != "Unknown" && !current.lowercased().hasPrefix("error:") {
             return current
@@ -3147,6 +3159,7 @@ final class InstallerViewModel: ObservableObject {
                 self.currentModel = model
                 self.cloudProviderAuthConfigured = authConfigured
                 self.localLMStudioModels = models
+                self.activeLocalLMStudioModel = loaded ?? ""
                 if self.selectedLocalLMStudioModel.isEmpty {
                     if let loaded, models.contains(loaded) {
                         self.selectedLocalLMStudioModel = loaded
@@ -3164,9 +3177,11 @@ final class InstallerViewModel: ObservableObject {
 
     func refreshLocalLMStudioModels() {
         let models = engine.listLMStudioLLMModelIds()
+        let loaded = engine.loadedLMStudioModelInfo()?.model
         localLMStudioModels = models
+        activeLocalLMStudioModel = loaded ?? ""
         if selectedLocalLMStudioModel.isEmpty {
-            if let loaded = engine.loadedLMStudioModelInfo()?.model, models.contains(loaded) {
+            if let loaded, models.contains(loaded) {
                 selectedLocalLMStudioModel = loaded
             } else if currentModel.hasPrefix("lmstudio/") {
                 let configured = String(currentModel.dropFirst("lmstudio/".count))
@@ -3202,6 +3217,7 @@ final class InstallerViewModel: ObservableObject {
                 self.chatStatus = result.state == .ok ? "Ready" : "Needs setup"
                 if result.state == .ok {
                     self.currentModel = "lmstudio/\(modelId)"
+                    self.activeLocalLMStudioModel = modelId
                     self.appendChatSystemMessageOnce("Local model ready: \(result.message.replacingOccurrences(of: "LM Studio ready with ", with: "")). You can chat now.")
                 } else {
                     self.appendChatSystemMessageOnce("I couldn’t auto-setup LM Studio yet: \(result.message)")
@@ -6658,6 +6674,7 @@ struct ContentView: View {
             modelConfigRow(title: "Running model", subtitle: vm.openClawChatModelLabel, icon: "cpu", status: vm.openClawChatStatus)
             modelConfigRow(title: "Selected cloud", subtitle: vm.selectedOpenRouterModel.isEmpty ? "None selected" : vm.selectedOpenRouterModel, icon: "cloud.fill", status: vm.cloudProviderAuthConfigured ? "Ready" : "Needs auth")
             modelConfigRow(title: "Selected local", subtitle: vm.selectedLocalLMStudioModel.isEmpty ? "None selected" : vm.selectedLocalLMStudioModel, icon: "desktopcomputer", status: vm.localLMStudioModels.isEmpty ? "Scan needed" : "Ready")
+            modelConfigRow(title: "Loaded in LM Studio", subtitle: vm.activeLocalLMStudioModel.isEmpty ? "No model currently loaded" : vm.activeLocalLMStudioModel, icon: "memorychip", status: vm.activeLocalLMStudioModel.isEmpty ? "Not running" : "Active")
             Text("Changes are applied only when you click Apply selected model.")
                 .font(AppFont.body(11))
                 .foregroundStyle(UI.muted)
