@@ -59,6 +59,17 @@ final class InstallerViewModel: ObservableObject {
                 updatedAt: Date()
             )
         }
+
+        static func developerFresh() -> ChatSession {
+            ChatSession(
+                id: "localclaw-developer-chat-\(UUID().uuidString)",
+                title: "Developer workspace",
+                subtitle: "AI Developer",
+                projectID: nil,
+                messages: [],
+                updatedAt: Date()
+            )
+        }
     }
 
     struct ChatProject: Identifiable, Codable {
@@ -623,6 +634,9 @@ final class InstallerViewModel: ObservableObject {
     @Published var chatIsSending = false
     @Published var chatStatus = "Ready"
     @Published var selectedChatModel = ""
+    @Published var selectedDeveloperChatSessionID = "" {
+        didSet { UserDefaults.standard.set(selectedDeveloperChatSessionID, forKey: "localclaw.developer.selectedSession.v1") }
+    }
     @Published var developerProjectPath = NSHomeDirectory() + "/.openclaw/workspace"
     @Published var developerPreviewURL = "http://localhost:5173"
     private var chatGatewayPrepared = false
@@ -3152,6 +3166,45 @@ final class InstallerViewModel: ObservableObject {
         chatSessions[index].updatedAt = Date()
     }
 
+    var activeDeveloperChatSessionID: String {
+        if !selectedDeveloperChatSessionID.isEmpty, chatSessions.contains(where: { $0.id == selectedDeveloperChatSessionID }) {
+            return selectedDeveloperChatSessionID
+        }
+        return chatSessions.first(where: { $0.id.hasPrefix("localclaw-developer-chat-") })?.id ?? ""
+    }
+
+    var developerChatMessages: [ChatMessage] {
+        get {
+            guard let session = chatSessions.first(where: { $0.id == activeDeveloperChatSessionID }) else { return [] }
+            return session.messages
+        }
+        set {
+            ensureDeveloperChatSession()
+            let id = activeDeveloperChatSessionID
+            guard let index = chatSessions.firstIndex(where: { $0.id == id }) else { return }
+            chatSessions[index].messages = newValue
+            chatSessions[index].updatedAt = Date()
+        }
+    }
+
+    func ensureDeveloperChatSession() {
+        if !activeDeveloperChatSessionID.isEmpty {
+            if selectedDeveloperChatSessionID.isEmpty { selectedDeveloperChatSessionID = activeDeveloperChatSessionID }
+            return
+        }
+        let session = ChatSession.developerFresh()
+        chatSessions.insert(session, at: 0)
+        selectedDeveloperChatSessionID = session.id
+    }
+
+    func updateDeveloperChatSession(_ mutate: (inout ChatSession) -> Void) {
+        ensureDeveloperChatSession()
+        let id = activeDeveloperChatSessionID
+        guard let index = chatSessions.firstIndex(where: { $0.id == id }) else { return }
+        mutate(&chatSessions[index])
+        chatSessions[index].updatedAt = Date()
+    }
+
     func newChatSession() {
         var session = ChatSession.fresh()
         session.title = "Discussion \(chatSessions.count + 1)"
@@ -3279,6 +3332,15 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func sendChatMessage() {
+        sendChatMessage(sessionID: activeChatSessionID, useDeveloperSession: false)
+    }
+
+    func sendDeveloperChatMessage() {
+        ensureDeveloperChatSession()
+        sendChatMessage(sessionID: activeDeveloperChatSessionID, useDeveloperSession: true)
+    }
+
+    private func sendChatMessage(sessionID: String, useDeveloperSession: Bool) {
         let text = chatInput.trimmingCharacters(in: .whitespacesAndNewlines)
         let imagePath = chatImagePath.trimmingCharacters(in: .whitespacesAndNewlines)
         if (text.isEmpty && imagePath.isEmpty) || chatIsSending { return }
@@ -3300,11 +3362,20 @@ final class InstallerViewModel: ObservableObject {
         }
         agentTextParts.append(imagePath.isEmpty ? text : "\(userText)\n\n[Attached image: \(imagePath)]")
         let agentText = agentTextParts.joined(separator: "\n\n")
-        chatMessages.append(ChatMessage(role: "user", text: userText, imagePath: imagePath.isEmpty ? nil : imagePath))
-        renameSelectedChatSession(from: userText)
+        if useDeveloperSession {
+            developerChatMessages.append(ChatMessage(role: "user", text: userText, imagePath: imagePath.isEmpty ? nil : imagePath))
+            updateDeveloperChatSession { session in
+                if session.title == "Developer workspace" {
+                    let compact = userText.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                    session.title = String(compact.prefix(34)) + (compact.count > 34 ? "…" : "")
+                }
+            }
+        } else {
+            chatMessages.append(ChatMessage(role: "user", text: userText, imagePath: imagePath.isEmpty ? nil : imagePath))
+            renameSelectedChatSession(from: userText)
+        }
         chatIsSending = true
         chatStatus = "Thinking..."
-        let sessionID = activeChatSessionID
         let shouldPrepareGateway = !chatGatewayPrepared
         chatGatewayPrepared = true
         let modelOverride = selectedChatModel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3317,13 +3388,17 @@ final class InstallerViewModel: ObservableObject {
             if shouldPrepareGateway {
                 _ = engine.shell("openclaw gateway status >/dev/null 2>&1 || openclaw gateway start >/dev/null 2>&1 || true")
             }
+            if !modelOverride.isEmpty {
+                _ = engine.changeModel(modelOverride)
+            }
 
             let tempMessagePath = NSTemporaryDirectory() + "localclaw-chat-message-\(UUID().uuidString).txt"
             do {
                 try agentText.write(toFile: tempMessagePath, atomically: true, encoding: .utf8)
             } catch {
                 await MainActor.run {
-                    self.chatMessages.append(ChatMessage(role: "error", text: "I couldn’t prepare the message for OpenClaw: \(error.localizedDescription)"))
+                    let errorMessage = ChatMessage(role: "error", text: "I couldn’t prepare the message for OpenClaw: \(error.localizedDescription)")
+                    if useDeveloperSession { self.developerChatMessages.append(errorMessage) } else { self.chatMessages.append(errorMessage) }
                     self.chatStatus = "Error"
                     self.chatIsSending = false
                 }
@@ -3331,8 +3406,7 @@ final class InstallerViewModel: ObservableObject {
             }
             defer { try? FileManager.default.removeItem(atPath: tempMessagePath) }
 
-            let modelArg = modelOverride.isEmpty ? "" : " --model \(quote(modelOverride))"
-            let command = "MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(sessionID)) --message \"$(cat \"$MESSAGE_FILE\")\"\(modelArg) --json --timeout 180 2>&1"
+            let command = "MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(sessionID)) --message \"$(cat \"$MESSAGE_FILE\")\" --json --timeout 180 2>&1"
             let startedAt = Date()
             var result = Self.shellCancellable(command) { process in
                 Task { @MainActor in
@@ -3376,10 +3450,12 @@ final class InstallerViewModel: ObservableObject {
                     self.currentModel = runtimeModel
                 }
                 if repairedPlugin && result.0 == 0 {
-                    self.chatMessages.append(ChatMessage(role: "assistant", text: "I found and disabled an outdated global WhatsApp plugin that was blocking OpenClaw, then retried automatically.", modelName: responseModel))
+                    let repairMessage = ChatMessage(role: "assistant", text: "I found and disabled an outdated global WhatsApp plugin that was blocking OpenClaw, then retried automatically.", modelName: responseModel)
+                    if useDeveloperSession { self.developerChatMessages.append(repairMessage) } else { self.chatMessages.append(repairMessage) }
                 }
                 let role = (result.0 == 0 || knownDiagnostic != nil) ? "assistant" : "error"
-                self.chatMessages.append(ChatMessage(role: role, text: reply, metadata: metrics, modelName: role == "assistant" ? responseModel : nil))
+                let responseMessage = ChatMessage(role: role, text: reply, metadata: metrics, modelName: role == "assistant" ? responseModel : nil)
+                if useDeveloperSession { self.developerChatMessages.append(responseMessage) } else { self.chatMessages.append(responseMessage) }
                 if result.0 == 0 {
                     self.recordModelUsage(model: runtimeModel ?? self.currentModel, input: usage.input, output: usage.output, total: usage.total)
                 }
@@ -3434,6 +3510,7 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func prepareDeveloperWorkspace() {
+        ensureDeveloperChatSession()
         refreshOpenClawChatInfo()
         refreshLocalLMStudioModels()
         refreshOpenRouterModels()
@@ -3441,7 +3518,9 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func developerNewApp() {
-        newChatProject()
+        let session = ChatSession.developerFresh()
+        chatSessions.insert(session, at: 0)
+        selectedDeveloperChatSessionID = session.id
         chatInput = "Create a new web app in \(developerProjectPath). Set up a minimal runnable project, then tell me how to preview it locally."
         screen = .developer
     }
@@ -5537,10 +5616,10 @@ struct ContentView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
-                        if vm.chatMessages.isEmpty {
+                        if vm.developerChatMessages.isEmpty {
                             developerEmptyState
                         } else {
-                            ForEach(vm.chatMessages) { message in
+                            ForEach(vm.developerChatMessages) { message in
                                 developerChatBubble(message)
                                     .id(message.id)
                             }
@@ -5565,7 +5644,7 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(RoundedRectangle(cornerRadius: 14).fill(UI.cardSoft))
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(UI.lineSoft, lineWidth: 1))
-                .onChange(of: vm.chatMessages.count) { _ in
+                .onChange(of: vm.developerChatMessages.count) { _ in
                     scrollDeveloperChatToBottom(proxy)
                 }
                 .onChange(of: vm.chatIsSending) { _ in
@@ -5581,7 +5660,7 @@ struct ContentView: View {
                     .textFieldStyle(.plain)
                     .font(AppFont.body(14))
                     .lineLimit(2...5)
-                    .onSubmit { vm.sendChatMessage() }
+                    .onSubmit { vm.sendDeveloperChatMessage() }
                 HStack(spacing: 10) {
                     developerIconButton("paperclip") { vm.attachChatImage() }
                     developerIconButton("terminal") { vm.chatInput = "Run the project checks for \(vm.developerProjectPath) and summarize failures with fixes." }
@@ -5592,7 +5671,7 @@ struct ContentView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer()
-                    Button(action: { vm.chatIsSending ? vm.stopChatGeneration() : vm.sendChatMessage() }) {
+                    Button(action: { vm.chatIsSending ? vm.stopChatGeneration() : vm.sendDeveloperChatMessage() }) {
                         Label(vm.chatIsSending ? "Stop" : "Send", systemImage: vm.chatIsSending ? "stop.fill" : "arrow.up")
                     }
                     .buttonStyle(SheetActionButton(primary: true))
