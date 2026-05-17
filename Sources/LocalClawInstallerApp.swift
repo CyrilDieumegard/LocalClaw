@@ -662,6 +662,13 @@ final class InstallerViewModel: ObservableObject {
     @Published var cronJobsStatus: String = "Not loaded"
     @Published var cronJobsIsLoading = false
     @Published var cronJobLogs: String = ""
+    @Published var showCronJobCreator = false
+    @Published var cronCreateName = ""
+    @Published var cronCreateScheduleKind = "every"
+    @Published var cronCreateScheduleValue = "30m"
+    @Published var cronCreateMessage = ""
+    @Published var cronCreateIsRunning = false
+    @Published var cronCreateError = ""
     @Published var healthLogs: String = ""
     @Published var healthStatus: String = "Unknown"
     @Published var usageLogs: String = ""
@@ -1073,7 +1080,6 @@ final class InstallerViewModel: ObservableObject {
     // MARK: - Control Center
 
     func refreshControlCenter() {
-        hasMachineUsageSnapshot = true
         let status = engine.getGatewayStatus()
         gatewayIsRunning = status.isRunning
         currentModel = engine.getCurrentModel()
@@ -2375,50 +2381,63 @@ final class InstallerViewModel: ObservableObject {
         return "\(seconds)s"
     }
 
-    func openTerminalCronCreate() {
-        let script = """
-        #!/bin/zsh
-        clear
-        export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
-        OPENCLAW_BIN="$(command -v openclaw 2>/dev/null || true)"
+    func resetCronJobCreator() {
+        cronCreateName = ""
+        cronCreateScheduleKind = "every"
+        cronCreateScheduleValue = "30m"
+        cronCreateMessage = ""
+        cronCreateError = ""
+    }
 
-        echo "=========================================="
-        echo "  LocalClaw Cron Job Setup"
-        echo "=========================================="
-        echo ""
+    func createCronJobFromForm() {
+        let name = cronCreateName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let scheduleValue = cronCreateScheduleValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = cronCreateMessage.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if [ -z "$OPENCLAW_BIN" ]; then
-            echo "[ERROR] openclaw command not found in PATH"
-        else
-            read -r "NAME?Job name: "
-            read -r "SCHEDULE?Schedule, examples: every 30m / cron 0 9 * * * / at +1h: "
-            read -r "MESSAGE?Agent message to run: "
+        guard !name.isEmpty, !scheduleValue.isEmpty, !message.isEmpty else {
+            cronCreateError = "Name, schedule and message are required."
+            return
+        }
 
-            if [ -z "$NAME" ] || [ -z "$SCHEDULE" ] || [ -z "$MESSAGE" ]; then
-                echo "[ERROR] Name, schedule and message are required."
-            else
-                ARGS=(cron add --name "$NAME" --message "$MESSAGE" --session isolated --json)
-                case "$SCHEDULE" in
-                    every\\ *) ARGS+=(--every "${SCHEDULE#every }") ;;
-                    cron\\ *) ARGS+=(--cron "${SCHEDULE#cron }") ;;
-                    at\\ *) ARGS+=(--at "${SCHEDULE#at }") ;;
-                    *) ARGS+=(--every "$SCHEDULE") ;;
-                esac
+        cronCreateIsRunning = true
+        cronCreateError = ""
+        cronJobLogs = cronJobLogs.isEmpty ? "Creating cron job \(name)..." : cronJobLogs + "\nCreating cron job \(name)..."
 
-                echo "Running: $OPENCLAW_BIN cron add ..."
-                "$OPENCLAW_BIN" "${ARGS[@]}"
-            fi
-        fi
+        let scheduleFlag: String
+        switch cronCreateScheduleKind {
+        case "cron": scheduleFlag = "--cron"
+        case "at": scheduleFlag = "--at"
+        default: scheduleFlag = "--every"
+        }
 
-        echo ""
-        read -r "REPLY?Press Enter to close..."
-        """
+        let command = [
+            "openclaw --no-color cron add",
+            "--name \(Self.shellSingleQuote(name))",
+            "--message \(Self.shellSingleQuote(message))",
+            "--session isolated",
+            "\(scheduleFlag) \(Self.shellSingleQuote(scheduleValue))",
+            "--json",
+            "2>&1"
+        ].joined(separator: " ")
 
-        let path = "/tmp/localclaw_cron_create.sh"
-        try? script.write(toFile: path, atomically: true, encoding: .utf8)
-        _ = engine.shell("chmod +x \(path)")
-        _ = engine.shell("open -a Terminal \(path)")
-        cronJobLogs = cronJobLogs.isEmpty ? "Started cron creation in Terminal" : cronJobLogs + "\nStarted cron creation in Terminal"
+        Task.detached {
+            let engine = InstallerEngine()
+            let result = engine.shell(command)
+            await MainActor.run {
+                self.cronCreateIsRunning = false
+                let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
+                if result.0 == 0 {
+                    self.showCronJobCreator = false
+                    self.resetCronJobCreator()
+                    self.cronJobLogs += "\nCreated cron job \(name)."
+                    if !output.isEmpty { self.cronJobLogs += "\n\(output)" }
+                    self.refreshCronJobs()
+                } else {
+                    self.cronCreateError = output.isEmpty ? "Cron job creation failed." : output
+                    self.cronJobLogs += "\nFailed to create cron job \(name): \(self.cronCreateError)"
+                }
+            }
+        }
     }
 
     func openTerminalCronRemove(_ jobID: String) {
@@ -4734,6 +4753,9 @@ struct ContentView: View {
                minHeight: 760, idealHeight: 920, maxHeight: .infinity)
         .preferredColorScheme(appearance == "light" ? .light : .dark)
         .onAppear { vm.bootstrap() }
+        .sheet(isPresented: $vm.showCronJobCreator) {
+            cronJobCreatorSheet
+        }
         .alert("Homebrew Required", isPresented: $vm.showHomebrewPrompt) {
             Button("Install Homebrew", role: .none) { vm.installHomebrewWithUserConsent() }
             Button("Cancel", role: .cancel) { }
@@ -6635,7 +6657,7 @@ struct ContentView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
-                Button("New Job") { vm.openTerminalCronCreate() }
+                Button("New Job") { vm.showCronJobCreator = true }
                     .buttonStyle(CTAButton(primary: true))
                 Button("Refresh") { vm.refreshCronJobs() }
                     .buttonStyle(CTAButton(primary: false))
@@ -6725,6 +6747,126 @@ struct ContentView: View {
         .frame(maxWidth: .infinity)
         .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private var cronJobCreatorSheet: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("New Cron Job")
+                        .font(AppFont.heading(24))
+                        .foregroundStyle(UI.text)
+                    Text("Create a scheduled OpenClaw task without opening Terminal.")
+                        .font(AppFont.body(13))
+                        .foregroundStyle(UI.muted)
+                }
+                Spacer()
+                Button("Cancel") {
+                    vm.showCronJobCreator = false
+                    vm.resetCronJobCreator()
+                }
+                .buttonStyle(CTAButton(primary: false))
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                cronFormField("Job name", text: $vm.cronCreateName, prompt: "Daily inbox check")
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Schedule")
+                        .font(AppFont.bodySemi(12))
+                        .foregroundStyle(UI.muted)
+                    HStack(spacing: 8) {
+                        Picker("", selection: $vm.cronCreateScheduleKind) {
+                            Text("Every").tag("every")
+                            Text("Cron").tag("cron")
+                            Text("At").tag("at")
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 230)
+
+                        TextField(schedulePrompt, text: $vm.cronCreateScheduleValue)
+                            .textFieldStyle(.plain)
+                            .font(AppFont.body(13))
+                            .foregroundStyle(UI.text)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 9)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Agent message")
+                        .font(AppFont.bodySemi(12))
+                        .foregroundStyle(UI.muted)
+                    TextEditor(text: $vm.cronCreateMessage)
+                        .font(AppFont.body(13))
+                        .foregroundStyle(UI.text)
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                        .frame(height: 130)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+                }
+
+                if !vm.cronCreateError.isEmpty {
+                    Text(vm.cronCreateError)
+                        .font(AppFont.body(12))
+                        .foregroundStyle(Color(NSColor.systemRed))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color(NSColor.systemRed).opacity(0.10)))
+                }
+            }
+
+            HStack {
+                Text(scheduleHelp)
+                    .font(AppFont.body(12))
+                    .foregroundStyle(UI.muted)
+                Spacer()
+                Button(vm.cronCreateIsRunning ? "Creating..." : "Create Job") {
+                    vm.createCronJobFromForm()
+                }
+                .buttonStyle(CTAButton(primary: true))
+                .disabled(vm.cronCreateIsRunning)
+            }
+        }
+        .padding(22)
+        .frame(width: 620)
+        .background(UI.bg)
+    }
+
+    private var schedulePrompt: String {
+        switch vm.cronCreateScheduleKind {
+        case "cron": return "0 9 * * *"
+        case "at": return "+1h or 2026-05-17T12:00:00+02:00"
+        default: return "30m, 2h, 1d"
+        }
+    }
+
+    private var scheduleHelp: String {
+        switch vm.cronCreateScheduleKind {
+        case "cron": return "Cron uses classic syntax, for example 0 9 * * *."
+        case "at": return "Use a relative time like +1h or an ISO date."
+        default: return "Use intervals like 30m, 2h, or 1d."
+        }
+    }
+
+    private func cronFormField(_ label: String, text: Binding<String>, prompt: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(AppFont.bodySemi(12))
+                .foregroundStyle(UI.muted)
+            TextField(prompt, text: text)
+                .textFieldStyle(.plain)
+                .font(AppFont.body(13))
+                .foregroundStyle(UI.text)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 9)
+                .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+        }
     }
 
     private func cronJobRow(_ job: InstallerViewModel.CronJobInfo) -> some View {
