@@ -109,6 +109,17 @@ struct InstallerEngineTests {
         #expect(InstallerViewModel.runtimeSessionID(base: base, modelID: "openai/gpt-5.5", useDeveloperSession: false) == base)
     }
 
+    @Test func developerRuntimeSessionIDCanUseFreshTurnScope() {
+        let base = "localclaw-developer-chat-abc"
+
+        let first = InstallerViewModel.runtimeSessionID(base: base, modelID: "openai/gpt-5.5", useDeveloperSession: true, freshDeveloperTurnID: "turn-a")
+        let second = InstallerViewModel.runtimeSessionID(base: base, modelID: "openai/gpt-5.5", useDeveloperSession: true, freshDeveloperTurnID: "turn-b")
+
+        #expect(first != second)
+        #expect(first.contains("-turn-turn-a"))
+        #expect(second.contains("-turn-turn-b"))
+    }
+
     @MainActor
     @Test func chatModelListShowsOnlyLocalModelsInLocalMode() {
         let vm = InstallerViewModel()

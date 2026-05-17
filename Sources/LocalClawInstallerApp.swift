@@ -687,6 +687,9 @@ final class InstallerViewModel: ObservableObject {
     @Published var developerPreviewRefreshID = UUID()
     @Published var developerPreviewDevice = "desktop"
     @Published var developerActiveTab = "preview"
+    @Published var developerFreshContextEnabled = true {
+        didSet { UserDefaults.standard.set(developerFreshContextEnabled, forKey: Self.developerFreshContextDefaultsKey) }
+    }
     private var developerPreviewProcess: Process?
     private var chatGatewayPrepared = false
     private var activeChatProcess: Process?
@@ -758,6 +761,7 @@ final class InstallerViewModel: ObservableObject {
     private static let chatMemoryEnabledDefaultsKey = "localclaw.chat.memoryEnabled.v1"
     private static let chatSavedNotesDefaultsKey = "localclaw.chat.savedNotes.v1"
     private static let developerProjectNameDefaultsKey = "localclaw.developer.projectName.v1"
+    private static let developerFreshContextDefaultsKey = "localclaw.developer.freshContext.v1"
     private static let modelUsageDefaultsKey = "localclaw.modelUsage.records.v1"
 
     init() {
@@ -771,6 +775,9 @@ final class InstallerViewModel: ObservableObject {
         if let savedProjectName = UserDefaults.standard.string(forKey: Self.developerProjectNameDefaultsKey),
            !savedProjectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             developerProjectName = savedProjectName
+        }
+        if UserDefaults.standard.object(forKey: Self.developerFreshContextDefaultsKey) != nil {
+            developerFreshContextEnabled = UserDefaults.standard.bool(forKey: Self.developerFreshContextDefaultsKey)
         }
         restoreChatSessions()
         restoreChatSavedNotes()
@@ -3454,6 +3461,19 @@ final class InstallerViewModel: ObservableObject {
         return Array(notes.suffix(6))
     }
 
+    var developerMemoryPreview: [String] {
+        let recent = developerChatMessages
+            .filter { $0.role == "user" || $0.role == "assistant" }
+            .suffix(4)
+            .map { message in
+                let cleaned = message.text
+                    .replacingOccurrences(of: "\n", with: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return "\(message.role == "user" ? "User" : "OpenClaw"): \(String(cleaned.prefix(140)))"
+            }
+        return Array(recent)
+    }
+
     func chatModeInstruction() -> String {
         switch selectedChatResponseMode {
         case .fast:
@@ -3585,7 +3605,7 @@ final class InstallerViewModel: ObservableObject {
         [/LocalClaw chat mode]
         """)
         if chatMemoryEnabled {
-            let memory = chatMemoryPreview.joined(separator: "\n")
+            let memory = (useDeveloperSession ? developerMemoryPreview : chatMemoryPreview).joined(separator: "\n")
             if !memory.isEmpty {
                 agentTextParts.append("""
                 [LocalClaw visible memory]
@@ -3640,6 +3660,7 @@ final class InstallerViewModel: ObservableObject {
             localModels: localLMStudioModels
         ))
         let developerWorkdir = developerProjectPath
+        let useFreshDeveloperContext = useDeveloperSession && developerFreshContextEnabled
 
         Task.detached {
             let quote: (String) -> String = { value in
@@ -3668,7 +3689,12 @@ final class InstallerViewModel: ObservableObject {
             defer { try? FileManager.default.removeItem(atPath: tempMessagePath) }
 
             let workdirPrefix = useDeveloperSession ? "cd \(quote(developerWorkdir)) || exit 1; " : ""
-            let runtimeSessionID = Self.runtimeSessionID(base: sessionID, modelID: modelOverride, useDeveloperSession: useDeveloperSession)
+            let runtimeSessionID = Self.runtimeSessionID(
+                base: sessionID,
+                modelID: modelOverride,
+                useDeveloperSession: useDeveloperSession,
+                freshDeveloperTurnID: useFreshDeveloperContext ? String(requestID.uuidString.prefix(8)) : nil
+            )
             let modelFlag = modelOverride.isEmpty ? "" : " --model \(quote(modelOverride))"
             let command = "\(workdirPrefix)MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(runtimeSessionID)) --message \"$(cat \"$MESSAGE_FILE\")\"\(modelFlag) --json --timeout 180 2>&1"
             let fallbackCommand = "\(workdirPrefix)MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(runtimeSessionID)) --message \"$(cat \"$MESSAGE_FILE\")\" --json --timeout 180 2>&1"
@@ -3854,7 +3880,7 @@ final class InstallerViewModel: ObservableObject {
         id.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    nonisolated static func runtimeSessionID(base: String, modelID: String, useDeveloperSession: Bool) -> String {
+    nonisolated static func runtimeSessionID(base: String, modelID: String, useDeveloperSession: Bool, freshDeveloperTurnID: String? = nil) -> String {
         guard useDeveloperSession else { return base }
         let cleanModel = modelID
             .lowercased()
@@ -3862,7 +3888,9 @@ final class InstallerViewModel: ObservableObject {
                 character.isLetter || character.isNumber ? character : "-"
             }
         let suffix = String(String(cleanModel).split(separator: "-").joined(separator: "-").prefix(72))
-        return suffix.isEmpty ? base : "\(base)-\(suffix)"
+        let modelScoped = suffix.isEmpty ? base : "\(base)-\(suffix)"
+        guard let freshDeveloperTurnID, !freshDeveloperTurnID.isEmpty else { return modelScoped }
+        return "\(modelScoped)-turn-\(freshDeveloperTurnID)"
     }
 
     func prepareDeveloperWorkspace() {
@@ -6580,6 +6608,11 @@ struct ContentView: View {
                     }
                 }
                 Spacer()
+                Toggle("Fast context", isOn: $vm.developerFreshContextEnabled)
+                    .toggleStyle(.switch)
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(UI.muted)
+                    .help("Use a fresh OpenClaw runtime session for each AI Developer request. This keeps replies fast by avoiding old transcript bloat.")
                 Label(vm.openClawChatStatus, systemImage: vm.chatStatus == "Ready" ? "checkmark.circle.fill" : "circle.fill")
                     .font(AppFont.bodySemi(11))
                     .foregroundStyle(vm.chatStatus == "Ready" ? Color(NSColor.systemGreen) : UI.accent)
@@ -6642,6 +6675,14 @@ struct ContentView: View {
                         .foregroundStyle(UI.muted)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                    if vm.developerFreshContextEnabled {
+                        Text("Fresh context")
+                            .font(AppFont.bodySemi(10))
+                            .foregroundStyle(Color(NSColor.systemGreen))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 4)
+                            .background(Capsule().fill(Color(NSColor.systemGreen).opacity(0.12)))
+                    }
                     Spacer()
                     Button(action: { vm.chatIsSending ? vm.stopChatGeneration() : vm.sendDeveloperChatMessage() }) {
                         Label(vm.chatIsSending ? "Stop" : "Send", systemImage: vm.chatIsSending ? "stop.fill" : "arrow.up")
