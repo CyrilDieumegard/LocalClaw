@@ -3378,7 +3378,11 @@ final class InstallerViewModel: ObservableObject {
         chatStatus = "Thinking..."
         let shouldPrepareGateway = !chatGatewayPrepared
         chatGatewayPrepared = true
-        let modelOverride = selectedChatModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let modelOverride = Self.normalizedChatModelID(
+            selectedChatModel.trimmingCharacters(in: .whitespacesAndNewlines),
+            inferenceMode: inferenceMode,
+            localModels: localLMStudioModels
+        )
 
         Task.detached {
             let quote: (String) -> String = { value in
@@ -3481,7 +3485,8 @@ final class InstallerViewModel: ObservableObject {
         var models: [OpenRouterModel] = []
         let current = openClawChatModelLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         if !current.isEmpty && !current.lowercased().contains("not configured") {
-            models.append(OpenRouterModel(id: current, displayName: Self.readableModelName(current)))
+            let currentID = Self.normalizedChatModelID(current, inferenceMode: inferenceMode, localModels: localLMStudioModels)
+            models.append(OpenRouterModel(id: currentID, displayName: Self.readableModelName(currentID)))
         }
         for local in localLMStudioModels {
             models.append(OpenRouterModel(id: "lmstudio/\(local)", displayName: "Local · \(local)"))
@@ -3507,6 +3512,15 @@ final class InstallerViewModel: ObservableObject {
             .replacingOccurrences(of: "-", with: " ")
             .replacingOccurrences(of: "_", with: " ")
             .capitalized
+    }
+
+    nonisolated static func normalizedChatModelID(_ id: String, inferenceMode: InferenceMode, localModels: [String]) -> String {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        if trimmed.hasPrefix("lmstudio/") || trimmed.hasPrefix("openrouter/") { return trimmed }
+        if inferenceMode == .local { return "lmstudio/\(trimmed)" }
+        if localModels.contains(trimmed) { return "lmstudio/\(trimmed)" }
+        return trimmed
     }
 
     func prepareDeveloperWorkspace() {
