@@ -820,8 +820,9 @@ struct AdvancedCommandCenterView: View {
     }
 
     enum WorkspaceTab: String, CaseIterable, Identifiable {
+        case overview = "Overview"
+        case models = "Models"
         case operations = "Operations"
-        case monitoring = "Monitoring"
         var id: String { rawValue }
     }
 
@@ -829,7 +830,7 @@ struct AdvancedCommandCenterView: View {
     @State private var leftPanelWidth: CGFloat = 320
     @State private var showSettings = false
     @State private var rightTab: RightTab = .resources
-    @State private var workspaceTab: WorkspaceTab = .operations
+    @State private var workspaceTab: WorkspaceTab = .overview
     
     var body: some View {
         VStack(spacing: 10) {
@@ -841,18 +842,23 @@ struct AdvancedCommandCenterView: View {
                 }
                 .pickerStyle(.segmented)
                 .tint(UI.accent)
-                .frame(width: 260)
+                .frame(width: 330)
 
                 Spacer()
             }
             .padding(.horizontal, 8)
 
-            if workspaceTab == .operations {
-                leftPanel
+            if workspaceTab == .overview {
+                overviewPanel
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(UI.card)
+            } else if workspaceTab == .models {
+                modelsPanel
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(UI.card)
             } else {
-                rightPanel
+                leftPanel
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .background(UI.card)
             }
         }
@@ -866,24 +872,43 @@ struct AdvancedCommandCenterView: View {
     
     // MARK: - Left Panel
     
+    private var overviewPanel: some View {
+        ScrollView {
+            VStack(spacing: 20) {
+                headerSection
+                healthSection
+                primaryWorkflowSection
+                systemInfoSection
+                Spacer(minLength: 20)
+            }
+            .padding(16)
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    private var modelsPanel: some View {
+        ScrollView {
+            VStack(spacing: 20) {
+                headerSection
+                modelSection
+                monitoringShortcutSection
+                Spacer(minLength: 20)
+            }
+            .padding(16)
+        }
+        .scrollIndicators(.hidden)
+    }
+
     private var leftPanel: some View {
         ScrollView {
             VStack(spacing: 20) {
-                // Header
                 headerSection
-
-                // Status Card
-                statusSection
-
-                // Quick Actions
                 actionsSection
-
-                // Local/Cloud switch + model
-                modelSection
-
-                // System Info
-                systemInfoSection
-
+                logsShortcutSection
+                rightPanel
+                    .frame(minHeight: 420)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
                 Spacer(minLength: 20)
             }
             .padding(16)
@@ -908,24 +933,127 @@ struct AdvancedCommandCenterView: View {
                         Text("Back")
                             .font(AppFont.bodySemi(12))
                     }
-                    .foregroundStyle(UI.accent)
+                    .foregroundStyle(UI.text)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
-                    .background(UI.accent.opacity(0.10))
+                    .background(UI.card)
                     .cornerRadius(6)
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
-                            .stroke(UI.accent.opacity(0.35), lineWidth: 1)
+                            .stroke(UI.lineSoft, lineWidth: 1)
                     )
                 }
                 .buttonStyle(.plain)
             }
             
-            Text("Control and real-time monitoring")
+            Text("System health, model mode, and recovery tools")
                 .font(AppFont.body(12))
                 .foregroundStyle(UI.muted)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var healthSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("SYSTEM HEALTH")
+                    .font(AppFont.heading(10))
+                    .kerning(0.6)
+                    .foregroundStyle(UI.accent)
+                Spacer()
+                Text(viewModel.gatewayStatus == .online ? "Ready" : "Needs check")
+                    .font(AppFont.bodySemi(10))
+                    .foregroundStyle(viewModel.gatewayStatus == .online ? .green : .orange)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 999).fill(UI.card))
+            }
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                healthTile("Gateway", value: viewModel.gatewayStatus.rawValue, icon: viewModel.gatewayStatus.icon, color: viewModel.gatewayStatus.color)
+                healthTile("LLM mode", value: viewModel.inferenceModeSelection.rawValue, icon: "switch.2", color: UI.accent)
+                healthTile("Monitor", value: viewModel.isMonitoring ? "Active" : "Off", icon: viewModel.isMonitoring ? "waveform" : "waveform.slash", color: viewModel.isMonitoring ? .green : UI.muted)
+                healthTile("Model", value: viewModel.inferenceModeSelection == .local ? "LM Studio" : shortModelName(viewModel.selectedModel), icon: "brain.head.profile", color: .blue)
+                healthTile("OpenClaw", value: viewModel.systemInfo.openclawVersion, icon: "terminal", color: .green)
+                healthTile("Port", value: viewModel.systemInfo.gatewayPort, icon: "network", color: .purple)
+            }
+        }
+        .padding(12)
+        .background(UI.cardSoft)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+        .cornerRadius(10)
+    }
+
+    private var primaryWorkflowSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("NEXT ACTIONS")
+                .font(AppFont.heading(10))
+                .kerning(0.6)
+                .foregroundStyle(UI.accent)
+
+            HStack(spacing: 10) {
+                compactActionButton("Start", icon: "play.fill", color: .green) { viewModel.startGateway() }
+                compactActionButton("Switch model", icon: "brain.head.profile", color: UI.accent) { workspaceTab = .models }
+                compactActionButton("Test dashboard", icon: "globe", color: .blue) { viewModel.openDashboard() }
+                compactActionButton("Fix issues", icon: "wrench.and.screwdriver.fill", color: .orange) { workspaceTab = .operations }
+            }
+
+            Text("Use this screen for the normal workflow. Technical recovery tools are under Operations.")
+                .font(AppFont.body(11))
+                .foregroundStyle(UI.muted)
+        }
+        .padding(12)
+        .background(UI.cardSoft)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+        .cornerRadius(10)
+    }
+
+    private var monitoringShortcutSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("MONITORING")
+                .font(AppFont.heading(10))
+                .kerning(0.6)
+                .foregroundStyle(UI.accent)
+
+            Text("Live CPU, memory, swap, and heavy process checks stay off by default.")
+                .font(AppFont.body(12))
+                .foregroundStyle(UI.muted)
+
+            HStack(spacing: 8) {
+                Button(viewModel.isMonitoring ? "Stop Monitoring" : "Start Monitoring") {
+                    viewModel.isMonitoring ? viewModel.stopMonitoring() : viewModel.startMonitoring()
+                }
+                .buttonStyle(CTAButton(primary: true))
+                Button("View Resources") { workspaceTab = .operations; rightTab = .resources }
+                    .buttonStyle(CTAButton(primary: false))
+            }
+        }
+        .padding(12)
+        .background(UI.cardSoft)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+        .cornerRadius(10)
+    }
+
+    private var logsShortcutSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("OBSERVABILITY")
+                .font(AppFont.heading(10))
+                .kerning(0.6)
+                .foregroundStyle(UI.accent)
+
+            HStack(spacing: 8) {
+                Button("Open Logs") { rightTab = .logs; viewModel.addLog(.info, "Logs opened from Operations.") }
+                    .buttonStyle(CTAButton(primary: false))
+                Button("Start Monitoring") { viewModel.startMonitoring(); rightTab = .resources }
+                    .buttonStyle(CTAButton(primary: false))
+                Button("Copy Report") { viewModel.copyResourceReportToClipboard() }
+                    .buttonStyle(CTAButton(primary: false))
+            }
+        }
+        .padding(12)
+        .background(UI.cardSoft)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+        .cornerRadius(10)
     }
     
     private var statusSection: some View {
@@ -1078,6 +1206,34 @@ struct AdvancedCommandCenterView: View {
             )
         }
         .buttonStyle(.plain)
+    }
+
+    private func healthTile(_ title: String, value: String, icon: String, color: Color) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(AppFont.body(10))
+                    .foregroundStyle(UI.muted)
+                Text(value)
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(UI.text)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .frame(minHeight: 58)
+        .background(RoundedRectangle(cornerRadius: 9).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private func shortModelName(_ model: String) -> String {
+        model.split(separator: "/").last.map(String.init) ?? model
     }
 
     private var modelSection: some View {
