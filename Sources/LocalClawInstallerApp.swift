@@ -22,6 +22,31 @@ final class InstallerViewModel: ObservableObject {
         var id: String { rawValue }
     }
 
+    enum ChatResponseMode: String, CaseIterable, Identifiable {
+        case fast = "Fast"
+        case deep = "Deep"
+        case local = "Local"
+        case cloud = "Cloud"
+
+        var id: String { rawValue }
+        var icon: String {
+            switch self {
+            case .fast: return "bolt.fill"
+            case .deep: return "brain.head.profile"
+            case .local: return "desktopcomputer"
+            case .cloud: return "cloud.fill"
+            }
+        }
+        var detail: String {
+            switch self {
+            case .fast: return "Shorter, quicker answers"
+            case .deep: return "More careful reasoning"
+            case .local: return "Prefer LM Studio"
+            case .cloud: return "Prefer configured cloud model"
+            }
+        }
+    }
+
     struct ChatMessage: Identifiable, Codable {
         let id: UUID
         let role: String
@@ -635,6 +660,15 @@ final class InstallerViewModel: ObservableObject {
     @Published var chatIsSending = false
     @Published var chatStatus = "Ready"
     @Published var selectedChatModel = ""
+    @Published var selectedChatResponseMode: ChatResponseMode = .cloud {
+        didSet { UserDefaults.standard.set(selectedChatResponseMode.rawValue, forKey: Self.selectedChatResponseModeDefaultsKey) }
+    }
+    @Published var chatMemoryEnabled = true {
+        didSet { UserDefaults.standard.set(chatMemoryEnabled, forKey: Self.chatMemoryEnabledDefaultsKey) }
+    }
+    @Published var chatSavedNotes: [String] = [] {
+        didSet { persistChatSavedNotes() }
+    }
     @Published var selectedDeveloperChatSessionID = "" {
         didSet { UserDefaults.standard.set(selectedDeveloperChatSessionID, forKey: "localclaw.developer.selectedSession.v1") }
     }
@@ -708,10 +742,21 @@ final class InstallerViewModel: ObservableObject {
     private static let chatSessionsDefaultsKey = "localclaw.chat.sessions.v1"
     private static let chatProjectsDefaultsKey = "localclaw.chat.projects.v1"
     private static let selectedChatSessionDefaultsKey = "localclaw.chat.selectedSession.v1"
+    private static let selectedChatResponseModeDefaultsKey = "localclaw.chat.responseMode.v1"
+    private static let chatMemoryEnabledDefaultsKey = "localclaw.chat.memoryEnabled.v1"
+    private static let chatSavedNotesDefaultsKey = "localclaw.chat.savedNotes.v1"
     private static let modelUsageDefaultsKey = "localclaw.modelUsage.records.v1"
 
     init() {
+        if let savedMode = UserDefaults.standard.string(forKey: Self.selectedChatResponseModeDefaultsKey),
+           let mode = ChatResponseMode(rawValue: savedMode) {
+            selectedChatResponseMode = mode
+        }
+        if UserDefaults.standard.object(forKey: Self.chatMemoryEnabledDefaultsKey) != nil {
+            chatMemoryEnabled = UserDefaults.standard.bool(forKey: Self.chatMemoryEnabledDefaultsKey)
+        }
         restoreChatSessions()
+        restoreChatSavedNotes()
         restoreModelUsageRecords()
         channels = Self.defaultChannelCatalog.map { entry in
             ChannelInfo(
@@ -3168,6 +3213,17 @@ final class InstallerViewModel: ObservableObject {
         UserDefaults.standard.set(data, forKey: Self.chatProjectsDefaultsKey)
     }
 
+    func restoreChatSavedNotes() {
+        guard let data = UserDefaults.standard.data(forKey: Self.chatSavedNotesDefaultsKey),
+              let decoded = try? JSONDecoder().decode([String].self, from: data) else { return }
+        chatSavedNotes = decoded
+    }
+
+    func persistChatSavedNotes() {
+        guard let data = try? JSONEncoder().encode(chatSavedNotes) else { return }
+        UserDefaults.standard.set(data, forKey: Self.chatSavedNotesDefaultsKey)
+    }
+
     func restoreModelUsageRecords() {
         guard let data = UserDefaults.standard.data(forKey: Self.modelUsageDefaultsKey),
               let decoded = try? JSONDecoder().decode([ModelUsageRecord].self, from: data) else { return }
@@ -3345,6 +3401,77 @@ final class InstallerViewModel: ObservableObject {
         return lines.joined(separator: "\n")
     }
 
+    var chatMemoryPreview: [String] {
+        var notes = chatSavedNotes
+        if let session = selectedChatSession {
+            let recent = session.messages
+                .filter { $0.role == "user" || $0.role == "assistant" }
+                .suffix(4)
+                .map { message in
+                    let cleaned = message.text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                    return "\(message.role == "user" ? "You" : "OpenClaw"): \(String(cleaned.prefix(110)))"
+                }
+            notes.append(contentsOf: recent)
+        }
+        return Array(notes.suffix(6))
+    }
+
+    func chatModeInstruction() -> String {
+        switch selectedChatResponseMode {
+        case .fast:
+            return "Reply in Fast mode: be concise, prioritize direct next actions, avoid long explanations unless necessary."
+        case .deep:
+            return "Reply in Deep mode: reason carefully, surface tradeoffs, and verify assumptions before giving a final recommendation."
+        case .local:
+            return "Reply in Local mode: prefer local/offline-safe guidance and avoid recommending cloud-only steps unless needed."
+        case .cloud:
+            return "Reply in Cloud mode: use the configured cloud model and optimize for answer quality."
+        }
+    }
+
+    func retryChatMessage(_ message: ChatMessage) {
+        guard !chatIsSending else { return }
+        if message.role == "assistant" || message.role == "error" {
+            chatMessages.removeAll { $0.id == message.id }
+            guard let lastUser = chatMessages.last(where: { $0.role == "user" }) else { return }
+            chatInput = lastUser.text
+            chatImagePath = lastUser.imagePath ?? ""
+            chatMessages.removeAll { $0.id == lastUser.id }
+            sendChatMessage()
+        } else {
+            chatInput = message.text
+            chatImagePath = message.imagePath ?? ""
+        }
+    }
+
+    func editChatMessage(_ message: ChatMessage) {
+        guard !chatIsSending else { return }
+        chatInput = message.text
+        chatImagePath = message.imagePath ?? ""
+    }
+
+    func saveChatMessageAsNote(_ message: ChatMessage) {
+        let cleaned = message.text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return }
+        let note = String(cleaned.prefix(220))
+        if !chatSavedNotes.contains(note) {
+            chatSavedNotes.append(note)
+        }
+        appendChatSystemMessageOnce("Saved to chat memory.")
+    }
+
+    func forgetChatMemory() {
+        chatSavedNotes.removeAll()
+        appendChatSystemMessageOnce("Chat memory notes cleared.")
+    }
+
+    func sendChatMessageToChannel(_ message: ChatMessage) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(message.text, forType: .string)
+        screen = .channelSetup
+        appendChatSystemMessageOnce("Message copied. Pick a connected channel to send it.")
+    }
+
     func selectChatSession(_ session: ChatSession) {
         selectedChatSessionID = session.id
         chatInput = ""
@@ -3401,6 +3528,21 @@ final class InstallerViewModel: ObservableObject {
             [/LocalClaw project context]
             """)
         }
+        agentTextParts.append("""
+        [LocalClaw chat mode]
+        \(chatModeInstruction())
+        [/LocalClaw chat mode]
+        """)
+        if chatMemoryEnabled {
+            let memory = chatMemoryPreview.joined(separator: "\n")
+            if !memory.isEmpty {
+                agentTextParts.append("""
+                [LocalClaw visible memory]
+                \(memory)
+                [/LocalClaw visible memory]
+                """)
+            }
+        }
         agentTextParts.append(imagePath.isEmpty ? text : "\(userText)\n\n[Attached image: \(imagePath)]")
         let agentText = agentTextParts.joined(separator: "\n\n")
         if useDeveloperSession {
@@ -3419,9 +3561,18 @@ final class InstallerViewModel: ObservableObject {
         chatStatus = "Thinking..."
         let shouldPrepareGateway = !chatGatewayPrepared
         chatGatewayPrepared = true
+        var selectedModelForRequest = selectedChatModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if selectedChatResponseMode == .fast, inferenceMode == .cloud {
+            selectedModelForRequest = "openrouter/openai/gpt-5.4-mini"
+        } else if selectedChatResponseMode == .deep, inferenceMode == .cloud {
+            selectedModelForRequest = "openrouter/openai/gpt-5.4"
+        } else if selectedChatResponseMode == .local, let firstLocal = localLMStudioModels.first, !firstLocal.isEmpty {
+            selectedModelForRequest = firstLocal
+        }
+        let requestInferenceMode: InferenceMode = selectedChatResponseMode == .local ? .local : (selectedChatResponseMode == .cloud ? .cloud : inferenceMode)
         let modelOverride = Self.normalizedChatModelID(
-            selectedChatModel.trimmingCharacters(in: .whitespacesAndNewlines),
-            inferenceMode: inferenceMode,
+            selectedModelForRequest,
+            inferenceMode: requestInferenceMode,
             localModels: localLMStudioModels
         )
 
@@ -6510,6 +6661,8 @@ struct ContentView: View {
                 }
             }
 
+            chatControlStrip
+
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
@@ -6612,6 +6765,8 @@ struct ContentView: View {
                         scrollChatToBottom(proxy)
                     }
                 }
+
+                chatMemoryPanel
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -6631,6 +6786,94 @@ struct ContentView: View {
                 proxy.scrollTo("chat-bottom-anchor", anchor: .bottom)
             }
         }
+    }
+
+    var chatControlStrip: some View {
+        HStack(spacing: 10) {
+            ForEach(InstallerViewModel.ChatResponseMode.allCases) { mode in
+                Button {
+                    vm.selectedChatResponseMode = mode
+                } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Label(mode.rawValue, systemImage: mode.icon)
+                            .font(AppFont.bodySemi(11))
+                            .lineLimit(1)
+                        Text(mode.detail)
+                            .font(AppFont.body(10))
+                            .foregroundStyle(vm.selectedChatResponseMode == mode ? Color.white.opacity(0.72) : UI.muted)
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(vm.selectedChatResponseMode == mode ? Color.white : UI.text)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .frame(width: 132, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(vm.selectedChatResponseMode == mode ? UI.accent : UI.cardSoft))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(vm.selectedChatResponseMode == mode ? UI.accent.opacity(0.4) : UI.lineSoft, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .disabled(vm.chatIsSending)
+            }
+
+            Spacer(minLength: 12)
+
+            Toggle(isOn: $vm.chatMemoryEnabled) {
+                Label(vm.chatMemoryEnabled ? "Memory on" : "Memory off", systemImage: vm.chatMemoryEnabled ? "checkmark.circle.fill" : "circle")
+                    .font(AppFont.bodySemi(11))
+            }
+            .toggleStyle(.switch)
+            .foregroundStyle(UI.text)
+            .disabled(vm.chatIsSending)
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 14).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    var chatMemoryPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 7) {
+                Label("Memory", systemImage: "memorychip")
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(UI.text)
+                Spacer()
+                Button("Forget") { vm.forgetChatMemory() }
+                    .buttonStyle(CompactChatButton(primary: false))
+                    .disabled(vm.chatSavedNotes.isEmpty)
+            }
+
+            Text(vm.chatMemoryEnabled ? "Visible context used for this chat." : "Memory is paused for new messages.")
+                .font(AppFont.body(10))
+                .foregroundStyle(UI.muted)
+                .lineLimit(2)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    if vm.chatMemoryPreview.isEmpty {
+                        Text("No saved notes yet.")
+                            .font(AppFont.body(11))
+                            .foregroundStyle(UI.muted)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        ForEach(Array(vm.chatMemoryPreview.enumerated()), id: \.offset) { _, note in
+                            Text(note)
+                                .font(AppFont.body(11))
+                                .foregroundStyle(UI.text)
+                                .lineLimit(4)
+                                .padding(8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(RoundedRectangle(cornerRadius: 9).fill(UI.card))
+                                .overlay(RoundedRectangle(cornerRadius: 9).stroke(UI.lineSoft, lineWidth: 1))
+                        }
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+        }
+        .padding(12)
+        .frame(width: 250)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(RoundedRectangle(cornerRadius: 16).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     var chatComposer: some View {
@@ -6937,6 +7180,26 @@ struct ContentView: View {
                     .help("Copy message")
                     .background(Circle().fill(UI.cardSoft.opacity(0.9)))
                     .overlay(Circle().stroke(UI.lineSoft, lineWidth: 1))
+
+                    Menu {
+                        Button("Copy") { copyChatMessage(message.text) }
+                        Button("Save as note") { vm.saveChatMessageAsNote(message) }
+                        if isUser {
+                            Button("Edit & resend") { vm.editChatMessage(message) }
+                        } else {
+                            Button("Retry") { vm.retryChatMessage(message) }
+                            Button("Send to channel") { vm.sendChatMessageToChannel(message) }
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(UI.muted)
+                            .frame(width: 24, height: 24)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .frame(width: 26)
+                    .disabled(vm.chatIsSending)
+                    .help("Message actions")
                 }
                 renderedChatText(message.text)
                     .font(AppFont.body(14))
