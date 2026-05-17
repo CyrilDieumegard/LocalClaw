@@ -3800,8 +3800,16 @@ final class InstallerViewModel: ObservableObject {
 
         let root = developerProjectPath
         let fm = FileManager.default
-        guard fm.fileExists(atPath: URL(fileURLWithPath: root).appendingPathComponent("package.json").path) else {
-            developerPreviewStatus = "No package.json found. Ask OpenClaw to create a runnable web app first."
+        let packageURL = URL(fileURLWithPath: root).appendingPathComponent("package.json")
+        let packageWasMissing = !fm.fileExists(atPath: packageURL.path)
+        do {
+            try Self.createDeveloperPreviewScaffold(at: URL(fileURLWithPath: root), appName: developerProjectName)
+            if packageWasMissing {
+                developerPreviewStatus = "Created a runnable preview project..."
+                appendChatSystemMessageOnce("Created a minimal web app scaffold so Preview can run.")
+            }
+        } catch {
+            developerPreviewStatus = "Could not prepare preview project: \(error.localizedDescription)"
             chatInput = "Create or fix a runnable web preview for \(developerProjectPath). Add package.json scripts if needed, then report the preview URL."
             return
         }
@@ -3809,7 +3817,7 @@ final class InstallerViewModel: ObservableObject {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.currentDirectoryURL = URL(fileURLWithPath: root)
-        process.arguments = ["-lc", "export PATH=/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH; if [ -d node_modules ]; then npm run dev -- --host 127.0.0.1; else npm install && npm run dev -- --host 127.0.0.1; fi"]
+        process.arguments = ["-lc", "export PATH=/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH; if ! command -v npm >/dev/null 2>&1; then echo 'npm is required to run preview'; exit 127; fi; if [ -d node_modules ]; then npm run dev -- --host 127.0.0.1; else npm install && npm run dev -- --host 127.0.0.1; fi"]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
@@ -3836,6 +3844,181 @@ final class InstallerViewModel: ObservableObject {
             developerPreviewStatus = "Preview failed: \(error.localizedDescription)"
         }
         chatInput = "Start or verify the local preview for \(developerProjectPath). If a dev server is needed, use the existing project scripts and report the local URL."
+    }
+
+    nonisolated static func createDeveloperPreviewScaffold(at root: URL, appName: String) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let cleanName = appName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? root.lastPathComponent : appName
+        let packageName = slugifyProjectName(cleanName)
+        let appNameLiteralData = try JSONSerialization.data(withJSONObject: cleanName, options: [.fragmentsAllowed])
+        let appNameLiteral = String(data: appNameLiteralData, encoding: .utf8) ?? #""My App""#
+        let htmlTitle = cleanName
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+        let files: [(String, String)] = [
+            ("package.json", """
+            {
+              "scripts": {
+                "dev": "vite --host 127.0.0.1"
+              },
+              "dependencies": {
+                "@vitejs/plugin-react": "latest",
+                "vite": "latest",
+                "react": "latest",
+                "react-dom": "latest"
+              },
+              "devDependencies": {}
+            }
+            """),
+            ("index.html", """
+            <!doctype html>
+            <html lang="en">
+              <head>
+                <meta charset="UTF-8" />
+                <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+                <title>\(htmlTitle)</title>
+              </head>
+              <body>
+                <div id="root"></div>
+                <script type="module" src="/src/main.jsx"></script>
+              </body>
+            </html>
+            """),
+            ("src/main.jsx", """
+            import React from 'react';
+            import { createRoot } from 'react-dom/client';
+            import './styles.css';
+
+            const appName = \(appNameLiteral);
+
+            function App() {
+              return (
+                <main className="app-shell">
+                  <section className="hero">
+                    <p className="eyebrow">LocalClaw Preview</p>
+                    <h1>{appName}</h1>
+                    <p>Start editing this app with OpenClaw. The preview updates from this project folder.</p>
+                    <div className="actions">
+                      <button>Primary action</button>
+                      <button className="secondary">Secondary</button>
+                    </div>
+                  </section>
+                </main>
+              );
+            }
+
+            createRoot(document.getElementById('root')).render(<App />);
+            """),
+            ("src/styles.css", """
+            :root {
+              color: #f6f7f9;
+              background: #101113;
+              font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            }
+
+            * {
+              box-sizing: border-box;
+            }
+
+            body {
+              margin: 0;
+              min-width: 320px;
+              min-height: 100vh;
+            }
+
+            button {
+              border: 0;
+              border-radius: 8px;
+              padding: 12px 16px;
+              background: #ff4b42;
+              color: white;
+              font-weight: 700;
+              cursor: pointer;
+            }
+
+            button.secondary {
+              background: #2b2d31;
+              color: #f6f7f9;
+            }
+
+            .app-shell {
+              min-height: 100vh;
+              display: grid;
+              place-items: center;
+              padding: 32px;
+              background:
+                radial-gradient(circle at top left, rgba(255, 75, 66, 0.22), transparent 34rem),
+                linear-gradient(135deg, #15171b 0%, #0b0c0f 100%);
+            }
+
+            .hero {
+              width: min(760px, 100%);
+              padding: 44px;
+              border: 1px solid rgba(255, 255, 255, 0.12);
+              border-radius: 14px;
+              background: rgba(255, 255, 255, 0.06);
+            }
+
+            .eyebrow {
+              margin: 0 0 12px;
+              color: #ff6b62;
+              font-weight: 800;
+              text-transform: uppercase;
+              font-size: 12px;
+            }
+
+            h1 {
+              margin: 0;
+              font-size: clamp(36px, 6vw, 72px);
+              line-height: 1;
+            }
+
+            p {
+              max-width: 56ch;
+              color: #c5c7cc;
+              font-size: 18px;
+              line-height: 1.5;
+            }
+
+            .actions {
+              display: flex;
+              flex-wrap: wrap;
+              gap: 12px;
+              margin-top: 24px;
+            }
+            """)
+        ]
+
+        for (relativePath, content) in files {
+            let url = root.appendingPathComponent(relativePath)
+            try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if !fm.fileExists(atPath: url.path) {
+                try content.write(to: url, atomically: true, encoding: .utf8)
+            }
+        }
+
+        let packageURL = root.appendingPathComponent("package.json")
+        if var packageData = try? Data(contentsOf: packageURL),
+           var packageJSON = try? JSONSerialization.jsonObject(with: packageData) as? [String: Any] {
+            packageJSON["name"] = packageName
+            var scripts = packageJSON["scripts"] as? [String: Any] ?? [:]
+            if (scripts["dev"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+                scripts["dev"] = "vite --host 127.0.0.1"
+            }
+            packageJSON["scripts"] = scripts
+
+            var dependencies = packageJSON["dependencies"] as? [String: Any] ?? [:]
+            for dependency in ["@vitejs/plugin-react", "vite", "react", "react-dom"] where dependencies[dependency] == nil {
+                dependencies[dependency] = "latest"
+            }
+            packageJSON["dependencies"] = dependencies
+
+            packageData = try JSONSerialization.data(withJSONObject: packageJSON, options: [.prettyPrinted, .sortedKeys])
+            try packageData.write(to: packageURL, options: .atomic)
+        }
     }
 
     func developerStopPreview() {

@@ -90,4 +90,38 @@ struct InstallerEngineTests {
 
         #expect(quoted == #"'/Users/cyril/LocalClaw'"'"'s update/localclaw.dmg'"#)
     }
+
+    @Test func createsRunnableDeveloperPreviewScaffold() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("localclaw-preview-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try InstallerViewModel.createDeveloperPreviewScaffold(at: root, appName: "Cyril's App")
+
+        let package = try String(contentsOf: root.appendingPathComponent("package.json"), encoding: .utf8)
+        let index = try String(contentsOf: root.appendingPathComponent("index.html"), encoding: .utf8)
+        let main = try String(contentsOf: root.appendingPathComponent("src/main.jsx"), encoding: .utf8)
+
+        #expect(package.contains(#""dev" : "vite --host 127.0.0.1""#) || package.contains(#""dev": "vite --host 127.0.0.1""#))
+        #expect(package.contains(#""name" : "cyril-s-app""#) || package.contains(#""name": "cyril-s-app""#))
+        #expect(index.contains("<div id=\"root\"></div>"))
+        #expect(main.contains(#"const appName = "Cyril's App";"#))
+    }
+
+    @Test func addsPreviewScriptToExistingPackage() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("localclaw-preview-existing-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try #"{"scripts":{"build":"vite build"},"dependencies":{"react":"18"}}"#
+            .write(to: root.appendingPathComponent("package.json"), atomically: true, encoding: .utf8)
+
+        try InstallerViewModel.createDeveloperPreviewScaffold(at: root, appName: "Existing App")
+
+        let package = try String(contentsOf: root.appendingPathComponent("package.json"), encoding: .utf8)
+        #expect(package.contains(#""build" : "vite build""#) || package.contains(#""build": "vite build""#))
+        #expect(package.contains(#""dev" : "vite --host 127.0.0.1""#) || package.contains(#""dev": "vite --host 127.0.0.1""#))
+        #expect(package.contains(#""react" : "18""#) || package.contains(#""react": "18""#))
+        #expect(package.contains(#""vite" : "latest""#) || package.contains(#""vite": "latest""#))
+    }
 }
