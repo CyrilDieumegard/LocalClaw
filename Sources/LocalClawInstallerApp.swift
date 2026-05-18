@@ -8269,42 +8269,59 @@ struct ContentView: View {
 
     func chatSessionRow(_ session: InstallerViewModel.ChatSession) -> some View {
         let isActive = session.id == vm.activeChatSessionID
-        return Button(action: { vm.selectChatSession(session) }) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(session.title)
-                    .font(AppFont.bodySemi(12))
-                    .foregroundStyle(isActive ? Color.white : UI.text)
-                    .lineLimit(1)
-                Text("\(session.messages.count) messages • \(session.subtitle)")
-                    .font(AppFont.body(10))
-                    .foregroundStyle(isActive ? Color.white.opacity(0.75) : UI.muted)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 9)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 12).fill(isActive ? UI.accent : UI.card))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
-            .contextMenu {
-                if !vm.chatProjects.isEmpty {
-                    Menu("Move to project") {
-                        ForEach(vm.chatProjects) { project in
-                            Button(project.title) {
-                                vm.moveChatSession(session.id, toProjectID: project.id)
-                            }
-                        }
-                    }
-                }
-                Button("Remove from project") {
-                    vm.moveChatSession(session.id, toProjectID: nil)
-                }
-            }
+        return VStack(alignment: .leading, spacing: 5) {
+            Text(session.title)
+                .font(AppFont.bodySemi(12))
+                .foregroundStyle(isActive ? Color.white : UI.text)
+                .lineLimit(1)
+            Text("\(session.messages.count) messages • \(session.subtitle)")
+                .font(AppFont.body(10))
+                .foregroundStyle(isActive ? Color.white.opacity(0.75) : UI.muted)
+                .lineLimit(1)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(RoundedRectangle(cornerRadius: 12))
+        .background(RoundedRectangle(cornerRadius: 12).fill(isActive ? UI.accent : UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
+        .onTapGesture {
+            vm.selectChatSession(session)
+        }
         .onDrag {
             let provider = NSItemProvider(object: session.id as NSString)
             provider.suggestedName = session.title
             return provider
+        } preview: {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(session.title)
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(UI.text)
+                    .lineLimit(1)
+                Text("\(session.messages.count) messages • \(session.subtitle)")
+                    .font(AppFont.body(10))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .frame(width: 220, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 12).fill(UI.card))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
+        }
+        .contextMenu {
+            if !vm.chatProjects.isEmpty {
+                Menu("Move to project") {
+                    ForEach(vm.chatProjects) { project in
+                        Button(project.title) {
+                            vm.moveChatSession(session.id, toProjectID: project.id)
+                        }
+                    }
+                }
+            }
+            Button("Remove from project") {
+                vm.moveChatSession(session.id, toProjectID: nil)
+            }
         }
     }
 
