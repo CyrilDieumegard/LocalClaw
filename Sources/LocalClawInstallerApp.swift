@@ -2994,6 +2994,9 @@ final class InstallerViewModel: ObservableObject {
             setupFlow = """
             echo "Telegram setup requires your bot token (from @BotFather)."
             echo ""
+            echo "Enabling Telegram plugin..."
+            "$OPENCLAW_BIN" plugins enable telegram >/dev/null 2>&1 || "$OPENCLAW_BIN" plugins enable @openclaw/telegram >/dev/null 2>&1 || true
+            echo ""
             read -r "TELEGRAM_TOKEN?Paste Telegram bot token: "
             echo ""
 
@@ -3003,11 +3006,27 @@ final class InstallerViewModel: ObservableObject {
                 echo "Running: $OPENCLAW_BIN channels add --channel telegram --token <hidden>"
                 echo ""
                 "$OPENCLAW_BIN" channels add --channel telegram --token "$TELEGRAM_TOKEN"
+                ADD_EXIT=$?
+                echo ""
+                if [ "$ADD_EXIT" -eq 0 ]; then
+                    echo "Restarting OpenClaw Gateway so Telegram starts listening..."
+                    "$OPENCLAW_BIN" gateway restart || true
+                    sleep 3
+                    echo ""
+                    echo "Checking Telegram channel status..."
+                    "$OPENCLAW_BIN" channels status --channel telegram --probe --timeout 5000 || "$OPENCLAW_BIN" channels status --probe --timeout 5000 || true
+                else
+                    echo "[ERROR] Telegram setup failed with exit code $ADD_EXIT."
+                    exit "$ADD_EXIT"
+                fi
             fi
             """
         } else if channel == "discord" {
             setupFlow = """
             echo "Discord setup requires your bot token (from Discord Developer Portal)."
+            echo ""
+            echo "Enabling Discord plugin..."
+            "$OPENCLAW_BIN" plugins enable discord >/dev/null 2>&1 || "$OPENCLAW_BIN" plugins enable @openclaw/discord >/dev/null 2>&1 || true
             echo ""
             read -r "DISCORD_TOKEN?Paste Discord bot token: "
             echo ""
@@ -3018,6 +3037,19 @@ final class InstallerViewModel: ObservableObject {
                 echo "Running: $OPENCLAW_BIN channels add --channel discord --token <hidden>"
                 echo ""
                 "$OPENCLAW_BIN" channels add --channel discord --token "$DISCORD_TOKEN"
+                ADD_EXIT=$?
+                echo ""
+                if [ "$ADD_EXIT" -eq 0 ]; then
+                    echo "Restarting OpenClaw Gateway so Discord starts listening..."
+                    "$OPENCLAW_BIN" gateway restart || true
+                    sleep 3
+                    echo ""
+                    echo "Checking Discord channel status..."
+                    "$OPENCLAW_BIN" channels status --channel discord --probe --timeout 5000 || "$OPENCLAW_BIN" channels status --probe --timeout 5000 || true
+                else
+                    echo "[ERROR] Discord setup failed with exit code $ADD_EXIT."
+                    exit "$ADD_EXIT"
+                fi
             fi
             """
         } else if channel == "whatsapp" {
@@ -3032,6 +3064,7 @@ final class InstallerViewModel: ObservableObject {
                 "$OPENCLAW_BIN" plugins install "$WHATSAPP_PLUGIN_PATH" >/dev/null 2>&1 || true
                 echo ""
             fi
+            "$OPENCLAW_BIN" plugins enable whatsapp >/dev/null 2>&1 || "$OPENCLAW_BIN" plugins enable @openclaw/whatsapp >/dev/null 2>&1 || true
 
             echo "Running: $OPENCLAW_BIN channels add --channel whatsapp"
             "$OPENCLAW_BIN" channels add --channel whatsapp >/dev/null 2>&1 || true
@@ -3039,11 +3072,19 @@ final class InstallerViewModel: ObservableObject {
             echo "Running: $OPENCLAW_BIN channels login --channel whatsapp"
             echo ""
             "$OPENCLAW_BIN" channels login --channel whatsapp
+            echo ""
+            echo "Restarting OpenClaw Gateway so WhatsApp starts listening..."
+            "$OPENCLAW_BIN" gateway restart || true
+            sleep 3
+            "$OPENCLAW_BIN" channels status --channel whatsapp --probe --timeout 5000 || "$OPENCLAW_BIN" channels status --probe --timeout 5000 || true
             """
         } else {
             setupFlow = """
             echo "Opening guided setup for \(channel)."
             echo "If this channel is not installed yet, OpenClaw will prepare the connector first."
+            echo ""
+            echo "Enabling plugin for \(channel) if available..."
+            "$OPENCLAW_BIN" plugins enable \(channel) >/dev/null 2>&1 || true
             echo ""
             echo "Running: $OPENCLAW_BIN channels add --channel \(channel)"
             echo ""
@@ -3053,6 +3094,11 @@ final class InstallerViewModel: ObservableObject {
             if [ "$ADD_EXIT" -eq 0 ]; then
                 echo "Checking whether this channel has a login flow..."
                 "$OPENCLAW_BIN" channels login --channel \(channel) || true
+                echo ""
+                echo "Restarting OpenClaw Gateway so \(channel) starts listening..."
+                "$OPENCLAW_BIN" gateway restart || true
+                sleep 3
+                "$OPENCLAW_BIN" channels status --channel \(channel) --probe --timeout 5000 || "$OPENCLAW_BIN" channels status --probe --timeout 5000 || true
             else
                 echo "[ERROR] Channel setup failed with exit code $ADD_EXIT."
                 exit "$ADD_EXIT"
