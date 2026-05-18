@@ -3971,24 +3971,27 @@ final class InstallerViewModel: ObservableObject {
             }
             defer { try? FileManager.default.removeItem(atPath: tempMessagePath) }
 
-            let workdirPrefix = useDeveloperSession ? "cd \(quote(developerWorkdir)) || exit 1; " : ""
             let runtimeSessionID = Self.runtimeSessionID(
                 base: sessionID,
                 modelID: modelOverride,
                 useDeveloperSession: useDeveloperSession,
                 freshDeveloperTurnID: useFreshDeveloperContext ? String(requestID.uuidString.prefix(8)) : nil
             )
-            let modelFlag = modelOverride.isEmpty ? "" : " --model \(quote(modelOverride))"
-            let thinkingFlag = agentThinking.isEmpty ? "" : " --thinking \(quote(agentThinking))"
-            let command = "\(workdirPrefix)MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(runtimeSessionID)) --message \"$(cat \"$MESSAGE_FILE\")\"\(modelFlag)\(thinkingFlag) --json --timeout \(agentTimeout) 2>&1"
-            let fallbackCommand = "\(workdirPrefix)MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(runtimeSessionID)) --message \"$(cat \"$MESSAGE_FILE\")\"\(thinkingFlag) --json --timeout \(agentTimeout) 2>&1"
             let startedAt = Date()
             await MainActor.run {
                 if self.activeChatRequestID == requestID {
                     self.chatStatus = isSimpleDeveloperEdit ? "Applying quick edit..." : "Running OpenClaw..."
                 }
             }
-            var result = Self.shellCancellable(command, timeoutSeconds: wallClockTimeout) { process in
+            var result = Self.openClawAgentCancellable(
+                sessionID: runtimeSessionID,
+                message: agentText,
+                model: modelOverride,
+                thinking: agentThinking,
+                agentTimeout: agentTimeout,
+                currentDirectory: useDeveloperSession ? developerWorkdir : nil,
+                timeoutSeconds: wallClockTimeout
+            ) { process in
                 Task { @MainActor in
                     if self.activeChatRequestID == requestID {
                         self.activeChatProcess = process
@@ -4001,7 +4004,15 @@ final class InstallerViewModel: ObservableObject {
                         self.chatStatus = "Retrying without model override..."
                     }
                 }
-                result = Self.shellCancellable(fallbackCommand, timeoutSeconds: wallClockTimeout) { process in
+                result = Self.openClawAgentCancellable(
+                    sessionID: runtimeSessionID,
+                    message: agentText,
+                    model: "",
+                    thinking: agentThinking,
+                    agentTimeout: agentTimeout,
+                    currentDirectory: useDeveloperSession ? developerWorkdir : nil,
+                    timeoutSeconds: wallClockTimeout
+                ) { process in
                     Task { @MainActor in
                         if self.activeChatRequestID == requestID {
                             self.activeChatProcess = process
@@ -4019,7 +4030,15 @@ final class InstallerViewModel: ObservableObject {
                             self.chatStatus = "Plugin repaired, retrying..."
                         }
                     }
-                    result = Self.shellCancellable(command, timeoutSeconds: wallClockTimeout) { process in
+                    result = Self.openClawAgentCancellable(
+                        sessionID: runtimeSessionID,
+                        message: agentText,
+                        model: modelOverride,
+                        thinking: agentThinking,
+                        agentTimeout: agentTimeout,
+                        currentDirectory: useDeveloperSession ? developerWorkdir : nil,
+                        timeoutSeconds: wallClockTimeout
+                    ) { process in
                         Task { @MainActor in
                             if self.activeChatRequestID == requestID {
                                 self.activeChatProcess = process
@@ -4946,6 +4965,104 @@ final class InstallerViewModel: ObservableObject {
         let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
         if didTimeout {
             let suffix = "LocalClaw stopped OpenClaw after \(timeoutSeconds ?? 0)s because this request exceeded the Developer time budget."
+            return (124, trimmed.isEmpty ? suffix : "\(trimmed)\n\n\(suffix)")
+        }
+        return (process.terminationStatus, trimmed)
+    }
+
+    nonisolated private static func openClawAgentCancellable(
+        sessionID: String,
+        message: String,
+        model: String,
+        thinking: String,
+        agentTimeout: Int,
+        currentDirectory: String?,
+        timeoutSeconds: Int? = nil,
+        onStart: @escaping (Process) -> Void
+    ) -> (Int32, String) {
+        var arguments = [
+            "openclaw",
+            "agent",
+            "--session-id", sessionID,
+            "-m", message,
+            "--json",
+            "--timeout", String(agentTimeout)
+        ]
+        if !model.isEmpty {
+            arguments.append(contentsOf: ["--model", model])
+        }
+        if !thinking.isEmpty {
+            arguments.append(contentsOf: ["--thinking", thinking])
+        }
+        return processCancellable(
+            executable: "/usr/bin/env",
+            arguments: arguments,
+            currentDirectory: currentDirectory,
+            timeoutSeconds: timeoutSeconds,
+            onStart: onStart
+        )
+    }
+
+    nonisolated private static func processCancellable(
+        executable: String,
+        arguments: [String],
+        currentDirectory: String?,
+        timeoutSeconds: Int? = nil,
+        onStart: @escaping (Process) -> Void
+    ) -> (Int32, String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        if let currentDirectory, !currentDirectory.isEmpty {
+            process.currentDirectoryURL = URL(fileURLWithPath: currentDirectory, isDirectory: true)
+        }
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        do {
+            try process.run()
+            onStart(process)
+        } catch {
+            return (1, "Failed command: \(executable) \(arguments.joined(separator: " "))\n\(error.localizedDescription)")
+        }
+
+        let timeoutLock = NSLock()
+        var timedOut = false
+        let timer: DispatchSourceTimer?
+        if let timeoutSeconds, timeoutSeconds > 0 {
+            let source = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+            source.schedule(deadline: .now() + .seconds(timeoutSeconds))
+            source.setEventHandler {
+                timeoutLock.lock()
+                timedOut = true
+                timeoutLock.unlock()
+                if process.isRunning {
+                    process.terminate()
+                    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
+                        if process.isRunning {
+                            _ = try? Process.run(URL(fileURLWithPath: "/bin/kill"), arguments: ["-9", "\(process.processIdentifier)"])
+                        }
+                    }
+                }
+            }
+            source.resume()
+            timer = source
+        } else {
+            timer = nil
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        timer?.cancel()
+        let output = String(data: data, encoding: .utf8) ?? ""
+        timeoutLock.lock()
+        let didTimeout = timedOut
+        timeoutLock.unlock()
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        if didTimeout {
+            let suffix = "LocalClaw stopped OpenClaw after \(timeoutSeconds ?? 0)s because this request exceeded the time budget."
             return (124, trimmed.isEmpty ? suffix : "\(trimmed)\n\n\(suffix)")
         }
         return (process.terminationStatus, trimmed)

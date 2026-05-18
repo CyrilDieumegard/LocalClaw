@@ -404,7 +404,7 @@ final class InstallerEngine: @unchecked Sendable {
 
     /// Run doctor repair
     func runDoctorRepair() -> StepResult {
-        let (code, out) = shell("openclaw doctor --repair --yes --non-interactive 2>&1")
+        let (code, out) = shell("perl -e 'alarm 120; exec @ARGV' openclaw doctor --fix --yes --non-interactive 2>&1")
         return code == 0
             ? StepResult(state: .ok, message: "Doctor repair completed")
             : StepResult(state: .fail, message: out)
@@ -695,7 +695,7 @@ final class InstallerEngine: @unchecked Sendable {
     }
 
     func repairOpenClawSetupQuiet() -> StepResult {
-        let (code, _) = shell("openclaw doctor --non-interactive --repair --yes")
+        let (code, _) = shell("perl -e 'alarm 120; exec @ARGV' openclaw doctor --fix --yes --non-interactive")
         return code == 0
             ? StepResult(state: .ok, message: "Configuration repair completed")
             : StepResult(state: .fail, message: "Configuration repair failed")
@@ -712,7 +712,7 @@ final class InstallerEngine: @unchecked Sendable {
             return results
         }
 
-        let (dCode, dOut) = shell("openclaw doctor --non-interactive --repair --yes")
+        let (dCode, dOut) = shell("perl -e 'alarm 120; exec @ARGV' openclaw doctor --fix --yes --non-interactive 2>&1")
         results.append(StepResult(state: dCode == 0 ? .ok : .fail, message: dOut.isEmpty ? "Doctor completed" : dOut))
 
         let (gCode, gOut) = shell("openclaw gateway status --no-color")

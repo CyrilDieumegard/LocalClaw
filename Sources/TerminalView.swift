@@ -126,7 +126,7 @@ final class TerminalViewModel: ObservableObject {
     
     /// Run doctor
     func runDoctor() {
-        execute("openclaw doctor --repair --yes --non-interactive 2>&1")
+        execute("perl -e 'alarm 120; exec @ARGV' openclaw doctor --fix --yes --non-interactive 2>&1")
     }
     
     /// Show config
