@@ -7977,6 +7977,7 @@ struct ContentView: View {
                         chatInfoPill(vm.openClawChatModeLabel, icon: vm.inferenceMode == .local ? "desktopcomputer" : "cloud.fill")
                         chatInfoPill(vm.openClawChatModelLabel, icon: "cpu")
                     }
+                    chatModelPicker(width: 260)
                     Spacer()
                     Label(vm.chatStatus, systemImage: vm.chatStatus == "Ready" ? "checkmark.circle.fill" : "circle.fill")
                         .font(AppFont.bodySemi(12))
@@ -8223,19 +8224,6 @@ struct ContentView: View {
                 chatComposerIcon("globe", help: "Web context")
                 chatComposerIcon("apps.iphone", help: "Apps")
 
-                Picker("", selection: $vm.selectedChatModel) {
-                    ForEach(vm.availableChatModels) { model in
-                        Text(model.displayName).tag(model.id)
-                    }
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .frame(width: 190)
-                .onAppear { vm.ensureSelectedChatModel() }
-                .onChange(of: vm.selectedChatModel) { _ in
-                    vm.handleChatModelSelectionChanged(useDeveloperSession: false)
-                }
-
                 Spacer(minLength: 12)
 
                 Button(action: {
@@ -8258,6 +8246,23 @@ struct ContentView: View {
         .frame(minHeight: 104, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 22).fill(UI.cardSoft))
         .overlay(RoundedRectangle(cornerRadius: 22).stroke(UI.line, lineWidth: 1))
+    }
+
+    func chatModelPicker(width: CGFloat) -> some View {
+        Picker("", selection: $vm.selectedChatModel) {
+            ForEach(vm.availableChatModels) { model in
+                Text(model.displayName).tag(model.id)
+            }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .frame(width: width)
+        .disabled(vm.chatIsSending)
+        .onAppear { vm.ensureSelectedChatModel() }
+        .onChange(of: vm.selectedChatModel) { _ in
+            vm.handleChatModelSelectionChanged(useDeveloperSession: false)
+        }
+        .help("Choose the model for OpenClaw Chat")
     }
 
     func chatComposerIcon(_ systemName: String, help: String, action: @escaping () -> Void = {}) -> some View {
