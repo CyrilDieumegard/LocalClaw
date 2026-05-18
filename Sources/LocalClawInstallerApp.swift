@@ -1325,31 +1325,50 @@ final class InstallerViewModel: ObservableObject {
 
     func applyModelsTabSelection() {
         if modelsApplyInProgress { return }
-        let targetModel: String
         if inferenceMode == .local {
             guard !selectedLocalLMStudioModel.isEmpty else {
                 modelsApplyStatus = "Select a local LM Studio model first."
                 return
             }
-            targetModel = "lmstudio/\(selectedLocalLMStudioModel)"
+            let modelId = selectedLocalLMStudioModel
+            modelsApplyInProgress = true
+            modelsApplyStatus = "Setting up LM Studio model \(modelId)..."
+            Task.detached {
+                let result = InstallerEngine().autoSetupLMStudioModel(modelId: modelId, contextLength: 32768) { message in
+                    DispatchQueue.main.async {
+                        self.modelsApplyStatus = message
+                    }
+                }
+                let activeLocal = InstallerEngine().loadedLMStudioModelInfo()?.model
+                await MainActor.run {
+                    if result.state == .ok {
+                        self.currentModel = "lmstudio/\(activeLocal ?? modelId)"
+                        self.selectedChatModel = self.currentModel
+                    }
+                    self.activeLocalLMStudioModel = activeLocal ?? self.activeLocalLMStudioModel
+                    self.selectedChatResponseMode = .local
+                    self.reconcileSelectedChatModelForCurrentMode()
+                    self.modelsApplyStatus = "[\(result.state.rawValue)] \(result.message)"
+                    self.modelsApplyInProgress = false
+                }
+            }
+            return
         } else {
             guard !selectedOpenRouterModel.isEmpty else {
                 modelsApplyStatus = "Select a cloud model first."
                 return
             }
-            targetModel = selectedOpenRouterModel
         }
 
+        let targetModel = selectedOpenRouterModel
         modelsApplyInProgress = true
         modelsApplyStatus = "Applying \(targetModel)..."
         Task.detached {
             let result = InstallerEngine().changeModel(targetModel)
-            let activeLocal = InstallerEngine().loadedLMStudioModelInfo()?.model
             await MainActor.run {
                 self.currentModel = targetModel
-                if self.inferenceMode == .local {
-                    self.activeLocalLMStudioModel = activeLocal ?? self.selectedLocalLMStudioModel
-                }
+                self.selectedChatResponseMode = .cloud
+                self.selectedChatModel = targetModel
                 self.modelsApplyStatus = "[\(result.state.rawValue)] \(result.message)"
                 self.modelsApplyInProgress = false
             }
@@ -3079,6 +3098,45 @@ final class InstallerViewModel: ObservableObject {
         return out.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
     }
 
+    private func localModelMatch(_ rawId: String, in models: [String]) -> String {
+        var id = rawId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if id.hasPrefix("lmstudio/") {
+            id = String(id.dropFirst("lmstudio/".count))
+        }
+        guard !id.isEmpty else { return "" }
+        if models.contains(id) { return id }
+        if let match = models.first(where: { $0.hasSuffix("/\(id)") || $0.hasSuffix(id) }) {
+            return match
+        }
+        return ""
+    }
+
+    private func resolveLocalLMStudioModelId(preferLive: Bool = true) -> String {
+        refreshLocalLMStudioModels()
+        let models = localLMStudioModels
+
+        if preferLive {
+            let live = localModelMatch(detectLiveLMStudioModelId(), in: models)
+            if !live.isEmpty { return live }
+        }
+
+        let selectedLocal = localModelMatch(selectedLocalLMStudioModel, in: models)
+        if !selectedLocal.isEmpty { return selectedLocal }
+
+        if currentModel.hasPrefix("lmstudio/") {
+            let configured = localModelMatch(currentModel, in: models)
+            if !configured.isEmpty { return configured }
+        }
+
+        if selectedModel.isEmpty {
+            selectedModel = !recommendation.isEmpty ? recommendation : (modelOptions.first ?? "")
+        }
+        let recommended = localModelMatch(localProviderModelIds[selectedModel] ?? "", in: models)
+        if !recommended.isEmpty { return recommended }
+
+        return models.first ?? ""
+    }
+
     private func resetMainAgentSessions() {
         let sessionsPath = NSHomeDirectory() + "/.openclaw/agents/main/sessions"
         _ = engine.shell("mkdir -p '\(sessionsPath)' && find '\(sessionsPath)' -name '*.jsonl' -type f -delete 2>/dev/null || true")
@@ -3119,28 +3177,45 @@ final class InstallerViewModel: ObservableObject {
             selectedChatResponseMode = .local
             selectedProvider = .custom
             ensureLMStudioAuthProfileForMainAgent()
+            let localId = resolveLocalLMStudioModelId()
 
-            var localId = detectLiveLMStudioModelId()
-            if localId.hasPrefix("lmstudio/") {
-                localId = String(localId.dropFirst("lmstudio/".count))
-            }
-            if localId.contains("/") {
-                localId = String(localId.split(separator: "/").last ?? Substring(localId))
-            }
-
-            if localId.isEmpty {
-                if selectedModel.isEmpty {
-                    selectedModel = !recommendation.isEmpty ? recommendation : (modelOptions.first ?? "")
-                }
-                localId = localProviderModelIds[selectedModel] ?? ""
-            }
-
-            if !localId.isEmpty {
-                writePrimaryAndSecondaryModel(primary: "lmstudio/\(localId)", secondary: nil)
-                controlCenterLogs += "[OK] Switched to Local LLM: lmstudio/\(localId)\n"
-            } else {
+            guard !localId.isEmpty else {
                 controlCenterLogs += "[FAIL] Local switch failed: no model found in LM Studio\n"
+                modeSwitchInProgress = false
+                modeSwitchStatus = "No local model found"
+                return
             }
+
+            selectedLocalLMStudioModel = localId
+            modeSwitchStatus = "Setting up LM Studio model..."
+            controlCenterLogs += "[INFO] Setting up Local LLM: lmstudio/\(localId)\n"
+
+            let modelId = localId
+            Task.detached {
+                let result = InstallerEngine().autoSetupLMStudioModel(modelId: modelId, contextLength: 32768) { message in
+                    DispatchQueue.main.async {
+                        self.modeSwitchStatus = message
+                        self.controlCenterLogs += "[INFO] \(message)\n"
+                    }
+                }
+                let loaded = InstallerEngine().loadedLMStudioModelInfo()?.model
+                await MainActor.run {
+                    if result.state == .ok {
+                        let active = loaded ?? modelId
+                        self.currentModel = "lmstudio/\(active)"
+                        self.activeLocalLMStudioModel = active
+                        self.selectedChatModel = "lmstudio/\(active)"
+                        self.controlCenterLogs += "[OK] Switched to Local LLM: lmstudio/\(active)\n"
+                    } else {
+                        self.controlCenterLogs += "[FAIL] Local switch failed: \(result.message)\n"
+                    }
+                    self.resetMainAgentSessions()
+                    self.refreshControlCenter()
+                    self.modeSwitchInProgress = false
+                    self.modeSwitchStatus = result.state == .ok ? "Switched to Local LLM" : "Local setup failed"
+                }
+            }
+            return
         } else {
             prepareCloudModelSelection()
             selectedProvider = .openRouter
@@ -4819,15 +4894,14 @@ final class InstallerViewModel: ObservableObject {
         let loaded = engine.loadedLMStudioModelInfo()?.model
         localLMStudioModels = models
         activeLocalLMStudioModel = loaded ?? ""
-        if selectedLocalLMStudioModel.isEmpty {
-            if let loaded, models.contains(loaded) {
-                selectedLocalLMStudioModel = loaded
-            } else if currentModel.hasPrefix("lmstudio/") {
-                let configured = String(currentModel.dropFirst("lmstudio/".count))
-                if models.contains(configured) { selectedLocalLMStudioModel = configured }
-            } else if let first = models.first {
-                selectedLocalLMStudioModel = first
-            }
+        let loadedMatch = localModelMatch(loaded ?? "", in: models)
+        if !loadedMatch.isEmpty {
+            selectedLocalLMStudioModel = loadedMatch
+        } else if currentModel.hasPrefix("lmstudio/") {
+            let configured = localModelMatch(currentModel, in: models)
+            selectedLocalLMStudioModel = configured.isEmpty ? (models.first ?? "") : configured
+        } else if selectedLocalLMStudioModel.isEmpty || !models.contains(selectedLocalLMStudioModel) {
+            selectedLocalLMStudioModel = models.first ?? ""
         }
     }
 
