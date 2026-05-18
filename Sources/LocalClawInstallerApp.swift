@@ -325,6 +325,12 @@ final class InstallerViewModel: ObservableObject {
         let origin: String
     }
 
+    struct ChannelConfigSnapshot {
+        let configured: Bool
+        let accounts: [String]
+        let tokenSource: String?
+    }
+
     struct AgentInfo: Identifiable {
         let id: String
         let identityName: String
@@ -859,6 +865,45 @@ final class InstallerViewModel: ObservableObject {
         default:
             return origin.isEmpty ? "OpenClaw channel" : origin.capitalized
         }
+    }
+
+    nonisolated static func configuredChannelSnapshots(from root: [String: Any]) -> [String: ChannelConfigSnapshot] {
+        guard let channels = root["channels"] as? [String: Any] else { return [:] }
+
+        return channels.reduce(into: [String: ChannelConfigSnapshot]()) { result, pair in
+            guard let channelConfig = pair.value as? [String: Any] else { return }
+
+            let enabled = channelConfig["enabled"] as? Bool ?? false
+            let hasToken = !(channelConfig["token"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let accountsDict = channelConfig["accounts"] as? [String: Any] ?? [:]
+            let configuredAccounts = accountsDict.compactMap { accountPair -> String? in
+                guard let accountConfig = accountPair.value as? [String: Any] else { return nil }
+                let accountEnabled = accountConfig["enabled"] as? Bool ?? true
+                let accountHasToken = !(accountConfig["token"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                let accountHasSession = !(accountConfig["session"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                let accountHasAuthPath = !(accountConfig["authPath"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                return (accountEnabled || accountHasToken || accountHasSession || accountHasAuthPath) ? accountPair.key : nil
+            }
+            .sorted()
+
+            let configured = enabled || hasToken || !configuredAccounts.isEmpty
+            guard configured else { return }
+
+            let accounts = configuredAccounts.isEmpty ? ["default"] : configuredAccounts
+            result[pair.key] = ChannelConfigSnapshot(
+                configured: true,
+                accounts: accounts,
+                tokenSource: hasToken ? "config" : nil
+            )
+        }
+    }
+
+    nonisolated static func configuredChannelSnapshots(configPath: String = NSHomeDirectory() + "/.openclaw/openclaw.json") -> [String: ChannelConfigSnapshot] {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: configPath)),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        return configuredChannelSnapshots(from: root)
     }
 
     // Installation status tracking (using existing status variables)
@@ -2832,6 +2877,7 @@ final class InstallerViewModel: ObservableObject {
             let engine = InstallerEngine()
             let listResult = engine.shell("openclaw --no-color channels list --all --json 2>&1")
             let statusResult = engine.shell("openclaw --no-color channels status --json --probe --timeout 5000 2>&1")
+            let configSnapshots = Self.configuredChannelSnapshots()
 
             await MainActor.run {
                 self.channelsIsLoading = false
@@ -2866,24 +2912,29 @@ final class InstallerViewModel: ObservableObject {
                     .union(chat.keys)
                     .union(channelsStatus.keys)
                     .union(accountStatus.keys)
+                    .union(configSnapshots.keys)
 
                 self.channels = allChannelIDs.compactMap { key in
                     let item = chat[key] as? [String: Any] ?? [:]
                     let catalogItem = catalog[key]
-                    let accounts = item["accounts"] as? [String] ?? []
+                    let configSnapshot = configSnapshots[key]
+                    let listAccounts = item["accounts"] as? [String] ?? []
                     let installed = item["installed"] as? Bool ?? false
                     let origin = item["origin"] as? String ?? catalogItem?.origin ?? "OpenClaw channel"
                     let status = channelsStatus[key] as? [String: Any] ?? [:]
-                    let configured = status["configured"] as? Bool ?? !accounts.isEmpty
                     let running = status["running"] as? Bool ?? false
                     let channelLastError = status["lastError"] as? String
                     let probe = status["probe"] as? [String: Any]
 
                     let accountItems = accountStatus[key] as? [[String: Any]] ?? []
                     let primaryAccount = accountItems.first
+                    let statusConfigured = status["configured"] as? Bool
+                    let accountConfigured = primaryAccount?["configured"] as? Bool
+                    let accounts = listAccounts.isEmpty ? (configSnapshot?.accounts ?? []) : listAccounts
+                    let configured = statusConfigured ?? accountConfigured ?? (configSnapshot?.configured ?? !accounts.isEmpty)
                     let connected = primaryAccount?["connected"] as? Bool ?? false
                     let tokenStatus = primaryAccount?["tokenStatus"] as? String
-                    let tokenSource = (primaryAccount?["tokenSource"] as? String) ?? (status["tokenSource"] as? String)
+                    let tokenSource = (primaryAccount?["tokenSource"] as? String) ?? (status["tokenSource"] as? String) ?? configSnapshot?.tokenSource
                     let lastError = (primaryAccount?["lastError"] as? String) ?? channelLastError
                     let accountProbe = primaryAccount?["probe"] as? [String: Any]
                     let probeOK = (accountProbe?["ok"] as? Bool) ?? (probe?["ok"] as? Bool)
@@ -2896,7 +2947,7 @@ final class InstallerViewModel: ObservableObject {
                         label: channelLabels[key] ?? catalogItem?.label ?? Self.humanChannelLabel(key),
                         detailLabel: detailLabels[key] ?? catalogItem?.detailLabel ?? Self.channelDetailLabel(id: key, origin: origin),
                         systemImage: images[key] ?? catalogItem?.systemImage ?? "bubble.left.and.bubble.right",
-                        installed: installed,
+                        installed: installed || configured,
                         configured: configured,
                         running: running,
                         connected: connected,

@@ -95,6 +95,37 @@ struct InstallerEngineTests {
         #expect(InstallerViewModel.cronListInventoryCommand == "openclaw --no-color cron list --all --json")
     }
 
+    @Test func channelConfigFallbackDetectsConfiguredAccounts() {
+        let root: [String: Any] = [
+            "channels": [
+                "telegram": [
+                    "enabled": true,
+                    "token": "secret-token"
+                ],
+                "whatsapp": [
+                    "accounts": [
+                        "default": [
+                            "enabled": true
+                        ]
+                    ]
+                ],
+                "slack": [
+                    "enabled": false,
+                    "accounts": [:]
+                ]
+            ]
+        ]
+
+        let snapshots = InstallerViewModel.configuredChannelSnapshots(from: root)
+
+        #expect(snapshots["telegram"]?.configured == true)
+        #expect(snapshots["telegram"]?.accounts == ["default"])
+        #expect(snapshots["telegram"]?.tokenSource == "config")
+        #expect(snapshots["whatsapp"]?.configured == true)
+        #expect(snapshots["whatsapp"]?.accounts == ["default"])
+        #expect(snapshots["slack"] == nil)
+    }
+
     @Test func canonicalChatRuntimeModelMapsOpenAIGPTModels() {
         #expect(InstallerViewModel.canonicalChatRuntimeModelID("openrouter/openai/gpt-5.5") == "openrouter/openai/gpt-5.5")
         #expect(InstallerViewModel.canonicalChatRuntimeModelID("openrouter/openai/gpt-5.4") == "openrouter/openai/gpt-5.4")
