@@ -695,6 +695,7 @@ final class InstallerViewModel: ObservableObject {
     private var activeChatProcess: Process?
     private var activeChatRequestID: UUID?
     private var chatStopRequested = false
+    private var localLMStudioSetupRequestID: UUID?
     @Published var localLMStudioModels: [String] = []
     @Published var selectedLocalLMStudioModel: String = ""
     @Published var activeLocalLMStudioModel: String = ""
@@ -3759,6 +3760,20 @@ final class InstallerViewModel: ObservableObject {
             inferenceMode: requestInferenceMode,
             localModels: localLMStudioModels
         ))
+        if selectedModelLooksLocal && !localLMStudioModelIsReady(modelOverride) {
+            let localModel = Self.localLMStudioModelID(from: modelOverride)
+            if !localModel.isEmpty {
+                selectedLocalLMStudioModel = localModel
+                autoSetupLocalLMStudioModel(modelId: localModel, source: useDeveloperSession ? .developer : .chat)
+            }
+            let setupText = localLMStudioSetupInProgress
+                ? "Local model setup is already running. Send again when the status is Ready."
+                : "Local model setup started. Send again when the status is Ready."
+            let setupMessage = ChatMessage(role: "assistant", text: setupText, metadata: "local setup • no model call", modelName: "LocalClaw")
+            if useDeveloperSession { developerChatMessages.append(setupMessage) } else { chatMessages.append(setupMessage) }
+            chatStatus = "Setting up local model..."
+            return
+        }
         let developerWorkdir = developerProjectPath
         let useFreshDeveloperContext = useDeveloperSession && developerFreshContextEnabled
         let isSimpleDeveloperEdit = useDeveloperSession && Self.isSimpleDeveloperEdit(text)
@@ -3983,6 +3998,112 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    enum LocalModelSetupSource {
+        case chat
+        case developer
+        case models
+
+        var label: String {
+            switch self {
+            case .chat: return "OpenClaw Chat"
+            case .developer: return "Developer"
+            case .models: return "Models"
+            }
+        }
+    }
+
+    func handleChatModelSelectionChanged(useDeveloperSession: Bool) {
+        syncChatModelModeWithSelection()
+        let model = selectedChatModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let localModel = Self.localLMStudioModelID(from: model)
+        guard !localModel.isEmpty else { return }
+        selectedLocalLMStudioModel = localModel
+        autoSetupLocalLMStudioModel(modelId: localModel, source: useDeveloperSession ? .developer : .chat)
+    }
+
+    private func localLMStudioModelIsReady(_ modelID: String) -> Bool {
+        let localModel = Self.localLMStudioModelID(from: modelID)
+        guard !localModel.isEmpty else { return false }
+        let active = Self.localLMStudioModelID(from: activeLocalLMStudioModel)
+        let current = Self.localLMStudioModelID(from: currentModel)
+        return localModel == active && currentModel.hasPrefix("lmstudio/") && current == localModel
+    }
+
+    func autoSetupLocalLMStudioModel(modelId rawModelId: String, source: LocalModelSetupSource) {
+        let modelId = Self.localLMStudioModelID(from: rawModelId)
+        guard !modelId.isEmpty else {
+            localLMStudioSetupStatus = "No local model selected"
+            return
+        }
+        if localLMStudioModelIsReady("lmstudio/\(modelId)") {
+            selectedChatResponseMode = .local
+            selectedChatModel = "lmstudio/\(modelId)"
+            selectedLocalLMStudioModel = modelId
+            chatStatus = "Ready"
+            localLMStudioSetupStatus = "LM Studio already ready with \(modelId)"
+            return
+        }
+        if localLMStudioSetupInProgress {
+            localLMStudioSetupStatus = "LM Studio setup already running..."
+            chatStatus = "Setting up local model..."
+            return
+        }
+
+        let requestID = UUID()
+        localLMStudioSetupRequestID = requestID
+        selectedChatResponseMode = .local
+        selectedLocalLMStudioModel = modelId
+        localLMStudioSetupInProgress = true
+        localLMStudioSetupStatus = "Setting up \(modelId) for \(source.label)..."
+        localLMStudioSetupLog = localLMStudioSetupLog.isEmpty
+            ? "• Setting up \(modelId) for \(source.label)"
+            : localLMStudioSetupLog + "\n• Setting up \(modelId) for \(source.label)"
+        chatStatus = "Setting up local model..."
+
+        Task.detached {
+            let result = InstallerEngine().autoSetupLMStudioModel(modelId: modelId, contextLength: 32768) { message in
+                DispatchQueue.main.async {
+                    guard self.localLMStudioSetupRequestID == requestID else { return }
+                    let line = "• \(message)"
+                    self.localLMStudioSetupStatus = message
+                    self.localLMStudioSetupLog = self.localLMStudioSetupLog.isEmpty ? line : self.localLMStudioSetupLog + "\n" + line
+                }
+            }
+            let loaded = InstallerEngine().loadedLMStudioModelInfo()?.model
+            await MainActor.run {
+                guard self.localLMStudioSetupRequestID == requestID else { return }
+                self.localLMStudioSetupRequestID = nil
+                self.localLMStudioSetupInProgress = false
+                self.localLMStudioSetupStatus = result.message
+                if result.state == .ok {
+                    let active = loaded ?? modelId
+                    self.currentModel = "lmstudio/\(active)"
+                    self.activeLocalLMStudioModel = active
+                    self.selectedLocalLMStudioModel = active
+                    self.selectedChatResponseMode = .local
+                    self.selectedChatModel = "lmstudio/\(active)"
+                    self.chatGatewayPrepared = false
+                    self.resetMainAgentSessions()
+                    self.chatStatus = "Ready"
+                    let readyMessage = "Local model ready for \(source.label): \(active)."
+                    if source == .developer {
+                        self.developerChatMessages.append(ChatMessage(role: "assistant", text: readyMessage, metadata: "local setup", modelName: "LocalClaw"))
+                    } else if source == .chat {
+                        self.appendChatSystemMessageOnce(readyMessage)
+                    }
+                } else {
+                    self.chatStatus = "Needs setup"
+                    let failMessage = "Local setup failed for \(source.label): \(result.message)"
+                    if source == .developer {
+                        self.developerChatMessages.append(ChatMessage(role: "error", text: failMessage, modelName: "LocalClaw"))
+                    } else if source == .chat {
+                        self.appendChatSystemMessageOnce(failMessage)
+                    }
+                }
+            }
+        }
+    }
+
     nonisolated static func readableModelName(_ id: String) -> String {
         let last = id.split(separator: "/").last.map(String.init) ?? id
         return last
@@ -3997,6 +4118,16 @@ final class InstallerViewModel: ObservableObject {
         if trimmed.hasPrefix("lmstudio/") || trimmed.hasPrefix("openrouter/") { return trimmed }
         if inferenceMode == .local { return "lmstudio/\(trimmed)" }
         if localModels.contains(trimmed) { return "lmstudio/\(trimmed)" }
+        return trimmed
+    }
+
+    nonisolated static func localLMStudioModelID(from id: String) -> String {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        if trimmed.hasPrefix("lmstudio/") {
+            return String(trimmed.dropFirst("lmstudio/".count))
+        }
+        if trimmed.hasPrefix("openrouter/") { return "" }
         return trimmed
     }
 
@@ -4911,32 +5042,7 @@ final class InstallerViewModel: ObservableObject {
             localLMStudioSetupStatus = "No local model found in LM Studio"
             return
         }
-        localLMStudioSetupInProgress = true
-        localLMStudioSetupStatus = "Setting up LM Studio..."
-        localLMStudioSetupLog = ""
-        chatStatus = "Setting up local model..."
-        let modelId = selectedLocalLMStudioModel
-        Task.detached {
-            let result = InstallerEngine().autoSetupLMStudioModel(modelId: modelId, contextLength: 32768) { message in
-                DispatchQueue.main.async {
-                    let line = "• \(message)"
-                    self.localLMStudioSetupStatus = message
-                    self.localLMStudioSetupLog = self.localLMStudioSetupLog.isEmpty ? line : self.localLMStudioSetupLog + "\n" + line
-                }
-            }
-            await MainActor.run {
-                self.localLMStudioSetupInProgress = false
-                self.localLMStudioSetupStatus = result.message
-                self.chatStatus = result.state == .ok ? "Ready" : "Needs setup"
-                if result.state == .ok {
-                    self.currentModel = "lmstudio/\(modelId)"
-                    self.activeLocalLMStudioModel = modelId
-                    self.appendChatSystemMessageOnce("Local model ready: \(result.message.replacingOccurrences(of: "LM Studio ready with ", with: "")). You can chat now.")
-                } else {
-                    self.appendChatSystemMessageOnce("I couldn’t auto-setup LM Studio yet: \(result.message)")
-                }
-            }
-        }
+        autoSetupLocalLMStudioModel(modelId: selectedLocalLMStudioModel, source: .chat)
     }
 
     func repairLMStudioRuntimeFromChat() {
@@ -6958,7 +7064,7 @@ struct ContentView: View {
                     .frame(maxWidth: 260, alignment: .leading)
                     .onAppear { vm.ensureSelectedChatModel() }
                     .onChange(of: vm.selectedChatModel) { _ in
-                        vm.syncChatModelModeWithSelection()
+                        vm.handleChatModelSelectionChanged(useDeveloperSession: true)
                     }
                 }
                 Spacer()
@@ -7792,7 +7898,7 @@ struct ContentView: View {
                 .frame(width: 190)
                 .onAppear { vm.ensureSelectedChatModel() }
                 .onChange(of: vm.selectedChatModel) { _ in
-                    vm.syncChatModelModeWithSelection()
+                    vm.handleChatModelSelectionChanged(useDeveloperSession: false)
                 }
 
                 Spacer(minLength: 12)

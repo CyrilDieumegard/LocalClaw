@@ -135,6 +135,13 @@ struct InstallerEngineTests {
         #expect(InstallerViewModel.wallClockTimeoutSeconds(forAgentTimeout: 60) == 80)
     }
 
+    @Test func localLMStudioModelIDNormalizesPickerValues() {
+        #expect(InstallerViewModel.localLMStudioModelID(from: "lmstudio/google/gemma-4-e4b") == "google/gemma-4-e4b")
+        #expect(InstallerViewModel.localLMStudioModelID(from: "google/gemma-4-e4b") == "google/gemma-4-e4b")
+        #expect(InstallerViewModel.localLMStudioModelID(from: "openrouter/openai/gpt-5.5") == "")
+        #expect(InstallerViewModel.localLMStudioModelID(from: "  lmstudio/nvidia/nemotron-3-nano-4b  ") == "nvidia/nemotron-3-nano-4b")
+    }
+
     @Test func quickDeveloperColorEditRewritesStyleFiles() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("localclaw-quick-color-test-\(UUID().uuidString)")
