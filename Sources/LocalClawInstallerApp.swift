@@ -3647,6 +3647,8 @@ final class InstallerViewModel: ObservableObject {
             developerActiveTab = "preview"
             if developerPreviewProcess != nil {
                 developerPreviewStatus = "Preview refreshed after quick edit"
+            } else {
+                developerPreviewStatus = "Quick edit applied. Run preview to view it."
             }
             chatStatus = "Ready"
             return
@@ -3809,6 +3811,8 @@ final class InstallerViewModel: ObservableObject {
                     self.developerActiveTab = "preview"
                     if self.developerPreviewProcess != nil {
                         self.developerPreviewStatus = "Preview refreshed after code changes"
+                    } else {
+                        self.developerPreviewStatus = "Code changes applied. Run preview to view them."
                     }
                 }
                 self.chatStatus = result.0 == 0 ? "Ready" : (knownDiagnostic == nil ? "Error" : "Needs setup")
@@ -4143,6 +4147,8 @@ final class InstallerViewModel: ObservableObject {
                 try fm.createDirectory(at: targetURL, withIntermediateDirectories: true)
             }
             developerProjectPath = targetURL.path
+            developerPreviewRefreshID = UUID()
+            developerActiveTab = "preview"
             developerPreviewStatus = "Project folder ready: \(slug)"
         } catch {
             developerPreviewStatus = "Could not prepare project folder: \(error.localizedDescription)"
@@ -4186,8 +4192,12 @@ final class InstallerViewModel: ObservableObject {
         panel.allowsMultipleSelection = false
         panel.directoryURL = URL(fileURLWithPath: developerProjectPath)
         if panel.runModal() == .OK, let url = panel.url {
+            developerStopPreview()
             developerProjectPath = url.path
             developerProjectName = url.lastPathComponent
+            developerPreviewRefreshID = UUID()
+            developerActiveTab = "preview"
+            developerPreviewStatus = "App opened. Run preview to load it."
             chatInput = "Use this project folder as context: \(url.path). Inspect it and suggest the next development step."
         }
     }
@@ -6836,7 +6846,7 @@ struct ContentView: View {
                 }
                 Spacer()
                 developerToolbarButton("New app", icon: "plus.square.on.square") { vm.developerNewApp() }
-                developerToolbarButton("Open folder", icon: "folder") { vm.developerChooseFolder() }
+                developerToolbarButton("Open app", icon: "folder") { vm.developerChooseFolder() }
                 developerToolbarButton("Sync folder", icon: "folder.badge.gearshape") { vm.syncDeveloperProjectFolder() }
                 developerToolbarButton("Run preview", icon: "play.fill", primary: true) { vm.developerRunPreview() }
             }
