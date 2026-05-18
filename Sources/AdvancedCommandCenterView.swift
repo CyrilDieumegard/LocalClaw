@@ -469,6 +469,72 @@ final class CommandCenterViewModel: ObservableObject {
             }
         })
     }
+
+    func repairOpenClawConnection() {
+        addLog(.command, "Repairing OpenClaw connection...")
+        addLog(.info, "This can take up to two minutes. LocalClaw will fix config, reinstall the Gateway service, restart it, then open the dashboard.")
+
+        let repairCommand = """
+        set -o pipefail
+        mkdir -p "$HOME/.openclaw"
+        python3 - <<'PY'
+        import json, os, secrets
+        path = os.path.expanduser("~/.openclaw/openclaw.json")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception:
+            cfg = {}
+        gateway = cfg.setdefault("gateway", {})
+        gateway["mode"] = "local"
+        gateway["port"] = 18789
+        gateway["bind"] = "loopback"
+        auth = gateway.setdefault("auth", {})
+        auth["mode"] = "token"
+        if not auth.get("token"):
+            auth["token"] = secrets.token_hex(32)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, sort_keys=True)
+            f.write("\n")
+        print("Config checked: gateway local mode + token auth")
+        PY
+        perl -e 'alarm 120; exec @ARGV' openclaw doctor --fix --yes --non-interactive 2>&1 || true
+        openclaw gateway stop 2>&1 || true
+        openclaw gateway uninstall 2>&1 || true
+        sleep 1
+        openclaw gateway install 2>&1
+        openclaw gateway start 2>&1 || true
+        sleep 3
+        openclaw status 2>&1 | sed -n '1,40p'
+        openclaw dashboard --no-open 2>&1 || true
+        """
+
+        executeCommandAsync(repairCommand, onOutput: { line in
+            DispatchQueue.main.async {
+                let lower = line.lowercased()
+                if lower.contains("error") || lower.contains("failed") || lower.contains("invalid") {
+                    self.addLog(.error, line)
+                } else if lower.contains("warning") || lower.contains("warn") {
+                    self.addLog(.warning, line)
+                } else if lower.contains("ready") || lower.contains("reachable") || lower.contains("copied") || lower.contains("config checked") {
+                    self.addLog(.success, line)
+                } else {
+                    self.addLog(.info, line)
+                }
+            }
+        }, onComplete: { code in
+            DispatchQueue.main.async {
+                self.syncTokenFromConfig()
+                self.checkGatewayStatus()
+                if code == 0 {
+                    self.addLog(.success, "Repair completed. Dashboard URL has been copied to clipboard.")
+                    self.openDashboard()
+                } else {
+                    self.addLog(.error, "Repair finished with exit code \(code). Copy logs and send them to support.")
+                }
+            }
+        })
+    }
     
 
     private struct OpenRouterModelsResponse: Decodable {
@@ -1006,6 +1072,35 @@ struct AdvancedCommandCenterView: View {
                 .kerning(0.6)
                 .foregroundStyle(UI.accent)
 
+            Button(action: {
+                workspaceTab = .operations
+                rightTab = .logs
+                viewModel.repairOpenClawConnection()
+            }) {
+                HStack(spacing: 10) {
+                    Image(systemName: "wrench.and.screwdriver.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Repair OpenClaw Connection")
+                            .font(AppFont.bodySemi(14))
+                        Text("Fix Gateway, restart service, and reopen dashboard")
+                            .font(AppFont.body(11))
+                            .foregroundStyle(.white.opacity(0.82))
+                    }
+                    Spacer()
+                    Image(systemName: "arrow.right.circle.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(12)
+                .frame(maxWidth: .infinity)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.orange)
+                )
+            }
+            .buttonStyle(.plain)
+
             HStack(spacing: 10) {
                 compactActionButton("Start", icon: "play.fill", color: .green) { viewModel.startGateway() }
                 compactActionButton("Switch model", icon: "brain.head.profile", color: UI.accent) { workspaceTab = .models }
@@ -1131,6 +1226,13 @@ struct AdvancedCommandCenterView: View {
                 compactActionButton("Restart", icon: "arrow.clockwise", color: .orange) { viewModel.restartGateway() }
                 compactActionButton("Dashboard", icon: "globe", color: UI.accent) { viewModel.openDashboard() }
             }
+
+            ActionButton(
+                title: "Repair OpenClaw Connection",
+                icon: "wrench.and.screwdriver.fill",
+                color: .orange,
+                action: { viewModel.repairOpenClawConnection(); rightTab = .logs }
+            )
 
             Text("Use Advanced only for troubleshooting.")
                 .font(AppFont.body(11))
