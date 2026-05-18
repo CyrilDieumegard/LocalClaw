@@ -466,6 +466,26 @@ final class InstallerViewModel: ObservableObject {
         let displayName: String
     }
 
+    struct OAuthProviderOption: Identifiable, Hashable {
+        let id: String
+        let displayName: String
+        let detail: String
+        let modelIdentifier: String
+        let authProvider: String
+        let available: Bool
+    }
+
+    static let oauthProviderOptions: [OAuthProviderOption] = [
+        OAuthProviderOption(
+            id: "openai-codex",
+            displayName: "ChatGPT / Codex",
+            detail: "Connect with your OpenAI account. No API key paste.",
+            modelIdentifier: "openai-codex/gpt-5.4",
+            authProvider: "openai-codex",
+            available: true
+        )
+    ]
+
     static let openRouterModels: [OpenRouterModel] = [
         // Recommended / Popular
         OpenRouterModel(id: "openrouter/openai/gpt-5.4-mini", displayName: "⭐ GPT-5.4 Mini"),
@@ -583,6 +603,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var selectedProvider: AIProvider = .openRouter
     @Published var selectedCloudAuthMode: CloudAuthMode = .api
     @Published var openAIAuthMethod: AIProvider.OpenAIAuthMethod = .apiKey
+    @Published var selectedOAuthProvider: String = "openai-codex"
     @Published var selectedOpenRouterModel: String = "openrouter/openai/gpt-5.4-mini"
     @Published var openRouterModelsLive: [OpenRouterModel] = []
     @Published var skillsSearchQuery: String = ""
@@ -1517,13 +1538,17 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func effectiveModelIdentifier() -> String {
-        if isOpenAIOAuthMode { return "openai-codex/gpt-5.4" }
+        if isOpenAIOAuthMode { return selectedOAuthProviderOption.modelIdentifier }
         return selectedProvider.modelIdentifier
     }
 
     func effectiveAuthProvider() -> String {
-        if isOpenAIOAuthMode { return "openai-codex" }
+        if isOpenAIOAuthMode { return selectedOAuthProviderOption.authProvider }
         return selectedProvider.authProvider
+    }
+
+    var selectedOAuthProviderOption: OAuthProviderOption {
+        Self.oauthProviderOptions.first { $0.id == selectedOAuthProvider } ?? Self.oauthProviderOptions[0]
     }
 
     func providerNeedsApiKey() -> Bool {
@@ -4121,15 +4146,21 @@ final class InstallerViewModel: ObservableObject {
         var models: [OpenRouterModel] = []
         let current = openClawChatModelLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         let showingLocalModels = selectedChatResponseMode == .local
+        let showingOAuthModels = inferenceMode == .oauth || selectedCloudAuthMode == .oauth
         if !current.isEmpty && !current.lowercased().contains("not configured") {
             let currentID = Self.normalizedChatModelID(current, inferenceMode: inferenceMode, localModels: localLMStudioModels)
             let currentIsLocal = currentID.hasPrefix("lmstudio/") || localLMStudioModels.contains(currentID)
-            if currentIsLocal == showingLocalModels {
+            let currentIsOAuth = currentID.hasPrefix("openai-codex/")
+            if showingOAuthModels, currentIsOAuth {
+                models.append(OpenRouterModel(id: currentID, displayName: Self.readableModelName(currentID)))
+            } else if !showingOAuthModels, currentIsLocal == showingLocalModels {
                 models.append(OpenRouterModel(id: currentID, displayName: Self.readableModelName(currentID)))
             }
         }
 
-        if showingLocalModels {
+        if showingOAuthModels {
+            models.append(OpenRouterModel(id: selectedOAuthProviderOption.modelIdentifier, displayName: selectedOAuthProviderOption.displayName))
+        } else if showingLocalModels {
             for local in localLMStudioModels {
                 models.append(OpenRouterModel(id: "lmstudio/\(local)", displayName: "Local · \(local)"))
             }
@@ -4153,9 +4184,20 @@ final class InstallerViewModel: ObservableObject {
         if selectedChatResponseMode == .local {
             inferenceMode = .local
             refreshLocalLMStudioModels()
+        } else if inferenceMode == .oauth || selectedCloudAuthMode == .oauth {
+            prepareOAuthModelSelection()
         } else {
             prepareCloudModelSelection()
         }
+    }
+
+    func prepareOAuthModelSelection() {
+        inferenceMode = .oauth
+        selectedProvider = .openAI
+        selectedCloudAuthMode = .oauth
+        openAIAuthMethod = .oauth
+        selectedChatModel = selectedOAuthProviderOption.modelIdentifier
+        currentModel = selectedOAuthProviderOption.modelIdentifier
     }
 
     func prepareCloudModelSelection() {
@@ -4185,6 +4227,12 @@ final class InstallerViewModel: ObservableObject {
         if model.hasPrefix("lmstudio/") || localLMStudioModels.contains(model) {
             selectedChatResponseMode = .local
             inferenceMode = .local
+        } else if model.hasPrefix("openai-codex/") {
+            selectedChatResponseMode = .cloud
+            inferenceMode = .oauth
+            selectedProvider = .openAI
+            selectedCloudAuthMode = .oauth
+            openAIAuthMethod = .oauth
         } else if model.hasPrefix("openrouter/") {
             selectedChatResponseMode = .cloud
             inferenceMode = .cloud
@@ -4213,6 +4261,36 @@ final class InstallerViewModel: ObservableObject {
         if !localModel.isEmpty {
             selectedLocalLMStudioModel = localModel
             autoSetupLocalLMStudioModel(modelId: localModel, source: useDeveloperSession ? .developer : .chat)
+            return
+        }
+
+        if model.hasPrefix("openai-codex/") {
+            let oauthModel = selectedOAuthProviderOption.modelIdentifier
+            selectedChatResponseMode = .cloud
+            inferenceMode = .oauth
+            selectedProvider = .openAI
+            selectedCloudAuthMode = .oauth
+            openAIAuthMethod = .oauth
+            selectedChatModel = oauthModel
+            currentModel = oauthModel
+            chatGatewayPrepared = false
+            resetMainAgentSessions()
+
+            Task.detached {
+                let engine = InstallerEngine()
+                let result = engine.changeModel(oauthModel)
+                await MainActor.run {
+                    self.chatStatus = result.state == .ok ? "Ready" : "OAuth config error"
+                    if result.state != .ok {
+                        let message = ChatMessage(role: "error", text: result.message, modelName: "LocalClaw")
+                        if useDeveloperSession {
+                            self.developerChatMessages.append(message)
+                        } else {
+                            self.chatMessages.append(message)
+                        }
+                    }
+                }
+            }
             return
         }
 
@@ -9029,11 +9107,7 @@ struct ContentView: View {
             .disabled(vm.inferenceMode == .oauth)
 
             if vm.inferenceMode == .oauth {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("OAuth uses OpenAI (ChatGPT/Codex).")
-                        .font(AppFont.body(11))
-                        .foregroundStyle(UI.muted)
-                }
+                oauthSetupAssistant
             }
 
             providerAuthMatrix
@@ -9064,6 +9138,69 @@ struct ContentView: View {
             authMatrixRow(provider: "Anthropic", auth: "API key required")
             authMatrixRow(provider: "Gemini", auth: "API key required")
             authMatrixRow(provider: "xAI", auth: "API key required")
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private var oauthSetupAssistant: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "person.badge.key.fill")
+                    .foregroundStyle(UI.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(vm.cloudProviderAuthConfigured ? "OAuth connected" : "OAuth setup assistant")
+                        .font(AppFont.bodySemi(12))
+                        .foregroundStyle(UI.text)
+                    Text(vm.cloudProviderAuthConfigured ? "Your OpenClaw OAuth profile is ready." : "Choose the account provider to connect.")
+                        .font(AppFont.body(11))
+                        .foregroundStyle(UI.muted)
+                }
+                Spacer()
+                Text(vm.cloudProviderAuthConfigured ? "Ready" : "Needs login")
+                    .font(AppFont.bodySemi(10))
+                    .foregroundStyle(vm.cloudProviderAuthConfigured ? Color(NSColor.systemGreen) : Color(NSColor.systemOrange))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill((vm.cloudProviderAuthConfigured ? Color(NSColor.systemGreen) : Color(NSColor.systemOrange)).opacity(0.12)))
+            }
+
+            ForEach(InstallerViewModel.oauthProviderOptions) { provider in
+                Button {
+                    vm.selectedOAuthProvider = provider.id
+                    vm.prepareOAuthModelSelection()
+                    if !vm.cloudProviderAuthConfigured {
+                        vm.openTerminalOpenAIOAuth()
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: vm.selectedOAuthProvider == provider.id ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(provider.available ? UI.accent : UI.muted)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(provider.displayName)
+                                .font(AppFont.bodySemi(12))
+                                .foregroundStyle(UI.text)
+                            Text(provider.detail)
+                                .font(AppFont.body(11))
+                                .foregroundStyle(UI.muted)
+                        }
+                        Spacer()
+                        Text(provider.available ? "Connect" : "Not supported")
+                            .font(AppFont.bodySemi(10))
+                            .foregroundStyle(provider.available ? UI.accent : UI.muted)
+                    }
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(vm.selectedOAuthProvider == provider.id ? UI.accent.opacity(0.10) : UI.cardSoft))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(vm.selectedOAuthProvider == provider.id ? UI.accent.opacity(0.45) : UI.lineSoft, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .disabled(!provider.available)
+            }
+
+            Text("For now, OpenClaw exposes OAuth through ChatGPT/Codex. Other providers stay in API key mode until their OAuth login is supported by OpenClaw.")
+                .font(AppFont.body(10))
+                .foregroundStyle(UI.muted)
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))

@@ -249,6 +249,28 @@ struct InstallerEngineTests {
         #expect(vm.selectedChatModel == "openrouter/openai/gpt-5.5")
     }
 
+    @MainActor
+    @Test func oauthModeKeepsOAuthModelList() {
+        let vm = InstallerViewModel()
+        vm.inferenceMode = .oauth
+        vm.selectedCloudAuthMode = .oauth
+        vm.selectedChatResponseMode = .cloud
+        vm.currentModel = "openrouter/openai/gpt-5.5"
+        vm.openRouterModelsLive = [
+            InstallerViewModel.OpenRouterModel(id: "openrouter/openai/gpt-5.5", displayName: "GPT-5.5")
+        ]
+        vm.selectedChatModel = "openrouter/openai/gpt-5.5"
+
+        vm.prepareModelListForSelectedMode()
+        vm.ensureSelectedChatModel()
+
+        #expect(vm.inferenceMode == .oauth)
+        #expect(vm.selectedCloudAuthMode == .oauth)
+        #expect(vm.availableChatModels.map(\.id) == ["openai-codex/gpt-5.4"])
+        #expect(vm.selectedChatModel == "openai-codex/gpt-5.4")
+        #expect(vm.effectiveAuthProvider() == "openai-codex")
+    }
+
     @Test func createsRunnableDeveloperPreviewScaffold() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("localclaw-preview-test-\(UUID().uuidString)")
