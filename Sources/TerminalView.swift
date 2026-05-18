@@ -126,7 +126,7 @@ final class TerminalViewModel: ObservableObject {
     
     /// Run doctor
     func runDoctor() {
-        execute("openclaw doctor --repair --yes --no-color 2>&1")
+        execute("openclaw doctor --repair --yes --non-interactive 2>&1")
     }
     
     /// Show config

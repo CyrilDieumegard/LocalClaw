@@ -447,7 +447,7 @@ final class CommandCenterViewModel: ObservableObject {
     
     func runDoctor() {
         addLog(.command, "Running doctor...")
-        executeCommandAsync("openclaw doctor --repair --yes --no-color", onOutput: { line in
+        executeCommandAsync("openclaw doctor --repair --yes --non-interactive", onOutput: { line in
             DispatchQueue.main.async {
                 if line.contains("✓") || line.contains("OK") || line.contains("fixed") {
                     self.addLog(.success, line)
