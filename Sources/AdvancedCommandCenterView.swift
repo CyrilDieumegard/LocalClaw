@@ -553,6 +553,7 @@ final class CommandCenterViewModel: ObservableObject {
         var model = defaults["model"] as? [String: Any] ?? [:]
         model["primary"] = modelId
         defaults["model"] = model
+        defaults = ensureAgentModelAllowlist(defaults: defaults, modelIdentifier: modelId)
 
         // Apply runtime profile depending on Local vs Cloud switch
         var sandbox = defaults["sandbox"] as? [String: Any] ?? [:]
@@ -596,6 +597,20 @@ final class CommandCenterViewModel: ObservableObject {
         } catch {
             addLog(.error, "Failed writing config: \(error.localizedDescription)")
         }
+    }
+
+    private func ensureAgentModelAllowlist(defaults: [String: Any], modelIdentifier: String) -> [String: Any] {
+        var updated = defaults
+        var models = updated["models"] as? [String: Any] ?? [:]
+        var entry = models[modelIdentifier] as? [String: Any] ?? [:]
+        var runtime = entry["agentRuntime"] as? [String: Any] ?? [:]
+        if runtime["id"] == nil {
+            runtime["id"] = modelIdentifier.hasPrefix("openai/") ? "codex" : "auto"
+        }
+        entry["agentRuntime"] = runtime
+        models[modelIdentifier] = entry
+        updated["models"] = models
+        return updated
     }
 
     private func detectInstalledLocalModel() -> String {

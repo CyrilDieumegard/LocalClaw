@@ -281,12 +281,15 @@ final class InstallerEngine: @unchecked Sendable {
             config = json
         }
 
-        // Set agents.defaults.model.primary
+        // Set agents.defaults.model.primary and make the model visible to the
+        // main agent. OpenClaw rejects explicit model overrides unless they are
+        // present in agents.defaults.models.
         var agents = config["agents"] as? [String: Any] ?? [:]
         var defaults = agents["defaults"] as? [String: Any] ?? [:]
         var model = defaults["model"] as? [String: Any] ?? [:]
         model["primary"] = modelIdentifier
         defaults["model"] = model
+        defaults = ensureAgentModelAllowlist(defaults: defaults, modelIdentifier: modelIdentifier)
         agents["defaults"] = defaults
         config["agents"] = agents
 
@@ -297,6 +300,20 @@ final class InstallerEngine: @unchecked Sendable {
         } catch {
             return StepResult(state: .fail, message: "Failed to write model config: \(error.localizedDescription)")
         }
+    }
+
+    private func ensureAgentModelAllowlist(defaults: [String: Any], modelIdentifier: String) -> [String: Any] {
+        var updated = defaults
+        var models = updated["models"] as? [String: Any] ?? [:]
+        var entry = models[modelIdentifier] as? [String: Any] ?? [:]
+        var runtime = entry["agentRuntime"] as? [String: Any] ?? [:]
+        if runtime["id"] == nil {
+            runtime["id"] = modelIdentifier.hasPrefix("openai/") ? "codex" : "auto"
+        }
+        entry["agentRuntime"] = runtime
+        models[modelIdentifier] = entry
+        updated["models"] = models
+        return updated
     }
 
     /// Write API key to OpenClaw config + agent auth store
