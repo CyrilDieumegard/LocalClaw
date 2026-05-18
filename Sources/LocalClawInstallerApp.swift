@@ -2475,7 +2475,7 @@ final class InstallerViewModel: ObservableObject {
 
         Task.detached {
             let engine = InstallerEngine()
-            let result = engine.shell("openclaw --no-color cron list --json 2>&1")
+            let result = engine.shell(Self.cronListInventoryCommand + " 2>&1")
 
             await MainActor.run {
                 self.cronJobsIsLoading = false
@@ -2489,6 +2489,8 @@ final class InstallerViewModel: ObservableObject {
                 }
 
                 let jobs = root["jobs"] as? [[String: Any]] ?? []
+                let total = root["total"] as? Int ?? jobs.count
+                let hasMore = root["hasMore"] as? Bool ?? false
                 self.cronJobs = jobs.compactMap { Self.parseCronJob($0) }
                     .sorted {
                         if $0.enabled != $1.enabled { return $0.enabled && !$1.enabled }
@@ -2497,10 +2499,16 @@ final class InstallerViewModel: ObservableObject {
 
                 let activeCount = self.cronJobs.filter(\.enabled).count
                 self.cronJobsStatus = "\(activeCount) active · \(self.cronJobs.count) jobs"
-                self.cronJobLogs += "\nCron inventory refreshed."
+                if hasMore || total > self.cronJobs.count {
+                    self.cronJobLogs += "\nCron inventory refreshed, but OpenClaw returned \(self.cronJobs.count) of \(total) jobs."
+                } else {
+                    self.cronJobLogs += "\nCron inventory refreshed."
+                }
             }
         }
     }
+
+    nonisolated static let cronListInventoryCommand = "openclaw --no-color cron list --all --json"
 
     nonisolated private static func parseCronJob(_ row: [String: Any]) -> CronJobInfo? {
         guard let id = row["id"] as? String ?? row["jobId"] as? String else { return nil }

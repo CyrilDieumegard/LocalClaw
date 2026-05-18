@@ -91,6 +91,10 @@ struct InstallerEngineTests {
         #expect(quoted == #"'/Users/cyril/LocalClaw'"'"'s update/localclaw.dmg'"#)
     }
 
+    @Test func cronInventoryRefreshIncludesDisabledJobs() {
+        #expect(InstallerViewModel.cronListInventoryCommand == "openclaw --no-color cron list --all --json")
+    }
+
     @Test func canonicalChatRuntimeModelMapsOpenAIGPTModels() {
         #expect(InstallerViewModel.canonicalChatRuntimeModelID("openrouter/openai/gpt-5.5") == "openrouter/openai/gpt-5.5")
         #expect(InstallerViewModel.canonicalChatRuntimeModelID("openrouter/openai/gpt-5.4") == "openrouter/openai/gpt-5.4")
