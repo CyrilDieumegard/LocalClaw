@@ -763,6 +763,7 @@ final class InstallerViewModel: ObservableObject {
     private static let developerProjectNameDefaultsKey = "localclaw.developer.projectName.v1"
     private static let developerFreshContextDefaultsKey = "localclaw.developer.freshContext.v1"
     private static let modelUsageDefaultsKey = "localclaw.modelUsage.records.v1"
+    nonisolated static let simpleDeveloperEditTimeoutSeconds = 60
 
     init() {
         if let savedMode = UserDefaults.standard.string(forKey: Self.selectedChatResponseModeDefaultsKey),
@@ -3598,6 +3599,13 @@ final class InstallerViewModel: ObservableObject {
             After code changes, mention the changed files and any command needed only if LocalClaw cannot run it automatically.
             [/LocalClaw developer workspace]
             """)
+            if Self.isSimpleDeveloperEdit(text) {
+                agentTextParts.append("""
+                [LocalClaw developer speed rule]
+                This is a small targeted edit. Inspect only the likely files, make the smallest change, skip broad project scans, and do not run package installs or long dev servers unless the user explicitly asks.
+                [/LocalClaw developer speed rule]
+                """)
+            }
         }
         agentTextParts.append("""
         [LocalClaw chat mode]
@@ -3661,8 +3669,10 @@ final class InstallerViewModel: ObservableObject {
         ))
         let developerWorkdir = developerProjectPath
         let useFreshDeveloperContext = useDeveloperSession && developerFreshContextEnabled
-        let agentThinking = Self.agentThinkingLevel(for: selectedChatResponseMode)
-        let agentTimeout = Self.agentTimeoutSeconds(for: selectedChatResponseMode, useDeveloperSession: useDeveloperSession)
+        let isSimpleDeveloperEdit = useDeveloperSession && Self.isSimpleDeveloperEdit(text)
+        let agentThinking = isSimpleDeveloperEdit ? "low" : Self.agentThinkingLevel(for: selectedChatResponseMode)
+        let agentTimeout = isSimpleDeveloperEdit ? Self.simpleDeveloperEditTimeoutSeconds : Self.agentTimeoutSeconds(for: selectedChatResponseMode, useDeveloperSession: useDeveloperSession)
+        let wallClockTimeout = Self.wallClockTimeoutSeconds(forAgentTimeout: agentTimeout)
 
         Task.detached {
             let quote: (String) -> String = { value in
@@ -3670,6 +3680,11 @@ final class InstallerViewModel: ObservableObject {
             }
             let engine = InstallerEngine()
             if shouldPrepareGateway {
+                await MainActor.run {
+                    if self.activeChatRequestID == requestID {
+                        self.chatStatus = "Preparing OpenClaw..."
+                    }
+                }
                 _ = engine.shell("openclaw gateway status >/dev/null 2>&1 || openclaw gateway start >/dev/null 2>&1 || true")
             }
 
@@ -3699,7 +3714,12 @@ final class InstallerViewModel: ObservableObject {
             let command = "\(workdirPrefix)MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(runtimeSessionID)) --message \"$(cat \"$MESSAGE_FILE\")\"\(modelFlag)\(thinkingFlag) --json --timeout \(agentTimeout) 2>&1"
             let fallbackCommand = "\(workdirPrefix)MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(runtimeSessionID)) --message \"$(cat \"$MESSAGE_FILE\")\"\(thinkingFlag) --json --timeout \(agentTimeout) 2>&1"
             let startedAt = Date()
-            var result = Self.shellCancellable(command) { process in
+            await MainActor.run {
+                if self.activeChatRequestID == requestID {
+                    self.chatStatus = isSimpleDeveloperEdit ? "Applying quick edit..." : "Running OpenClaw..."
+                }
+            }
+            var result = Self.shellCancellable(command, timeoutSeconds: wallClockTimeout) { process in
                 Task { @MainActor in
                     if self.activeChatRequestID == requestID {
                         self.activeChatProcess = process
@@ -3707,7 +3727,12 @@ final class InstallerViewModel: ObservableObject {
                 }
             }
             if result.0 != 0 && Self.isUnsupportedModelFlagError(result.1) && !modelOverride.isEmpty {
-                result = Self.shellCancellable(fallbackCommand) { process in
+                await MainActor.run {
+                    if self.activeChatRequestID == requestID {
+                        self.chatStatus = "Retrying without model override..."
+                    }
+                }
+                result = Self.shellCancellable(fallbackCommand, timeoutSeconds: wallClockTimeout) { process in
                     Task { @MainActor in
                         if self.activeChatRequestID == requestID {
                             self.activeChatProcess = process
@@ -3720,7 +3745,12 @@ final class InstallerViewModel: ObservableObject {
                 let repair = engine.disableBrokenGlobalPlugin(id: "whatsapp")
                 repairedPlugin = repair.state == .ok
                 if repairedPlugin {
-                    result = Self.shellCancellable(command) { process in
+                    await MainActor.run {
+                        if self.activeChatRequestID == requestID {
+                            self.chatStatus = "Plugin repaired, retrying..."
+                        }
+                    }
+                    result = Self.shellCancellable(command, timeoutSeconds: wallClockTimeout) { process in
                         Task { @MainActor in
                             if self.activeChatRequestID == requestID {
                                 self.activeChatProcess = process
@@ -3734,7 +3764,7 @@ final class InstallerViewModel: ObservableObject {
             let reply = knownDiagnostic ?? Self.extractAgentReply(from: result.1)
             let runtimeModel = Self.extractAgentRuntimeModel(from: result.1)
             let usage = Self.extractAgentUsage(from: result.1)
-            let metrics = Self.extractAgentMetrics(from: result.1, elapsedSeconds: elapsed)
+            let metrics = Self.extractAgentMetrics(from: result.1, elapsedSeconds: elapsed, timeoutSeconds: wallClockTimeout, thinking: agentThinking)
             await MainActor.run {
                 guard self.activeChatRequestID == requestID else { return }
                 self.activeChatProcess = nil
@@ -3927,6 +3957,21 @@ final class InstallerViewModel: ObservableObject {
         case .cloud:
             return 150
         }
+    }
+
+    nonisolated static func wallClockTimeoutSeconds(forAgentTimeout timeout: Int) -> Int {
+        min(max(timeout + 20, 45), 260)
+    }
+
+    nonisolated static func isSimpleDeveloperEdit(_ text: String) -> Bool {
+        let clean = text
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .lowercased()
+        let editWords = ["change", "changer", "remplace", "remplacer", "mets", "met", "passer", "update", "modifier", "couleur", "color", "theme", "css", "style", "titre", "title", "texte", "text", "button", "bouton"]
+        let heavyWords = ["architecture", "database", "supabase", "auth", "stripe", "payment", "deploy", "migration", "test", "debug", "fix crash", "api", "backend", "refactor", "security"]
+        let hasEditSignal = editWords.contains { clean.contains($0) }
+        let hasHeavySignal = heavyWords.contains { clean.contains($0) }
+        return hasEditSignal && !hasHeavySignal && clean.count <= 280
     }
 
     func prepareDeveloperWorkspace() {
@@ -4319,7 +4364,7 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
-    nonisolated private static func shellCancellable(_ command: String, onStart: @escaping (Process) -> Void) -> (Int32, String) {
+    nonisolated private static func shellCancellable(_ command: String, timeoutSeconds: Int? = nil, onStart: @escaping (Process) -> Void) -> (Int32, String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = ["-lc", command]
@@ -4335,10 +4380,44 @@ final class InstallerViewModel: ObservableObject {
             return (1, "Failed command: \(command)\n\(error.localizedDescription)")
         }
 
+        let timeoutLock = NSLock()
+        var timedOut = false
+        let timer: DispatchSourceTimer?
+        if let timeoutSeconds, timeoutSeconds > 0 {
+            let source = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+            source.schedule(deadline: .now() + .seconds(timeoutSeconds))
+            source.setEventHandler {
+                timeoutLock.lock()
+                timedOut = true
+                timeoutLock.unlock()
+                if process.isRunning {
+                    process.terminate()
+                    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
+                        if process.isRunning {
+                            _ = try? Process.run(URL(fileURLWithPath: "/bin/kill"), arguments: ["-9", "\(process.processIdentifier)"])
+                        }
+                    }
+                }
+            }
+            source.resume()
+            timer = source
+        } else {
+            timer = nil
+        }
+
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
+        timer?.cancel()
         let output = String(data: data, encoding: .utf8) ?? ""
-        return (process.terminationStatus, output.trimmingCharacters(in: .whitespacesAndNewlines))
+        timeoutLock.lock()
+        let didTimeout = timedOut
+        timeoutLock.unlock()
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        if didTimeout {
+            let suffix = "LocalClaw stopped OpenClaw after \(timeoutSeconds ?? 0)s because this request exceeded the Developer time budget."
+            return (124, trimmed.isEmpty ? suffix : "\(trimmed)\n\n\(suffix)")
+        }
+        return (process.terminationStatus, trimmed)
     }
 
     func attachChatImage() {
@@ -4433,8 +4512,10 @@ final class InstallerViewModel: ObservableObject {
     }
 
 
-    nonisolated private static func extractAgentMetrics(from raw: String, elapsedSeconds: TimeInterval) -> String {
+    nonisolated private static func extractAgentMetrics(from raw: String, elapsedSeconds: TimeInterval, timeoutSeconds: Int? = nil, thinking: String? = nil) -> String {
         var parts = [String(format: "%.1fs", elapsedSeconds)]
+        if let timeoutSeconds { parts.append("limit \(timeoutSeconds)s") }
+        if let thinking, !thinking.isEmpty { parts.append("thinking \(thinking)") }
 
         let usage = extractAgentUsage(from: raw)
 
@@ -6649,7 +6730,7 @@ struct ContentView: View {
                     .font(AppFont.bodySemi(11))
                     .foregroundStyle(UI.muted)
                     .help("Use a fresh OpenClaw runtime session for each AI Developer request. This keeps replies fast by avoiding old transcript bloat.")
-                Label(vm.openClawChatStatus, systemImage: vm.chatStatus == "Ready" ? "checkmark.circle.fill" : "circle.fill")
+                Label(vm.chatStatus, systemImage: vm.chatStatus == "Ready" ? "checkmark.circle.fill" : "circle.fill")
                     .font(AppFont.bodySemi(11))
                     .foregroundStyle(vm.chatStatus == "Ready" ? Color(NSColor.systemGreen) : UI.accent)
             }
@@ -6669,7 +6750,7 @@ struct ContentView: View {
                             HStack(spacing: 8) {
                                 ProgressView()
                                     .scaleEffect(0.7)
-                                Text("OpenClaw is working...")
+                                Text(vm.chatStatus)
                                     .font(AppFont.body(12))
                                     .foregroundStyle(UI.muted)
                             }

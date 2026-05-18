@@ -127,6 +127,14 @@ struct InstallerEngineTests {
         #expect(InstallerViewModel.agentTimeoutSeconds(for: .deep, useDeveloperSession: true) == 240)
     }
 
+    @Test func simpleDeveloperEditsUseTightBudget() {
+        #expect(InstallerViewModel.isSimpleDeveloperEdit("change the game color to purple"))
+        #expect(InstallerViewModel.isSimpleDeveloperEdit("mets le theme en violet"))
+        #expect(!InstallerViewModel.isSimpleDeveloperEdit("refactor the backend auth and database migration"))
+        #expect(InstallerViewModel.simpleDeveloperEditTimeoutSeconds == 60)
+        #expect(InstallerViewModel.wallClockTimeoutSeconds(forAgentTimeout: 60) == 80)
+    }
+
     @MainActor
     @Test func chatModelListShowsOnlyLocalModelsInLocalMode() {
         let vm = InstallerViewModel()
