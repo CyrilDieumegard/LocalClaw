@@ -2581,10 +2581,11 @@ final class InstallerViewModel: ObservableObject {
 
     func createCronJobFromForm() {
         let name = cronCreateName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let scheduleValue = cronCreateScheduleValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawScheduleValue = cronCreateScheduleValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let scheduleValue = Self.normalizedCronScheduleValue(rawScheduleValue, kind: cronCreateScheduleKind)
         let message = cronCreateMessage.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        guard !name.isEmpty, !scheduleValue.isEmpty, !message.isEmpty else {
+        guard !name.isEmpty, !rawScheduleValue.isEmpty, !message.isEmpty else {
             cronCreateError = "Name, schedule and message are required."
             return
         }
@@ -2629,6 +2630,11 @@ final class InstallerViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    nonisolated private static func normalizedCronScheduleValue(_ value: String, kind: String) -> String {
+        guard kind == "at", value.hasPrefix("+") else { return value }
+        return String(value.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func openTerminalCronRemove(_ jobID: String) {
@@ -9669,7 +9675,7 @@ struct ContentView: View {
     private var schedulePrompt: String {
         switch vm.cronCreateScheduleKind {
         case "cron": return "0 9 * * *"
-        case "at": return "+1h or 2026-05-17T12:00:00+02:00"
+        case "at": return "15m, 1h, or 2026-05-17T12:00:00+02:00"
         default: return "30m, 2h, 1d"
         }
     }
@@ -9677,7 +9683,7 @@ struct ContentView: View {
     private var scheduleHelp: String {
         switch vm.cronCreateScheduleKind {
         case "cron": return "Cron format: minute hour day month weekday. Example: 0 9 * * * means every day at 09:00."
-        case "at": return "No ISO required: use +15m, +1h, +2d for one-shot jobs."
+        case "at": return "Use 15m, 1h, 2d, or an ISO timestamp for one-shot jobs."
         default: return "Use simple intervals like 30m, 2h, or 1d."
         }
     }
@@ -9693,10 +9699,10 @@ struct ContentView: View {
             ]
         case "at":
             return [
-                ("In 15 min", "at", "+15m"),
-                ("In 1 hour", "at", "+1h"),
-                ("Tomorrow", "at", "+1d"),
-                ("Next week", "at", "+7d")
+                ("In 15 min", "at", "15m"),
+                ("In 1 hour", "at", "1h"),
+                ("Tomorrow", "at", "1d"),
+                ("Next week", "at", "7d")
             ]
         default:
             return [
