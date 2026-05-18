@@ -7839,6 +7839,9 @@ struct ContentView: View {
                                     .foregroundStyle(UI.muted)
                                     .padding(.horizontal, 4)
                                     .padding(.top, vm.chatProjects.isEmpty ? 0 : 4)
+                                    .onDrop(of: [.plainText, .text], isTargeted: nil) { providers in
+                                        handleChatDrop(providers, projectID: nil)
+                                    }
                                 ForEach(vm.unfiledChatSessions) { session in
                                     chatSessionRow(session)
                                 }
@@ -8203,9 +8206,6 @@ struct ContentView: View {
             .padding(.vertical, 7)
             .background(RoundedRectangle(cornerRadius: 10).fill(color.opacity(0.10)))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(color.opacity(0.32), lineWidth: 1))
-            .onDrop(of: [UTType.text], isTargeted: nil) { providers in
-                handleChatDrop(providers, projectID: project.id)
-            }
 
             if isExpanded {
                 if sessions.isEmpty {
@@ -8222,6 +8222,11 @@ struct ContentView: View {
                 }
             }
         }
+        .padding(1)
+        .contentShape(Rectangle())
+        .onDrop(of: [.plainText, .text], isTargeted: nil) { providers in
+            handleChatDrop(providers, projectID: project.id)
+        }
     }
 
     func chatProjectColor(_ name: String) -> Color {
@@ -8237,17 +8242,26 @@ struct ContentView: View {
     }
 
     func handleChatDrop(_ providers: [NSItemProvider], projectID: String?) -> Bool {
-        guard let provider = providers.first else { return false }
-        provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { item, _ in
-            let value: String?
-            if let data = item as? Data {
-                value = String(data: data, encoding: .utf8)
-            } else {
-                value = item as? String
+        guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) ?? providers.first else { return false }
+        if provider.canLoadObject(ofClass: NSString.self) {
+            provider.loadObject(ofClass: NSString.self) { object, _ in
+                guard let sessionID = (object as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !sessionID.isEmpty else { return }
+                DispatchQueue.main.async {
+                    vm.moveChatSession(sessionID, toProjectID: projectID)
+                }
             }
-            guard let sessionID = value?.trimmingCharacters(in: .whitespacesAndNewlines), !sessionID.isEmpty else { return }
-            DispatchQueue.main.async {
-                vm.moveChatSession(sessionID, toProjectID: projectID)
+        } else {
+            provider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { item, _ in
+                let value: String?
+                if let data = item as? Data {
+                    value = String(data: data, encoding: .utf8)
+                } else {
+                    value = item as? String
+                }
+                guard let sessionID = value?.trimmingCharacters(in: .whitespacesAndNewlines), !sessionID.isEmpty else { return }
+                DispatchQueue.main.async {
+                    vm.moveChatSession(sessionID, toProjectID: projectID)
+                }
             }
         }
         return true
@@ -8271,9 +8285,27 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 12).fill(isActive ? UI.accent : UI.card))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
+            .contextMenu {
+                if !vm.chatProjects.isEmpty {
+                    Menu("Move to project") {
+                        ForEach(vm.chatProjects) { project in
+                            Button(project.title) {
+                                vm.moveChatSession(session.id, toProjectID: project.id)
+                            }
+                        }
+                    }
+                }
+                Button("Remove from project") {
+                    vm.moveChatSession(session.id, toProjectID: nil)
+                }
+            }
         }
         .buttonStyle(.plain)
-        .onDrag { NSItemProvider(object: session.id as NSString) }
+        .onDrag {
+            let provider = NSItemProvider(object: session.id as NSString)
+            provider.suggestedName = session.title
+            return provider
+        }
     }
 
     func chatInfoPill(_ text: String, icon: String) -> some View {
