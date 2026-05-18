@@ -813,7 +813,7 @@ final class InstallerViewModel: ObservableObject {
     }
 
     private static let defaultChannelCatalog: [ChannelCatalogEntry] = [
-        ChannelCatalogEntry(id: "telegram", label: "Telegram", detailLabel: "Bot token from BotFather", systemImage: "paperplane.fill", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "telegram", label: "Telegram", detailLabel: "Bot token + pairing approve", systemImage: "paperplane.fill", origin: "OpenClaw channel"),
         ChannelCatalogEntry(id: "discord", label: "Discord", detailLabel: "Bot token from Developer Portal", systemImage: "gamecontroller.fill", origin: "OpenClaw channel"),
         ChannelCatalogEntry(id: "whatsapp", label: "WhatsApp", detailLabel: "QR login with Linked Devices", systemImage: "phone.bubble.left.fill", origin: "OpenClaw channel"),
         ChannelCatalogEntry(id: "signal", label: "Signal", detailLabel: "Signal bridge or account login", systemImage: "message.badge.filled.fill", origin: "OpenClaw channel"),
@@ -2992,8 +2992,11 @@ final class InstallerViewModel: ObservableObject {
 
         if channel == "telegram" {
             setupFlow = """
-            echo "Telegram setup requires your bot token (from @BotFather)."
+            echo "Telegram setup has 2 required steps:"
+            echo "  1) Add the bot token from @BotFather."
+            echo "  2) Approve your Telegram user with OpenClaw pairing."
             echo ""
+            echo "Step 1/2 - Bot token"
             echo "Enabling Telegram plugin..."
             "$OPENCLAW_BIN" plugins enable telegram >/dev/null 2>&1 || "$OPENCLAW_BIN" plugins enable @openclaw/telegram >/dev/null 2>&1 || true
             echo ""
@@ -3015,6 +3018,31 @@ final class InstallerViewModel: ObservableObject {
                     echo ""
                     echo "Checking Telegram channel status..."
                     "$OPENCLAW_BIN" channels status --channel telegram --probe --timeout 5000 || "$OPENCLAW_BIN" channels status --probe --timeout 5000 || true
+                    echo ""
+                    echo "Step 2/2 - Pairing approve"
+                    echo "In Telegram, send /start to your bot. OpenClaw should reply with a pairing code."
+                    echo "Paste that pairing code here to approve this Telegram user."
+                    echo ""
+                    "$OPENCLAW_BIN" pairing list --channel telegram || true
+                    echo ""
+                    read -r "PAIRING_CODE?Paste Telegram pairing code (or press Enter to skip for now): "
+                    echo ""
+                    if [ -z "$PAIRING_CODE" ]; then
+                        echo "[WARNING] Pairing approval skipped."
+                        echo "Telegram is configured, but OpenClaw may ignore messages until you approve pairing."
+                        echo "Later command: $OPENCLAW_BIN pairing approve --channel telegram <code> --notify"
+                    else
+                        echo "Approving Telegram pairing code..."
+                        "$OPENCLAW_BIN" pairing approve --channel telegram "$PAIRING_CODE" --notify
+                        APPROVE_EXIT=$?
+                        echo ""
+                        if [ "$APPROVE_EXIT" -eq 0 ]; then
+                            echo "Telegram pairing approved. Send another message to the bot to test replies."
+                        else
+                            echo "[ERROR] Pairing approval failed with exit code $APPROVE_EXIT."
+                            exit "$APPROVE_EXIT"
+                        fi
+                    fi
                 else
                     echo "[ERROR] Telegram setup failed with exit code $ADD_EXIT."
                     exit "$ADD_EXIT"
@@ -10763,6 +10791,9 @@ struct ContentView: View {
             }
 
             VStack(spacing: 8) {
+                if channel.id == "telegram" {
+                    telegramSetupSteps(channel)
+                }
                 ForEach(channel.accountRows, id: \.self) { account in
                     channelAccountRow(channel: channel, account: account)
                 }
@@ -10771,6 +10802,23 @@ struct ContentView: View {
         .padding(16)
         .background(RoundedRectangle(cornerRadius: 14).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(channel.isActive ? Color(NSColor.systemGreen).opacity(0.35) : UI.lineSoft, lineWidth: 1))
+    }
+
+    private func telegramSetupSteps(_ channel: InstallerViewModel.ChannelInfo) -> some View {
+        HStack(spacing: 10) {
+            channelBadge(channel.configured ? "1 Bot token OK" : "1 Add bot token", color: channel.configured ? Color(NSColor.systemGreen) : UI.muted, icon: channel.configured ? "checkmark.circle.fill" : "1.circle")
+            channelBadge("2 Pairing approve required", color: channel.connected ? Color(NSColor.systemGreen) : Color(NSColor.systemOrange), icon: channel.connected ? "checkmark.circle.fill" : "person.crop.circle.badge.checkmark")
+            Text("Send /start to the bot, then approve the pairing code in the LocalClaw terminal.")
+                .font(AppFont.body(11))
+                .foregroundStyle(UI.muted)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     private func channelAccountRow(channel: InstallerViewModel.ChannelInfo, account: String) -> some View {
