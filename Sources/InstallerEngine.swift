@@ -549,10 +549,19 @@ final class InstallerEngine: @unchecked Sendable {
             let rootProfiles = json["profiles"] as? [String: Any]
             let nestedProfiles = (json["auth"] as? [String: Any])?["profiles"] as? [String: Any]
             for profiles in [rootProfiles, nestedProfiles].compactMap({ $0 }) {
-                if let profile = profiles[profileKey] as? [String: Any],
-                   let key = profile["key"] as? String,
-                   !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    return true
+                if let profile = profiles[profileKey] as? [String: Any] {
+                    if let key = profile["key"] as? String,
+                       !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        return true
+                    }
+                    if let type = profile["type"] as? String,
+                       type.lowercased().contains("oauth") {
+                        return true
+                    }
+                    if let token = profile["token"] as? String,
+                       !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        return true
+                    }
                 }
             }
         }

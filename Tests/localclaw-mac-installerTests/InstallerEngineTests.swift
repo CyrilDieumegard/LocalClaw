@@ -182,7 +182,29 @@ struct InstallerEngineTests {
         #expect(InstallerViewModel.localLMStudioModelID(from: "lmstudio/google/gemma-4-e4b") == "google/gemma-4-e4b")
         #expect(InstallerViewModel.localLMStudioModelID(from: "google/gemma-4-e4b") == "google/gemma-4-e4b")
         #expect(InstallerViewModel.localLMStudioModelID(from: "openrouter/openai/gpt-5.5") == "")
+        #expect(InstallerViewModel.localLMStudioModelID(from: "openai/gpt-5.4") == "")
+        #expect(InstallerViewModel.localLMStudioModelID(from: "google-gemini-cli/gemini-3.1-pro-preview") == "")
         #expect(InstallerViewModel.localLMStudioModelID(from: "  lmstudio/nvidia/nemotron-3-nano-4b  ") == "nvidia/nemotron-3-nano-4b")
+    }
+
+    @MainActor
+    @Test func oauthSelectionKeepsSelectedOAuthRuntimeModel() {
+        let vm = InstallerViewModel()
+        vm.inferenceMode = .oauth
+        vm.selectedCloudAuthMode = .oauth
+        vm.selectedChatResponseMode = .cloud
+        vm.oauthModelsLive = [
+            InstallerViewModel.OpenRouterModel(id: "openai/gpt-5.4-mini", displayName: "GPT-5.4 Mini"),
+            InstallerViewModel.OpenRouterModel(id: "openai/gpt-5.4", displayName: "GPT-5.4")
+        ]
+        vm.selectedChatModel = "openai/gpt-5.4-mini"
+
+        vm.handleChatModelSelectionChanged(useDeveloperSession: false)
+
+        #expect(vm.inferenceMode == .oauth)
+        #expect(vm.selectedChatResponseMode == .cloud)
+        #expect(vm.selectedChatModel == "openai/gpt-5.4-mini")
+        #expect(vm.selectedOAuthModelIdentifier() == "openai/gpt-5.4-mini")
     }
 
     @Test func quickDeveloperColorEditRewritesStyleFiles() throws {
@@ -288,6 +310,8 @@ struct InstallerEngineTests {
         #expect(vm.selectedProvider == .openAI)
         #expect(vm.selectedChatModel == "openai-codex/gpt-5.4")
         #expect(vm.availableChatModels.map(\.id) == ["openai-codex/gpt-5.4"])
+        vm.presentOAuthSetupAssistantIfNeeded(authConfigured: false)
+        #expect(vm.showOAuthSetupAssistant == true)
     }
 
     @MainActor
