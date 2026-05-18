@@ -466,8 +466,24 @@ final class InstallerEngine: @unchecked Sendable {
 
     /// Get current model
     func getCurrentModel() -> String {
-        let (_, out) = shell("openclaw agent current 2>&1 || echo 'Unknown'")
-        return out.trimmingCharacters(in: .whitespacesAndNewlines)
+        let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
+        if let data = FileManager.default.contents(atPath: configPath),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let agents = json["agents"] as? [String: Any],
+           let defaults = agents["defaults"] as? [String: Any],
+           let model = defaults["model"] as? [String: Any],
+           let primary = model["primary"] as? String,
+           !primary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return primary.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        if let data = FileManager.default.contents(atPath: NSHomeDirectory() + "/.openclaw/agents/main/.model"),
+           let model = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !model.isEmpty {
+            return model
+        }
+
+        return "Not configured"
     }
 
     func hasProviderAuth(provider: String) -> Bool {
