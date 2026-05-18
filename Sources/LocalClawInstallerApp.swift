@@ -17,6 +17,7 @@ final class InstallerViewModel: ObservableObject {
 
     enum InferenceMode: String, CaseIterable, Identifiable {
         case cloud = "Cloud LLM"
+        case oauth = "OAuth LLM"
         case local = "Local LLM"
 
         var id: String { rawValue }
@@ -1400,13 +1401,20 @@ final class InstallerViewModel: ObservableObject {
             }
             return
         } else {
-            guard !selectedOpenRouterModel.isEmpty else {
+            if inferenceMode == .oauth {
+                selectedProvider = .openAI
+                selectedCloudAuthMode = .oauth
+                openAIAuthMethod = .oauth
+            } else {
+                prepareCloudModelSelection()
+            }
+            guard inferenceMode == .oauth || !selectedOpenRouterModel.isEmpty else {
                 modelsApplyStatus = "Select a cloud model first."
                 return
             }
         }
 
-        let targetModel = selectedOpenRouterModel
+        let targetModel = inferenceMode == .oauth ? effectiveModelIdentifier() : selectedOpenRouterModel
         modelsApplyInProgress = true
         modelsApplyStatus = "Applying \(targetModel)..."
         Task.detached {
@@ -1470,7 +1478,7 @@ final class InstallerViewModel: ObservableObject {
         var errors: [String] = []
 
         // Gateway token is auto-generated during installation, not required here
-        if inferenceMode == .cloud && providerNeedsApiKey() && requiredProviderKey().isEmpty {
+        if isCloudLikeInferenceMode && providerNeedsApiKey() && requiredProviderKey().isEmpty {
             errors.append("Add API key for \(selectedProvider.rawValue)")
         }
 
@@ -1479,7 +1487,7 @@ final class InstallerViewModel: ObservableObject {
         }
         
         // OpenRouter specific validation
-        if inferenceMode == .cloud && selectedProvider == .openRouter {
+        if isCloudLikeInferenceMode && selectedProvider == .openRouter {
             let key = openRouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
             if !key.hasPrefix("sk-or-") {
                 errors.append("OpenRouter key should start with 'sk-or-'")
@@ -1496,8 +1504,12 @@ final class InstallerViewModel: ObservableObject {
         !isRunning && setupValidationErrors.isEmpty
     }
 
+    var isCloudLikeInferenceMode: Bool {
+        inferenceMode == .cloud || inferenceMode == .oauth
+    }
+
     var isOpenAIOAuthMode: Bool {
-        selectedCloudAuthMode == .oauth
+        inferenceMode == .oauth || selectedCloudAuthMode == .oauth
     }
 
     func effectiveModelIdentifier() -> String {
@@ -3352,10 +3364,19 @@ final class InstallerViewModel: ObservableObject {
             }
             return
         } else {
-            prepareCloudModelSelection()
-            selectedProvider = .openRouter
-            writePrimaryAndSecondaryModel(primary: selectedOpenRouterModel, secondary: nil)
-            controlCenterLogs += "[OK] Switched to Cloud LLM: \(selectedOpenRouterModel)\n"
+            if inferenceMode == .oauth {
+                selectedProvider = .openAI
+                selectedCloudAuthMode = .oauth
+                openAIAuthMethod = .oauth
+                writePrimaryAndSecondaryModel(primary: effectiveModelIdentifier(), secondary: nil)
+                controlCenterLogs += "[OK] Switched to OAuth LLM: \(effectiveModelIdentifier())\n"
+            } else {
+                prepareCloudModelSelection()
+                selectedProvider = .openRouter
+                selectedCloudAuthMode = .api
+                writePrimaryAndSecondaryModel(primary: selectedOpenRouterModel, secondary: nil)
+                controlCenterLogs += "[OK] Switched to Cloud LLM: \(selectedOpenRouterModel)\n"
+            }
         }
 
         resetMainAgentSessions()
@@ -3365,7 +3386,14 @@ final class InstallerViewModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             self.refreshControlCenter()
             self.modeSwitchInProgress = false
-            self.modeSwitchStatus = self.inferenceMode == .local ? "Switched to Local LLM" : "Switched to Cloud LLM"
+            switch self.inferenceMode {
+            case .local:
+                self.modeSwitchStatus = "Switched to Local LLM"
+            case .oauth:
+                self.modeSwitchStatus = "Switched to OAuth LLM"
+            case .cloud:
+                self.modeSwitchStatus = "Switched to Cloud LLM"
+            }
         }
     }
 
@@ -5100,7 +5128,7 @@ final class InstallerViewModel: ObservableObject {
     }
 
     var openClawChatModeLabel: String {
-        inferenceMode == .local ? "Local LLM" : "Cloud LLM"
+        inferenceMode.rawValue
     }
 
     var openClawChatModelLabel: String {
@@ -5114,6 +5142,9 @@ final class InstallerViewModel: ObservableObject {
         let current = currentModel.trimmingCharacters(in: .whitespacesAndNewlines)
         if !current.isEmpty && current != "Unknown" && !current.lowercased().hasPrefix("error:") {
             return current
+        }
+        if inferenceMode == .oauth {
+            return "openai-codex/gpt-5.4"
         }
         if inferenceMode == .cloud {
             return selectedOpenRouterModel.isEmpty ? "Cloud model not configured" : selectedOpenRouterModel
@@ -6356,7 +6387,7 @@ struct ContentView: View {
                     .foregroundStyle(UI.muted)
             }
 
-            Text(vm.inferenceMode == .local ? "LOCAL LLM" : "CLOUD LLM")
+            Text(vm.inferenceMode.rawValue.uppercased())
                 .font(AppFont.bodySemi(10))
                 .foregroundStyle(vm.inferenceMode == .local ? Color(NSColor.systemGreen) : UI.accent)
                 .padding(.horizontal, 8)
@@ -6378,11 +6409,12 @@ struct ContentView: View {
                 VStack(alignment: .trailing, spacing: 4) {
                 Picker("", selection: $vm.inferenceMode) {
                     Text("Cloud LLM").tag(InstallerViewModel.InferenceMode.cloud)
+                    Text("OAuth LLM").tag(InstallerViewModel.InferenceMode.oauth)
                     Text("Local LLM").tag(InstallerViewModel.InferenceMode.local)
                 }
                 .pickerStyle(.segmented)
                 .tint(UI.accent)
-                .frame(width: 170)
+                .frame(width: 270)
                 .onChange(of: vm.inferenceMode) { _ in
                     vm.applyInferenceModeSwitch()
                 }
@@ -6568,8 +6600,8 @@ struct ContentView: View {
                     .foregroundStyle(UI.muted)
 
                 VStack(alignment: .leading, spacing: 10) {
-                    helpStepCard(number: 1, title: "Choose your mode", detail: "Use Cloud LLM for fastest setup. Use Local LLM for offline usage.", icon: "slider.horizontal.3", tint: UI.accent)
-                    helpStepCard(number: 2, title: "Pick provider auth", detail: "OpenAI can use OAuth or API key. Other providers use API key.", icon: "person.badge.key", tint: .orange)
+                    helpStepCard(number: 1, title: "Choose your mode", detail: "Cloud LLM uses API keys. OAuth LLM uses ChatGPT/Codex login. Local LLM runs offline.", icon: "slider.horizontal.3", tint: UI.accent)
+                    helpStepCard(number: 2, title: "Pick provider auth", detail: "Cloud LLM supports OpenRouter/OpenAI/Anthropic/Gemini/xAI. OAuth LLM uses OpenAI.", icon: "person.badge.key", tint: .orange)
                     helpStepCard(number: 3, title: "Run installation", detail: "Go to Install and click Install Everything.", icon: "gearshape.2.fill", tint: .red)
                     helpStepCard(number: 4, title: "Verify success", detail: "Send one test message from Dashboard.", icon: "checkmark.message.fill", tint: .green)
                 }
@@ -8490,22 +8522,29 @@ struct ContentView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                .tint(UI.accent)
+                    .tint(UI.accent)
                     .onChange(of: vm.inferenceMode) { newValue in
                         if newValue == .local {
                             if vm.selectedModel.isEmpty {
                                 vm.selectedModel = vm.recommendation
                             }
                             vm.selectedProvider = .custom
+                            vm.selectedCloudAuthMode = .api
+                        } else if newValue == .oauth {
+                            vm.selectedModel = ""
+                            vm.selectedProvider = .openAI
+                            vm.selectedCloudAuthMode = .oauth
+                            vm.openAIAuthMethod = .oauth
                         } else {
                             vm.selectedModel = ""
+                            vm.selectedCloudAuthMode = .api
                             if vm.selectedProvider == .custom {
                                 vm.selectedProvider = .openRouter
                             }
                         }
                     }
 
-                    Text(vm.inferenceMode == .local ? "Run fully local with LM Studio" : "Use Cloud LLM models via provider API")
+                    Text(inferenceModeHelpText)
                         .font(AppFont.body(12))
                         .foregroundStyle(UI.muted)
                 }
@@ -8539,7 +8578,7 @@ struct ContentView: View {
                     .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
                 }
 
-                if vm.inferenceMode == .cloud {
+                if vm.isCloudLikeInferenceMode {
                     // Section 2: AI Provider
                     aiProviderSection
                 }
@@ -8585,8 +8624,8 @@ struct ContentView: View {
                 .foregroundStyle(UI.text)
             HStack(spacing: 10) {
                 installPathCard(
-                    title: "Fast setup",
-                    detail: "Cloud LLM, quickest install, low Mac load.",
+                    title: "Cloud LLM",
+                    detail: "API key mode with OpenRouter and other providers.",
                     icon: "bolt.fill",
                     selected: vm.inferenceMode == .cloud && vm.selectedProvider == .openRouter
                 ) {
@@ -8596,23 +8635,27 @@ struct ContentView: View {
                     vm.selectedModel = ""
                 }
                 installPathCard(
-                    title: "Private setup",
-                    detail: "Local LLM with LM Studio, more private.",
+                    title: "OAuth LLM",
+                    detail: "OpenAI ChatGPT/Codex login, no API key paste.",
+                    icon: "person.badge.key",
+                    selected: vm.inferenceMode == .oauth
+                ) {
+                    vm.inferenceMode = .oauth
+                    vm.selectedProvider = .openAI
+                    vm.selectedCloudAuthMode = .oauth
+                    vm.openAIAuthMethod = .oauth
+                    vm.selectedModel = ""
+                }
+                installPathCard(
+                    title: "Local LLM",
+                    detail: "LM Studio local models, more private.",
                     icon: "lock.desktopcomputer",
                     selected: vm.inferenceMode == .local
                 ) {
                     vm.inferenceMode = .local
                     if vm.selectedModel.isEmpty { vm.selectedModel = vm.recommendation }
                     vm.selectedProvider = .custom
-                }
-                installPathCard(
-                    title: "Advanced",
-                    detail: "Custom provider and model choices.",
-                    icon: "slider.horizontal.3",
-                    selected: vm.selectedProvider != .openRouter && vm.inferenceMode == .cloud
-                ) {
-                    vm.inferenceMode = .cloud
-                    if vm.selectedProvider == .custom { vm.selectedProvider = .openAI }
+                    vm.selectedCloudAuthMode = .api
                 }
             }
         }
@@ -8664,10 +8707,10 @@ struct ContentView: View {
                 installPreflightRow("Xcode tools", true, detail: "Checked during install")
                 installPreflightRow("Node", installComponentInstalled(name: "Node"), detail: vm.nodeVersion)
                 installPreflightRow("OpenClaw", installComponentInstalled(name: "OpenClaw"), detail: vm.openclawInstalledVersion)
-                installPreflightRow("LM Studio", vm.inferenceMode == .cloud || installComponentInstalled(name: "LM Studio"), detail: vm.inferenceMode == .cloud ? "Optional for cloud" : vm.lmStudioVersion)
+                installPreflightRow("LM Studio", vm.isCloudLikeInferenceMode || installComponentInstalled(name: "LM Studio"), detail: vm.isCloudLikeInferenceMode ? "Optional for cloud" : vm.lmStudioVersion)
                 installPreflightRow("API key", installApiKeyReady, detail: vm.inferenceMode == .local ? "Not needed for local" : vm.selectedProvider.rawValue)
                 installPreflightRow("Disk space", installDiskSpaceReady, detail: installDiskSpaceLabel)
-                installPreflightRow("Model", vm.inferenceMode == .cloud || !vm.selectedModel.isEmpty, detail: vm.inferenceMode == .cloud ? vm.selectedOpenRouterModel : vm.selectedModel)
+                installPreflightRow("Model", vm.isCloudLikeInferenceMode || !vm.selectedModel.isEmpty, detail: vm.isCloudLikeInferenceMode ? vm.selectedOpenRouterModel : vm.selectedModel)
             }
             HStack(spacing: 8) {
                 Button("Refresh checks") { vm.refreshVersions() }
@@ -8749,6 +8792,17 @@ struct ContentView: View {
         }
     }
 
+    private var inferenceModeHelpText: String {
+        switch vm.inferenceMode {
+        case .cloud:
+            return "Use Cloud LLM models via provider API key"
+        case .oauth:
+            return "Use OpenAI through ChatGPT/Codex OAuth login"
+        case .local:
+            return "Run fully local with LM Studio"
+        }
+    }
+
     private func bindingForProviderKey() -> Binding<String> {
         switch vm.selectedProvider {
         case .openRouter:
@@ -8772,21 +8826,9 @@ struct ContentView: View {
                 .font(AppFont.bodySemi(14))
                 .foregroundStyle(UI.text)
 
-            Picker("Cloud LLM auth", selection: $vm.selectedCloudAuthMode) {
-                ForEach(InstallerViewModel.CloudAuthMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-                .tint(UI.accent)
-            .onChange(of: vm.selectedCloudAuthMode) { mode in
-                if mode == .oauth {
-                    vm.selectedProvider = .openAI
-                    vm.openAIAuthMethod = .oauth
-                } else if vm.openAIAuthMethod == .oauth {
-                    vm.openAIAuthMethod = .apiKey
-                }
-            }
+            Text(vm.inferenceMode == .oauth ? "OAuth LLM uses OpenAI OAuth. No API key field is required." : "Cloud LLM uses provider API keys.")
+                .font(AppFont.body(12))
+                .foregroundStyle(UI.muted)
 
             Picker("Provider", selection: $vm.selectedProvider) {
                 ForEach(InstallerViewModel.AIProvider.allCases) { provider in
@@ -8794,11 +8836,11 @@ struct ContentView: View {
                 }
             }
             .pickerStyle(.menu)
-            .disabled(vm.selectedCloudAuthMode == .oauth)
+            .disabled(vm.inferenceMode == .oauth)
 
-            if vm.selectedCloudAuthMode == .oauth {
+            if vm.inferenceMode == .oauth {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("OAuth utilise OpenAI (ChatGPT/Codex).")
+                    Text("OAuth uses OpenAI (ChatGPT/Codex).")
                         .font(AppFont.body(11))
                         .foregroundStyle(UI.muted)
                 }
@@ -10522,20 +10564,32 @@ struct ContentView: View {
             HStack(alignment: .center, spacing: 16) {
                 Picker("Mode", selection: $vm.inferenceMode) {
                     Text("Cloud LLM").tag(InstallerViewModel.InferenceMode.cloud)
+                    Text("OAuth LLM").tag(InstallerViewModel.InferenceMode.oauth)
                     Text("Local LLM").tag(InstallerViewModel.InferenceMode.local)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 260)
+                .frame(width: 330)
                 .onChange(of: vm.inferenceMode) { newValue in
                     if newValue == .cloud {
                         vm.selectedChatResponseMode = .cloud
                         vm.prepareCloudModelSelection()
+                        vm.selectedCloudAuthMode = .api
+                    } else if newValue == .oauth {
+                        vm.selectedChatResponseMode = .cloud
+                        vm.selectedProvider = .openAI
+                        vm.selectedCloudAuthMode = .oauth
+                        vm.openAIAuthMethod = .oauth
                     } else {
                         vm.selectedChatResponseMode = .local
                     }
                 }
 
-                if vm.inferenceMode == .cloud {
+                if vm.inferenceMode == .oauth {
+                    Text("OpenAI OAuth")
+                        .font(AppFont.bodySemi(12))
+                        .foregroundStyle(UI.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else if vm.inferenceMode == .cloud {
                     Picker("Cloud model", selection: $vm.selectedOpenRouterModel) {
                         if vm.openRouterModelsLive.isEmpty {
                             ForEach(InstallerViewModel.openRouterModels) { model in
@@ -10562,7 +10616,9 @@ struct ContentView: View {
                 }
             }
 
-            if vm.inferenceMode == .cloud {
+            if vm.inferenceMode == .oauth {
+                modelConfigRow(title: "OAuth model", subtitle: "openai-codex/gpt-5.4", icon: "person.badge.key", status: vm.cloudProviderAuthConfigured ? "Ready" : "Needs login")
+            } else if vm.inferenceMode == .cloud {
                 modelConfigRow(title: "Cloud model", subtitle: vm.selectedOpenRouterModel.isEmpty ? "No cloud model selected" : vm.selectedOpenRouterModel, icon: "cloud.fill", status: vm.cloudProviderAuthConfigured ? "Ready" : "Needs auth")
                 if !vm.openRouterModelsLive.isEmpty {
                     Text("OpenRouter catalog: \(vm.openRouterModelsLive.count) models").font(AppFont.body(11)).foregroundStyle(UI.muted)
@@ -10610,13 +10666,13 @@ struct ContentView: View {
 
     var modelsInventoryPanel: some View {
         HStack(alignment: .top, spacing: 14) {
-            if vm.inferenceMode == .cloud {
+            if vm.isCloudLikeInferenceMode {
                 modelInventoryList(
-                    title: "Cloud catalog",
-                    count: vm.openRouterModelsLive.isEmpty ? InstallerViewModel.openRouterModels.count : vm.openRouterModelsLive.count,
-                    emptyText: "No cloud catalog loaded.",
-                    rows: Array((vm.openRouterModelsLive.isEmpty ? InstallerViewModel.openRouterModels.map(\.displayName) : vm.openRouterModelsLive.map(\.displayName)).prefix(8)),
-                    icon: "cloud.fill"
+                    title: vm.inferenceMode == .oauth ? "OAuth backend" : "Cloud catalog",
+                    count: vm.inferenceMode == .oauth ? 1 : (vm.openRouterModelsLive.isEmpty ? InstallerViewModel.openRouterModels.count : vm.openRouterModelsLive.count),
+                    emptyText: vm.inferenceMode == .oauth ? "OpenAI OAuth model configured." : "No cloud catalog loaded.",
+                    rows: vm.inferenceMode == .oauth ? ["openai-codex/gpt-5.4"] : Array((vm.openRouterModelsLive.isEmpty ? InstallerViewModel.openRouterModels.map(\.displayName) : vm.openRouterModelsLive.map(\.displayName)).prefix(8)),
+                    icon: vm.inferenceMode == .oauth ? "person.badge.key" : "cloud.fill"
                 )
             } else {
                 modelInventoryList(
