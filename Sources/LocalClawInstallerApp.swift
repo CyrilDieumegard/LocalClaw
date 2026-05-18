@@ -1811,11 +1811,6 @@ final class InstallerViewModel: ObservableObject {
 
         let machineId = engine.machineIdentifier()
 
-        if key.hasPrefix("LCW-") && !allowsOfflineLicenses {
-            activationStatus = "Offline licenses are disabled in this build"
-            return
-        }
-
         if allowsOfflineLicenses && key.hasPrefix("LCW-") && !isValidOfflineKey(key) {
             activationStatus = "License expired or invalid format"
             return
