@@ -4210,9 +4210,47 @@ final class InstallerViewModel: ObservableObject {
         syncChatModelModeWithSelection()
         let model = selectedChatModel.trimmingCharacters(in: .whitespacesAndNewlines)
         let localModel = Self.localLMStudioModelID(from: model)
-        guard !localModel.isEmpty else { return }
-        selectedLocalLMStudioModel = localModel
-        autoSetupLocalLMStudioModel(modelId: localModel, source: useDeveloperSession ? .developer : .chat)
+        if !localModel.isEmpty {
+            selectedLocalLMStudioModel = localModel
+            autoSetupLocalLMStudioModel(modelId: localModel, source: useDeveloperSession ? .developer : .chat)
+            return
+        }
+
+        let cloudModel = Self.canonicalChatRuntimeModelID(Self.normalizedChatModelID(
+            model,
+            inferenceMode: .cloud,
+            localModels: localLMStudioModels
+        ))
+        guard cloudModel.hasPrefix("openrouter/") else { return }
+
+        selectedChatResponseMode = .cloud
+        inferenceMode = .cloud
+        selectedProvider = .openRouter
+        selectedCloudAuthMode = .api
+        selectedOpenRouterModel = cloudModel
+        selectedChatModel = cloudModel
+        currentModel = cloudModel
+        chatGatewayPrepared = false
+        resetMainAgentSessions()
+
+        Task.detached {
+            let engine = InstallerEngine()
+            let result = engine.writeModelToConfig(modelIdentifier: cloudModel)
+            _ = engine.ensureModelAllowedInConfig(modelIdentifier: cloudModel)
+            await MainActor.run {
+                if result.state == .ok {
+                    self.chatStatus = "Ready"
+                } else {
+                    self.chatStatus = "Model config error"
+                    let message = ChatMessage(role: "error", text: result.message, modelName: "LocalClaw")
+                    if useDeveloperSession {
+                        self.developerChatMessages.append(message)
+                    } else {
+                        self.chatMessages.append(message)
+                    }
+                }
+            }
+        }
     }
 
     private func localLMStudioModelIsReady(_ modelID: String) -> Bool {
