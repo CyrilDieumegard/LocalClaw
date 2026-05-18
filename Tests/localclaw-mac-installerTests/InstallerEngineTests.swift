@@ -156,6 +156,13 @@ struct InstallerEngineTests {
         #expect(!updated.contains("purple"))
     }
 
+    @Test func newDeveloperProjectNameSkipsExistingProjectSlugs() {
+        let existing: Set<String> = ["my-app", "my-app-2", "snake"]
+
+        #expect(InstallerViewModel.nextDeveloperProjectName(existingSlugs: existing) == "My App 3")
+        #expect(InstallerViewModel.nextDeveloperProjectName(existingSlugs: existing, baseName: "Snake") == "Snake 2")
+    }
+
     @MainActor
     @Test func chatModelListShowsOnlyLocalModelsInLocalMode() {
         let vm = InstallerViewModel()

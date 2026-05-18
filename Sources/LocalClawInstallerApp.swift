@@ -4113,15 +4113,18 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func developerNewApp() {
+        developerStopPreview()
         let session = ChatSession.developerFresh()
         chatSessions.insert(session, at: 0)
         selectedDeveloperChatSessionID = session.id
-        syncDeveloperProjectFolder()
+        let baseURL = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".openclaw/workspace/projects", isDirectory: true)
+        developerProjectName = Self.nextDeveloperProjectName(in: baseURL)
+        syncDeveloperProjectFolder(moveExistingProject: false)
         chatInput = "Create a new web app named \(developerProjectName) in \(developerProjectPath). Set up a minimal runnable project, then tell me how to preview it locally inside LocalClaw."
         screen = .developer
     }
 
-    func syncDeveloperProjectFolder() {
+    func syncDeveloperProjectFolder(moveExistingProject: Bool = true) {
         let cleanName = developerProjectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "My App" : developerProjectName.trimmingCharacters(in: .whitespacesAndNewlines)
         let slug = Self.slugifyProjectName(cleanName)
         let baseURL = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".openclaw/workspace/projects", isDirectory: true)
@@ -4130,7 +4133,8 @@ final class InstallerViewModel: ObservableObject {
         let fm = FileManager.default
         do {
             try fm.createDirectory(at: baseURL, withIntermediateDirectories: true)
-            if currentURL.path.hasPrefix(baseURL.path + "/"),
+            if moveExistingProject,
+               currentURL.path.hasPrefix(baseURL.path + "/"),
                currentURL.path != targetURL.path,
                fm.fileExists(atPath: currentURL.path),
                !fm.fileExists(atPath: targetURL.path) {
@@ -4151,6 +4155,28 @@ final class InstallerViewModel: ObservableObject {
         let mapped = folded.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }
         let collapsed = String(mapped).lowercased().split(separator: "-").joined(separator: "-")
         return collapsed.isEmpty ? "my-app" : collapsed
+    }
+
+    nonisolated static func nextDeveloperProjectName(existingSlugs: Set<String>, baseName: String = "My App") -> String {
+        let baseSlug = slugifyProjectName(baseName)
+        if !existingSlugs.contains(baseSlug) { return baseName }
+        for index in 2...999 {
+            let candidate = "\(baseName) \(index)"
+            if !existingSlugs.contains(slugifyProjectName(candidate)) {
+                return candidate
+            }
+        }
+        return "\(baseName) \(Int(Date().timeIntervalSince1970))"
+    }
+
+    nonisolated static func nextDeveloperProjectName(in baseURL: URL, baseName: String = "My App") -> String {
+        let fm = FileManager.default
+        let urls = (try? fm.contentsOfDirectory(at: baseURL, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+        let slugs = Set(urls.compactMap { url -> String? in
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+            return values?.isDirectory == true ? url.lastPathComponent : nil
+        })
+        return nextDeveloperProjectName(existingSlugs: slugs, baseName: baseName)
     }
 
     func developerChooseFolder() {
