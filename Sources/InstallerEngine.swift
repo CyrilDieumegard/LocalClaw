@@ -302,6 +302,36 @@ final class InstallerEngine: @unchecked Sendable {
         }
     }
 
+    /// Add a runtime model override to OpenClaw's agent allowlist without
+    /// changing the user's configured default model.
+    func ensureModelAllowedInConfig(modelIdentifier: String) -> StepResult {
+        if modelIdentifier.isEmpty {
+            return StepResult(state: .skip, message: "No model override to allow")
+        }
+
+        let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
+
+        var config: [String: Any] = [:]
+        if let data = FileManager.default.contents(atPath: configPath),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            config = json
+        }
+
+        var agents = config["agents"] as? [String: Any] ?? [:]
+        var defaults = agents["defaults"] as? [String: Any] ?? [:]
+        defaults = ensureAgentModelAllowlist(defaults: defaults, modelIdentifier: modelIdentifier)
+        agents["defaults"] = defaults
+        config["agents"] = agents
+
+        do {
+            let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: URL(fileURLWithPath: configPath), options: .atomic)
+            return StepResult(state: .ok, message: "Model allowed: \(modelIdentifier)")
+        } catch {
+            return StepResult(state: .fail, message: "Failed to update model allowlist: \(error.localizedDescription)")
+        }
+    }
+
     private func ensureAgentModelAllowlist(defaults: [String: Any], modelIdentifier: String) -> [String: Any] {
         var updated = defaults
         var models = updated["models"] as? [String: Any] ?? [:]

@@ -468,7 +468,7 @@ final class InstallerViewModel: ObservableObject {
 
     static let openRouterModels: [OpenRouterModel] = [
         // Recommended / Popular
-        OpenRouterModel(id: "openrouter/openai/gpt-5-mini", displayName: "⭐ GPT-5 Mini"),
+        OpenRouterModel(id: "openrouter/openai/gpt-5.4-mini", displayName: "⭐ GPT-5.4 Mini"),
         OpenRouterModel(id: "openrouter/anthropic/claude-3.5-sonnet", displayName: "⭐ Claude 3.5 Sonnet"),
         OpenRouterModel(id: "openrouter/openai/gpt-4o", displayName: "⭐ GPT-4o"),
         OpenRouterModel(id: "openrouter/openai/gpt-4o-mini", displayName: "⭐ GPT-4o Mini"),
@@ -583,7 +583,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var selectedProvider: AIProvider = .openRouter
     @Published var selectedCloudAuthMode: CloudAuthMode = .api
     @Published var openAIAuthMethod: AIProvider.OpenAIAuthMethod = .apiKey
-    @Published var selectedOpenRouterModel: String = "openrouter/openai/gpt-5-mini"
+    @Published var selectedOpenRouterModel: String = "openrouter/openai/gpt-5.4-mini"
     @Published var openRouterModelsLive: [OpenRouterModel] = []
     @Published var skillsSearchQuery: String = ""
     @Published var installedSkills: [OpenClawSkill] = []
@@ -3192,9 +3192,9 @@ final class InstallerViewModel: ObservableObject {
         case "founder":
             inferenceMode = .cloud
             selectedProvider = .openRouter
-            selectedOpenRouterModel = "openrouter/openai/gpt-5-mini"
+            selectedOpenRouterModel = "openrouter/openai/gpt-5.4-mini"
             _ = engine.writeModelToConfig(modelIdentifier: selectedOpenRouterModel)
-            agentLogs = "Applied legacy Founder preset: GPT-5 Mini + Cloud LLM"
+            agentLogs = "Applied legacy Founder preset: GPT-5.4 Mini + Cloud LLM"
         case "support":
             inferenceMode = .cloud
             selectedProvider = .openRouter
@@ -3948,9 +3948,6 @@ final class InstallerViewModel: ObservableObject {
         let wallClockTimeout = Self.wallClockTimeoutSeconds(forAgentTimeout: agentTimeout)
 
         Task.detached {
-            let quote: (String) -> String = { value in
-                "'" + value.replacingOccurrences(of: "'", with: "'\''") + "'"
-            }
             let engine = InstallerEngine()
             if shouldPrepareGateway {
                 await MainActor.run {
@@ -3959,6 +3956,18 @@ final class InstallerViewModel: ObservableObject {
                     }
                 }
                 _ = engine.shell("openclaw gateway status >/dev/null 2>&1 || openclaw gateway start >/dev/null 2>&1 || true")
+            }
+            if !modelOverride.isEmpty {
+                let allowResult = engine.ensureModelAllowedInConfig(modelIdentifier: modelOverride)
+                if allowResult.state == .fail {
+                    await MainActor.run {
+                        let errorMessage = ChatMessage(role: "error", text: allowResult.message)
+                        if useDeveloperSession { self.developerChatMessages.append(errorMessage) } else { self.chatMessages.append(errorMessage) }
+                        self.chatStatus = "Error"
+                        self.chatIsSending = false
+                    }
+                    return
+                }
             }
 
             let tempMessagePath = NSTemporaryDirectory() + "localclaw-chat-message-\(UUID().uuidString).txt"
@@ -4154,7 +4163,7 @@ final class InstallerViewModel: ObservableObject {
         selectedProvider = .openRouter
         let cloudModels = openRouterModelsLive.isEmpty ? Self.openRouterModels : openRouterModelsLive
         if !cloudModels.contains(where: { $0.id == selectedOpenRouterModel }) {
-            selectedOpenRouterModel = cloudModels.first?.id ?? "openrouter/openai/gpt-5-mini"
+            selectedOpenRouterModel = cloudModels.first?.id ?? "openrouter/openai/gpt-5.4-mini"
         }
         if selectedChatModel.isEmpty || !cloudModels.contains(where: { $0.id == selectedChatModel }) {
             selectedChatModel = selectedOpenRouterModel
@@ -4324,7 +4333,7 @@ final class InstallerViewModel: ObservableObject {
         let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = trimmed.lowercased()
         if lower == "openrouter/moonshotai/kimi-k2.5" || lower == "moonshot/kimi-k2.5" || lower == "moonshotai/kimi-k2.5" {
-            return "openrouter/openai/gpt-5-mini"
+            return "openrouter/openai/gpt-5.4-mini"
         }
         return trimmed
     }
