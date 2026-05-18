@@ -135,6 +135,27 @@ struct InstallerEngineTests {
         #expect(InstallerViewModel.wallClockTimeoutSeconds(forAgentTimeout: 60) == 80)
     }
 
+    @Test func quickDeveloperColorEditRewritesStyleFiles() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("localclaw-quick-color-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try """
+        body { background: #120a24; color: #ddd6fe; }
+        .snake { border-color: purple; box-shadow: 0 0 12px #7c3aed; }
+        """
+        .write(to: root.appendingPathComponent("style.css"), atomically: true, encoding: .utf8)
+
+        let result = InstallerViewModel.applyQuickDeveloperColorEdit(projectPath: root.path, requestText: "change la couleur du jeu pour du jaune")
+        let updated = try String(contentsOf: root.appendingPathComponent("style.css"), encoding: .utf8)
+
+        #expect(result?.colorName == "yellow")
+        #expect(result?.changedFiles == ["style.css"])
+        #expect(updated.contains("#181107"))
+        #expect(updated.contains("yellow"))
+        #expect(!updated.contains("purple"))
+    }
+
     @MainActor
     @Test func chatModelListShowsOnlyLocalModelsInLocalMode() {
         let vm = InstallerViewModel()

@@ -3636,6 +3636,21 @@ final class InstallerViewModel: ObservableObject {
             chatMessages.append(ChatMessage(role: "user", text: userText, imagePath: imagePath.isEmpty ? nil : imagePath))
             renameSelectedChatSession(from: userText)
         }
+        if useDeveloperSession,
+           imagePath.isEmpty,
+           let quickEdit = Self.applyQuickDeveloperColorEdit(projectPath: developerProjectPath, requestText: text) {
+            let files = quickEdit.changedFiles.prefix(5).joined(separator: ", ")
+            let suffix = quickEdit.changedFiles.count > 5 ? " and \(quickEdit.changedFiles.count - 5) more" : ""
+            let reply = "Applied the \(quickEdit.colorName) theme directly in \(quickEdit.changedFiles.count) file\(quickEdit.changedFiles.count == 1 ? "" : "s"): \(files)\(suffix)."
+            developerChatMessages.append(ChatMessage(role: "assistant", text: reply, metadata: "local quick edit • no model call", modelName: "LocalClaw"))
+            developerPreviewRefreshID = UUID()
+            developerActiveTab = "preview"
+            if developerPreviewProcess != nil {
+                developerPreviewStatus = "Preview refreshed after quick edit"
+            }
+            chatStatus = "Ready"
+            return
+        }
         chatIsSending = true
         chatStatus = "Thinking..."
         let shouldPrepareGateway = !chatGatewayPrepared
@@ -3961,6 +3976,118 @@ final class InstallerViewModel: ObservableObject {
 
     nonisolated static func wallClockTimeoutSeconds(forAgentTimeout timeout: Int) -> Int {
         min(max(timeout + 20, 45), 260)
+    }
+
+    struct QuickDeveloperEditResult {
+        let colorName: String
+        let changedFiles: [String]
+    }
+
+    nonisolated static func quickDeveloperColorPalette(for text: String) -> (name: String, colors: [String])? {
+        let clean = text
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .lowercased()
+
+        let palettes: [(keys: [String], name: String, colors: [String])] = [
+            (["jaune", "yellow"], "yellow", ["#181107", "#fef3c7", "#fde68a", "#facc15", "#eab308", "#ca8a04", "#854d0e"]),
+            (["violet", "purple"], "purple", ["#120a24", "#f5f3ff", "#ddd6fe", "#c084fc", "#a855f7", "#7c3aed", "#4c1d95"]),
+            (["bleu", "blue"], "blue", ["#07111f", "#eff6ff", "#bfdbfe", "#60a5fa", "#2563eb", "#1d4ed8", "#172554"]),
+            (["vert", "green"], "green", ["#06140d", "#ecfdf5", "#bbf7d0", "#4ade80", "#16a34a", "#15803d", "#14532d"]),
+            (["rouge", "red"], "red", ["#1f0909", "#fef2f2", "#fecaca", "#f87171", "#ef4444", "#b91c1c", "#7f1d1d"]),
+            (["orange"], "orange", ["#1c0f05", "#fff7ed", "#fed7aa", "#fb923c", "#f97316", "#c2410c", "#7c2d12"]),
+            (["rose", "pink"], "pink", ["#1f0713", "#fdf2f8", "#fbcfe8", "#f472b6", "#ec4899", "#be185d", "#831843"]),
+            (["turquoise", "cyan"], "turquoise", ["#041616", "#ecfeff", "#a5f3fc", "#22d3ee", "#06b6d4", "#0e7490", "#164e63"])
+        ]
+
+        for palette in palettes where palette.keys.contains(where: { clean.contains($0) }) {
+            return (palette.name, palette.colors)
+        }
+        return nil
+    }
+
+    nonisolated static func applyQuickDeveloperColorEdit(projectPath: String, requestText: String) -> QuickDeveloperEditResult? {
+        guard isSimpleDeveloperEdit(requestText),
+              let palette = quickDeveloperColorPalette(for: requestText) else { return nil }
+
+        let root = URL(fileURLWithPath: projectPath).standardizedFileURL
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+
+        let editableExtensions = Set(["css", "scss", "sass", "less", "html", "htm", "js", "jsx", "ts", "tsx", "vue", "svelte"])
+        let skippedDirectories = Set([".git", "node_modules", ".build", "dist", ".next", ".vite", "build", "coverage"])
+        var changedFiles: [String] = []
+
+        for case let url as URL in enumerator {
+            let name = url.lastPathComponent
+            if skippedDirectories.contains(name) {
+                enumerator.skipDescendants()
+                continue
+            }
+
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
+            if values?.isDirectory == true { continue }
+            if (values?.fileSize ?? 0) > 600_000 { continue }
+            if !editableExtensions.contains(url.pathExtension.lowercased()) { continue }
+
+            guard let original = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            let lower = original.lowercased()
+            let looksStyleRelated = url.pathExtension.lowercased().contains("css")
+                || ["style", "theme", "global", "app", "index", "main"].contains { name.lowercased().contains($0) }
+                || lower.contains("#")
+                || lower.contains("color")
+                || lower.contains("background")
+            if !looksStyleRelated { continue }
+
+            let updated = quickDeveloperColorRewrittenContent(original, palette: palette)
+            if updated != original {
+                do {
+                    try updated.write(to: url, atomically: true, encoding: .utf8)
+                    let path = url.standardizedFileURL.path
+                    changedFiles.append(path.hasPrefix(root.path + "/") ? String(path.dropFirst(root.path.count + 1)) : url.lastPathComponent)
+                } catch {
+                    continue
+                }
+            }
+            if changedFiles.count >= 12 { break }
+        }
+
+        return changedFiles.isEmpty ? nil : QuickDeveloperEditResult(colorName: palette.name, changedFiles: changedFiles)
+    }
+
+    nonisolated static func quickDeveloperColorRewrittenContent(_ content: String, palette: (name: String, colors: [String])) -> String {
+        var mappedHex: [String: String] = [:]
+        var nextColorIndex = 0
+        let hexRegex = try? NSRegularExpression(pattern: #"#[0-9A-Fa-f]{3,8}\b"#)
+        let nsContent = content as NSString
+        let fullRange = NSRange(location: 0, length: nsContent.length)
+        let matches = hexRegex?.matches(in: content, range: fullRange).reversed() ?? []
+        var result = content
+
+        for match in matches {
+            let old = nsContent.substring(with: match.range)
+            let key = old.lowercased()
+            let replacement: String
+            if let mapped = mappedHex[key] {
+                replacement = mapped
+            } else {
+                replacement = palette.colors[nextColorIndex % palette.colors.count]
+                mappedHex[key] = replacement
+                nextColorIndex += 1
+            }
+            if let range = Range(match.range, in: result) {
+                result.replaceSubrange(range, with: replacement)
+            }
+        }
+
+        let namedColors = ["purple", "violet", "yellow", "jaune", "blue", "bleu", "green", "vert", "red", "rouge", "orange", "pink", "rose", "turquoise", "cyan"]
+        for color in namedColors where color != palette.name {
+            result = result.replacingOccurrences(of: "\\b\(NSRegularExpression.escapedPattern(for: color))\\b", with: palette.name, options: [.regularExpression, .caseInsensitive])
+        }
+        return result
     }
 
     nonisolated static func isSimpleDeveloperEdit(_ text: String) -> Bool {
