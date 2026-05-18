@@ -6415,13 +6415,13 @@ struct ContentView: View {
             }
             sidebarButton("Updates", icon: "arrow.clockwise", isActive: vm.screen == .updates) { vm.screen = .updates }
             sidebarButton("Control Center", icon: "slider.horizontal.3", isActive: vm.screen == .commandCenter) { vm.screen = .commandCenter }
-            sidebarButton("OpenClaw Chat", icon: "message.badge.waveform", isActive: vm.screen == .chat) { vm.screen = .chat }
-            sidebarButton("Developer", icon: "curlybraces.square", isActive: vm.screen == .developer) { vm.screen = .developer }
+            sidebarButton("OpenClaw Chat", icon: "message.badge.waveform", isActive: vm.screen == .chat, isBeta: true) { vm.screen = .chat }
+            sidebarButton("Developer", icon: "curlybraces.square", isActive: vm.screen == .developer, isBeta: true) { vm.screen = .developer }
             sidebarButton("Models", icon: "cpu", isActive: vm.screen == .models) { vm.screen = .models }
             sidebarButton("Skills", icon: "wand.and.stars", isActive: vm.screen == .skills) { vm.screen = .skills }
-            sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup) { vm.screen = .channelSetup }
+            sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup, isBeta: true) { vm.screen = .channelSetup }
             sidebarButton("Agents", icon: "person.2.wave.2", isActive: vm.screen == .agents) { vm.screen = .agents }
-            sidebarButton("Cron Jobs", icon: "calendar.badge.clock", isActive: vm.screen == .cronJobs) { vm.screen = .cronJobs }
+            sidebarButton("Cron Jobs", icon: "calendar.badge.clock", isActive: vm.screen == .cronJobs, isBeta: true) { vm.screen = .cronJobs }
             sidebarButton("Help", icon: "cross.case", isActive: vm.screen == .healthCenter) { vm.screen = .healthCenter }
             sidebarButton("Uninstall", icon: "trash", isActive: vm.screen == .uninstallCenter) { vm.screen = .uninstallCenter }
 
@@ -6474,7 +6474,7 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(UI.lineSoft, lineWidth: 1))
     }
 
-    private func sidebarButton(_ title: String, icon: String, isActive: Bool, action: @escaping () -> Void) -> some View {
+    private func sidebarButton(_ title: String, icon: String, isActive: Bool, isBeta: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: icon)
@@ -6482,6 +6482,9 @@ struct ContentView: View {
                 Text(title)
                     .font(AppFont.bodySemi(13))
                 Spacer()
+                if isBeta {
+                    betaBadge(isActive: isActive)
+                }
             }
             .foregroundStyle(isActive ? .white : UI.text)
             .padding(.horizontal, 10)
@@ -6489,6 +6492,22 @@ struct ContentView: View {
             .background(RoundedRectangle(cornerRadius: 9).fill(isActive ? UI.accent : UI.cardSoft))
         }
         .buttonStyle(.plain)
+    }
+
+    private func betaBadge(isActive: Bool) -> some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(isActive ? Color.white.opacity(0.9) : Color(NSColor.systemBlue))
+                .frame(width: 6, height: 6)
+            Text("BETA")
+                .font(.system(size: 9, weight: .bold, design: .rounded))
+                .foregroundStyle(isActive ? .white : Color(NSColor.systemBlue))
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(RoundedRectangle(cornerRadius: 3).fill(isActive ? Color.white.opacity(0.13) : Color(NSColor.systemBlue).opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: 3).stroke(isActive ? Color.white.opacity(0.35) : Color(NSColor.systemBlue), lineWidth: 1))
+        .help("Beta section: this area is still evolving and may contain bugs.")
     }
 
     var license: some View {
