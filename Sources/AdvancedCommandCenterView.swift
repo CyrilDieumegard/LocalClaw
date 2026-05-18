@@ -63,7 +63,7 @@ final class CommandCenterViewModel: ObservableObject {
     @Published var gatewayLogs: [LogEntry] = []
     @Published var isMonitoring: Bool = false
     @Published var autoScroll: Bool = true
-    @Published var selectedModel: String = "openrouter/moonshotai/kimi-k2.5"
+    @Published var selectedModel: String = "openrouter/openai/gpt-5-mini"
     @Published var inferenceModeSelection: InferenceMode = .cloud
     @Published var availableModels: [(key: String, name: String, id: String)] = []
     @Published var systemInfo: SystemInfo = SystemInfo()

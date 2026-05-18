@@ -468,7 +468,7 @@ final class InstallerViewModel: ObservableObject {
 
     static let openRouterModels: [OpenRouterModel] = [
         // Recommended / Popular
-        OpenRouterModel(id: "openrouter/moonshotai/kimi-k2.5", displayName: "⭐ Kimi K2.5"),
+        OpenRouterModel(id: "openrouter/openai/gpt-5-mini", displayName: "⭐ GPT-5 Mini"),
         OpenRouterModel(id: "openrouter/anthropic/claude-3.5-sonnet", displayName: "⭐ Claude 3.5 Sonnet"),
         OpenRouterModel(id: "openrouter/openai/gpt-4o", displayName: "⭐ GPT-4o"),
         OpenRouterModel(id: "openrouter/openai/gpt-4o-mini", displayName: "⭐ GPT-4o Mini"),
@@ -583,7 +583,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var selectedProvider: AIProvider = .openRouter
     @Published var selectedCloudAuthMode: CloudAuthMode = .api
     @Published var openAIAuthMethod: AIProvider.OpenAIAuthMethod = .apiKey
-    @Published var selectedOpenRouterModel: String = "openrouter/moonshotai/kimi-k2.5"
+    @Published var selectedOpenRouterModel: String = "openrouter/openai/gpt-5-mini"
     @Published var openRouterModelsLive: [OpenRouterModel] = []
     @Published var skillsSearchQuery: String = ""
     @Published var installedSkills: [OpenClawSkill] = []
@@ -1206,8 +1206,12 @@ final class InstallerViewModel: ObservableObject {
               let agents = json["agents"] as? [String: Any],
               let defaults = agents["defaults"] as? [String: Any],
               let model = defaults["model"] as? [String: Any],
-              let primary = model["primary"] as? String else {
+              let configuredPrimary = model["primary"] as? String else {
             return
+        }
+        let primary = Self.repairedLegacyCloudModelID(configuredPrimary)
+        if primary != configuredPrimary {
+            _ = engine.writeModelToConfig(modelIdentifier: primary)
         }
 
         if primary.hasPrefix("openrouter/") {
@@ -3188,9 +3192,9 @@ final class InstallerViewModel: ObservableObject {
         case "founder":
             inferenceMode = .cloud
             selectedProvider = .openRouter
-            selectedOpenRouterModel = "openrouter/moonshotai/kimi-k2.5"
+            selectedOpenRouterModel = "openrouter/openai/gpt-5-mini"
             _ = engine.writeModelToConfig(modelIdentifier: selectedOpenRouterModel)
-            agentLogs = "Applied legacy Founder preset: Kimi K2.5 + Cloud LLM"
+            agentLogs = "Applied legacy Founder preset: GPT-5 Mini + Cloud LLM"
         case "support":
             inferenceMode = .cloud
             selectedProvider = .openRouter
@@ -4150,7 +4154,7 @@ final class InstallerViewModel: ObservableObject {
         selectedProvider = .openRouter
         let cloudModels = openRouterModelsLive.isEmpty ? Self.openRouterModels : openRouterModelsLive
         if !cloudModels.contains(where: { $0.id == selectedOpenRouterModel }) {
-            selectedOpenRouterModel = cloudModels.first?.id ?? "openrouter/moonshotai/kimi-k2.5"
+            selectedOpenRouterModel = cloudModels.first?.id ?? "openrouter/openai/gpt-5-mini"
         }
         if selectedChatModel.isEmpty || !cloudModels.contains(where: { $0.id == selectedChatModel }) {
             selectedChatModel = selectedOpenRouterModel
@@ -4313,7 +4317,16 @@ final class InstallerViewModel: ObservableObject {
     }
 
     nonisolated static func canonicalChatRuntimeModelID(_ id: String) -> String {
-        id.trimmingCharacters(in: .whitespacesAndNewlines)
+        repairedLegacyCloudModelID(id)
+    }
+
+    nonisolated static func repairedLegacyCloudModelID(_ id: String) -> String {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        if lower == "openrouter/moonshotai/kimi-k2.5" || lower == "moonshot/kimi-k2.5" || lower == "moonshotai/kimi-k2.5" {
+            return "openrouter/openai/gpt-5-mini"
+        }
+        return trimmed
     }
 
     nonisolated static func runtimeSessionID(base: String, modelID: String, useDeveloperSession: Bool, freshDeveloperTurnID: String? = nil) -> String {
@@ -5013,6 +5026,10 @@ final class InstallerViewModel: ObservableObject {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        var environment = ProcessInfo.processInfo.environment
+        let launchPath = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:\(NSHomeDirectory())/.npm-global/bin:\(NSHomeDirectory())/.local/bin"
+        environment["PATH"] = launchPath + ":" + (environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+        process.environment = environment
         if let currentDirectory, !currentDirectory.isEmpty {
             process.currentDirectoryURL = URL(fileURLWithPath: currentDirectory, isDirectory: true)
         }
@@ -5283,7 +5300,11 @@ final class InstallerViewModel: ObservableObject {
             let loaded = engine.loadedLMStudioModelInfo()?.model
             let authConfigured = engine.hasProviderAuth(provider: provider) || localKeyPresent
             await MainActor.run {
-                self.currentModel = model
+                let repairedModel = Self.repairedLegacyCloudModelID(model)
+                if repairedModel != model {
+                    _ = engine.writeModelToConfig(modelIdentifier: repairedModel)
+                }
+                self.currentModel = repairedModel
                 self.cloudProviderAuthConfigured = authConfigured
                 self.localLMStudioModels = models
                 self.activeLocalLMStudioModel = loaded ?? ""

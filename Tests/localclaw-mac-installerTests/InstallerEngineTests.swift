@@ -136,7 +136,8 @@ struct InstallerEngineTests {
     @Test func canonicalChatRuntimeModelMapsOpenAIGPTModels() {
         #expect(InstallerViewModel.canonicalChatRuntimeModelID("openrouter/openai/gpt-5.5") == "openrouter/openai/gpt-5.5")
         #expect(InstallerViewModel.canonicalChatRuntimeModelID("openrouter/openai/gpt-5.4") == "openrouter/openai/gpt-5.4")
-        #expect(InstallerViewModel.canonicalChatRuntimeModelID("openrouter/moonshotai/kimi-k2.5") == "openrouter/moonshotai/kimi-k2.5")
+        #expect(InstallerViewModel.canonicalChatRuntimeModelID("openrouter/openai/gpt-5-mini") == "openrouter/openai/gpt-5-mini")
+        #expect(InstallerViewModel.canonicalChatRuntimeModelID("openrouter/moonshotai/kimi-k2.5") == "openrouter/openai/gpt-5-mini")
     }
 
     @Test func developerRuntimeSessionIDChangesWithModel() {
@@ -237,14 +238,14 @@ struct InstallerEngineTests {
         vm.localLMStudioModels = ["google/gemma-4-e2b"]
         vm.openRouterModelsLive = [
             InstallerViewModel.OpenRouterModel(id: "openrouter/openai/gpt-5.5", displayName: "GPT-5.5"),
-            InstallerViewModel.OpenRouterModel(id: "openrouter/moonshotai/kimi-k2.5", displayName: "Kimi K2.5")
+            InstallerViewModel.OpenRouterModel(id: "openrouter/openai/gpt-5-mini", displayName: "GPT-5 Mini")
         ]
         vm.selectedChatModel = "lmstudio/google/gemma-4-e2b"
 
         vm.ensureSelectedChatModel()
 
         #expect(vm.availableChatModels.allSatisfy { $0.id.hasPrefix("openrouter/") })
-        #expect(vm.availableChatModels.map(\.id) == ["openrouter/openai/gpt-5.5", "openrouter/moonshotai/kimi-k2.5"])
+        #expect(vm.availableChatModels.map(\.id) == ["openrouter/openai/gpt-5.5", "openrouter/openai/gpt-5-mini"])
         #expect(vm.selectedChatModel == "openrouter/openai/gpt-5.5")
     }
 
