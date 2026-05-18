@@ -3661,6 +3661,8 @@ final class InstallerViewModel: ObservableObject {
         ))
         let developerWorkdir = developerProjectPath
         let useFreshDeveloperContext = useDeveloperSession && developerFreshContextEnabled
+        let agentThinking = Self.agentThinkingLevel(for: selectedChatResponseMode)
+        let agentTimeout = Self.agentTimeoutSeconds(for: selectedChatResponseMode, useDeveloperSession: useDeveloperSession)
 
         Task.detached {
             let quote: (String) -> String = { value in
@@ -3669,9 +3671,6 @@ final class InstallerViewModel: ObservableObject {
             let engine = InstallerEngine()
             if shouldPrepareGateway {
                 _ = engine.shell("openclaw gateway status >/dev/null 2>&1 || openclaw gateway start >/dev/null 2>&1 || true")
-            }
-            if !modelOverride.isEmpty {
-                _ = engine.changeModel(modelOverride)
             }
 
             let tempMessagePath = NSTemporaryDirectory() + "localclaw-chat-message-\(UUID().uuidString).txt"
@@ -3696,8 +3695,9 @@ final class InstallerViewModel: ObservableObject {
                 freshDeveloperTurnID: useFreshDeveloperContext ? String(requestID.uuidString.prefix(8)) : nil
             )
             let modelFlag = modelOverride.isEmpty ? "" : " --model \(quote(modelOverride))"
-            let command = "\(workdirPrefix)MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(runtimeSessionID)) --message \"$(cat \"$MESSAGE_FILE\")\"\(modelFlag) --json --timeout 180 2>&1"
-            let fallbackCommand = "\(workdirPrefix)MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(runtimeSessionID)) --message \"$(cat \"$MESSAGE_FILE\")\" --json --timeout 180 2>&1"
+            let thinkingFlag = agentThinking.isEmpty ? "" : " --thinking \(quote(agentThinking))"
+            let command = "\(workdirPrefix)MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(runtimeSessionID)) --message \"$(cat \"$MESSAGE_FILE\")\"\(modelFlag)\(thinkingFlag) --json --timeout \(agentTimeout) 2>&1"
+            let fallbackCommand = "\(workdirPrefix)MESSAGE_FILE=\(quote(tempMessagePath)); exec openclaw agent --session-id \(quote(runtimeSessionID)) --message \"$(cat \"$MESSAGE_FILE\")\"\(thinkingFlag) --json --timeout \(agentTimeout) 2>&1"
             let startedAt = Date()
             var result = Self.shellCancellable(command) { process in
                 Task { @MainActor in
@@ -3891,6 +3891,42 @@ final class InstallerViewModel: ObservableObject {
         let modelScoped = suffix.isEmpty ? base : "\(base)-\(suffix)"
         guard let freshDeveloperTurnID, !freshDeveloperTurnID.isEmpty else { return modelScoped }
         return "\(modelScoped)-turn-\(freshDeveloperTurnID)"
+    }
+
+    nonisolated static func agentThinkingLevel(for mode: ChatResponseMode) -> String {
+        switch mode {
+        case .fast:
+            return "low"
+        case .deep:
+            return "high"
+        case .local, .cloud:
+            return "medium"
+        }
+    }
+
+    nonisolated static func agentTimeoutSeconds(for mode: ChatResponseMode, useDeveloperSession: Bool) -> Int {
+        if useDeveloperSession {
+            switch mode {
+            case .fast:
+                return 90
+            case .deep:
+                return 240
+            case .local:
+                return 180
+            case .cloud:
+                return 150
+            }
+        }
+        switch mode {
+        case .fast:
+            return 60
+        case .deep:
+            return 240
+        case .local:
+            return 180
+        case .cloud:
+            return 150
+        }
     }
 
     func prepareDeveloperWorkspace() {

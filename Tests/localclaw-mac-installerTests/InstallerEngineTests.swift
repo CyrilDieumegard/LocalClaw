@@ -120,6 +120,13 @@ struct InstallerEngineTests {
         #expect(second.contains("-turn-turn-b"))
     }
 
+    @Test func fastDeveloperRequestsUseLowThinkingAndShortTimeout() {
+        #expect(InstallerViewModel.agentThinkingLevel(for: .fast) == "low")
+        #expect(InstallerViewModel.agentTimeoutSeconds(for: .fast, useDeveloperSession: true) == 90)
+        #expect(InstallerViewModel.agentTimeoutSeconds(for: .cloud, useDeveloperSession: true) == 150)
+        #expect(InstallerViewModel.agentTimeoutSeconds(for: .deep, useDeveloperSession: true) == 240)
+    }
+
     @MainActor
     @Test func chatModelListShowsOnlyLocalModelsInLocalMode() {
         let vm = InstallerViewModel()
