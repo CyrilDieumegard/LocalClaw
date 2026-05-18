@@ -1237,10 +1237,21 @@ final class InstallerViewModel: ObservableObject {
 
         if primary.hasPrefix("openrouter/") {
             inferenceMode = .cloud
+            selectedChatResponseMode = .cloud
+            selectedCloudAuthMode = .api
             selectedOpenRouterModel = primary
             selectedProvider = .openRouter
+        } else if primary.hasPrefix("openai-codex/") {
+            inferenceMode = .oauth
+            selectedChatResponseMode = .cloud
+            selectedCloudAuthMode = .oauth
+            selectedProvider = .openAI
+            openAIAuthMethod = .oauth
+            currentModel = primary
+            selectedChatModel = primary
         } else if primary.hasPrefix("lmstudio/") {
             inferenceMode = .local
+            selectedChatResponseMode = .local
             let localId = primary.replacingOccurrences(of: "lmstudio/", with: "")
             selectedLocalLMStudioModel = localId
             if let mapped = localProviderModelIds.first(where: { $0.value == localId })?.key {
@@ -1393,6 +1404,35 @@ final class InstallerViewModel: ObservableObject {
         let result = engine.changeModel(selectedControlModel)
         controlCenterLogs += "[\(result.state.rawValue)] \(result.message)\n"
         refreshControlCenter()
+    }
+
+    func selectInferenceModeFromUser(_ mode: InferenceMode) {
+        inferenceMode = mode
+        switch mode {
+        case .cloud:
+            selectedCloudAuthMode = .api
+            if selectedProvider == .custom || selectedProvider == .openAI {
+                selectedProvider = .openRouter
+            }
+            selectedChatResponseMode = .cloud
+            prepareCloudModelSelection()
+        case .oauth:
+            selectedProvider = .openAI
+            selectedCloudAuthMode = .oauth
+            openAIAuthMethod = .oauth
+            selectedModel = ""
+            selectedChatResponseMode = .cloud
+            prepareOAuthModelSelection()
+        case .local:
+            selectedProvider = .custom
+            selectedCloudAuthMode = .api
+            if selectedModel.isEmpty {
+                selectedModel = recommendation
+            }
+            selectedChatResponseMode = .local
+            refreshLocalLMStudioModels()
+        }
+        reconcileSelectedChatModelForCurrentMode()
     }
 
     func applyModelsTabSelection() {
@@ -3394,17 +3434,24 @@ final class InstallerViewModel: ObservableObject {
             return
         } else {
             if inferenceMode == .oauth {
+                selectedChatResponseMode = .cloud
                 selectedProvider = .openAI
                 selectedCloudAuthMode = .oauth
                 openAIAuthMethod = .oauth
-                writePrimaryAndSecondaryModel(primary: effectiveModelIdentifier(), secondary: nil)
-                controlCenterLogs += "[OK] Switched to OAuth LLM: \(effectiveModelIdentifier())\n"
+                let oauthModel = effectiveModelIdentifier()
+                selectedChatModel = oauthModel
+                currentModel = oauthModel
+                let result = engine.changeModel(oauthModel)
+                controlCenterLogs += "[\(result.state.rawValue)] Switched to OAuth LLM: \(oauthModel)\n"
             } else {
+                selectedChatResponseMode = .cloud
                 prepareCloudModelSelection()
                 selectedProvider = .openRouter
                 selectedCloudAuthMode = .api
-                writePrimaryAndSecondaryModel(primary: selectedOpenRouterModel, secondary: nil)
-                controlCenterLogs += "[OK] Switched to Cloud LLM: \(selectedOpenRouterModel)\n"
+                selectedChatModel = selectedOpenRouterModel
+                currentModel = selectedOpenRouterModel
+                let result = engine.changeModel(selectedOpenRouterModel)
+                controlCenterLogs += "[\(result.state.rawValue)] Switched to Cloud LLM: \(selectedOpenRouterModel)\n"
             }
         }
 
@@ -6678,7 +6725,8 @@ struct ContentView: View {
                 .pickerStyle(.segmented)
                 .tint(UI.accent)
                 .frame(width: 270)
-                .onChange(of: vm.inferenceMode) { _ in
+                .onChange(of: vm.inferenceMode) { newValue in
+                    vm.selectInferenceModeFromUser(newValue)
                     vm.applyInferenceModeSwitch()
                 }
 
@@ -8792,24 +8840,7 @@ struct ContentView: View {
                     .pickerStyle(.segmented)
                     .tint(UI.accent)
                     .onChange(of: vm.inferenceMode) { newValue in
-                        if newValue == .local {
-                            if vm.selectedModel.isEmpty {
-                                vm.selectedModel = vm.recommendation
-                            }
-                            vm.selectedProvider = .custom
-                            vm.selectedCloudAuthMode = .api
-                        } else if newValue == .oauth {
-                            vm.selectedModel = ""
-                            vm.selectedProvider = .openAI
-                            vm.selectedCloudAuthMode = .oauth
-                            vm.openAIAuthMethod = .oauth
-                        } else {
-                            vm.selectedModel = ""
-                            vm.selectedCloudAuthMode = .api
-                            if vm.selectedProvider == .custom {
-                                vm.selectedProvider = .openRouter
-                            }
-                        }
+                        vm.selectInferenceModeFromUser(newValue)
                     }
 
                     Text(inferenceModeHelpText)
@@ -8897,10 +8928,7 @@ struct ContentView: View {
                     icon: "bolt.fill",
                     selected: vm.inferenceMode == .cloud && vm.selectedProvider == .openRouter
                 ) {
-                    vm.inferenceMode = .cloud
-                    vm.selectedProvider = .openRouter
-                    vm.selectedCloudAuthMode = .api
-                    vm.selectedModel = ""
+                    vm.selectInferenceModeFromUser(.cloud)
                 }
                 installPathCard(
                     title: "OAuth LLM",
@@ -8908,11 +8936,7 @@ struct ContentView: View {
                     icon: "person.badge.key",
                     selected: vm.inferenceMode == .oauth
                 ) {
-                    vm.inferenceMode = .oauth
-                    vm.selectedProvider = .openAI
-                    vm.selectedCloudAuthMode = .oauth
-                    vm.openAIAuthMethod = .oauth
-                    vm.selectedModel = ""
+                    vm.selectInferenceModeFromUser(.oauth)
                 }
                 installPathCard(
                     title: "Local LLM",
@@ -8920,10 +8944,7 @@ struct ContentView: View {
                     icon: "lock.desktopcomputer",
                     selected: vm.inferenceMode == .local
                 ) {
-                    vm.inferenceMode = .local
-                    if vm.selectedModel.isEmpty { vm.selectedModel = vm.recommendation }
-                    vm.selectedProvider = .custom
-                    vm.selectedCloudAuthMode = .api
+                    vm.selectInferenceModeFromUser(.local)
                 }
             }
         }
@@ -10897,18 +10918,7 @@ struct ContentView: View {
                 .pickerStyle(.segmented)
                 .frame(width: 330)
                 .onChange(of: vm.inferenceMode) { newValue in
-                    if newValue == .cloud {
-                        vm.selectedChatResponseMode = .cloud
-                        vm.prepareCloudModelSelection()
-                        vm.selectedCloudAuthMode = .api
-                    } else if newValue == .oauth {
-                        vm.selectedChatResponseMode = .cloud
-                        vm.selectedProvider = .openAI
-                        vm.selectedCloudAuthMode = .oauth
-                        vm.openAIAuthMethod = .oauth
-                    } else {
-                        vm.selectedChatResponseMode = .local
-                    }
+                    vm.selectInferenceModeFromUser(newValue)
                 }
 
                 if vm.inferenceMode == .oauth {

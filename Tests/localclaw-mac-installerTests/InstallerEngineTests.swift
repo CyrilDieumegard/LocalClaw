@@ -271,6 +271,45 @@ struct InstallerEngineTests {
         #expect(vm.effectiveAuthProvider() == "openai-codex")
     }
 
+    @MainActor
+    @Test func userSwitchingOAuthDoesNotFallBackToLocalMode() {
+        let vm = InstallerViewModel()
+        vm.inferenceMode = .local
+        vm.selectedChatResponseMode = .local
+        vm.currentModel = "lmstudio/google/gemma-4-e2b"
+        vm.localLMStudioModels = ["google/gemma-4-e2b"]
+        vm.selectedChatModel = "lmstudio/google/gemma-4-e2b"
+
+        vm.selectInferenceModeFromUser(.oauth)
+
+        #expect(vm.inferenceMode == .oauth)
+        #expect(vm.selectedChatResponseMode == .cloud)
+        #expect(vm.selectedCloudAuthMode == .oauth)
+        #expect(vm.selectedProvider == .openAI)
+        #expect(vm.selectedChatModel == "openai-codex/gpt-5.4")
+        #expect(vm.availableChatModels.map(\.id) == ["openai-codex/gpt-5.4"])
+    }
+
+    @MainActor
+    @Test func userSwitchingCloudDoesNotKeepOAuthAuthMode() {
+        let vm = InstallerViewModel()
+        vm.inferenceMode = .oauth
+        vm.selectedCloudAuthMode = .oauth
+        vm.selectedProvider = .openAI
+        vm.selectedChatResponseMode = .cloud
+        vm.openRouterModelsLive = [
+            InstallerViewModel.OpenRouterModel(id: "openrouter/openai/gpt-5.4-mini", displayName: "GPT-5.4 Mini")
+        ]
+
+        vm.selectInferenceModeFromUser(.cloud)
+
+        #expect(vm.inferenceMode == .cloud)
+        #expect(vm.selectedChatResponseMode == .cloud)
+        #expect(vm.selectedCloudAuthMode == .api)
+        #expect(vm.selectedProvider == .openRouter)
+        #expect(vm.selectedChatModel == "openrouter/openai/gpt-5.4-mini")
+    }
+
     @Test func createsRunnableDeveloperPreviewScaffold() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("localclaw-preview-test-\(UUID().uuidString)")
