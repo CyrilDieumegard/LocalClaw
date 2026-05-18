@@ -12,7 +12,7 @@ final class AsyncCommandRunner: @unchecked Sendable {
         let process = Process()
         self.process = process
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lc", command]
+        process.arguments = ["-lc", InstallerEngine.shellPathPrefix + command]
         
         let pipe = Pipe()
         process.standardOutput = pipe

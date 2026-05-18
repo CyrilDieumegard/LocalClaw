@@ -39,6 +39,13 @@ struct InstallerEngineTests {
         #expect(version == "Not installed")
     }
 
+    @Test func shellAddsHomebrewAndNpmPathsForAppLaunchedCommands() {
+        #expect(InstallerEngine.shellPathPrefix.contains("/opt/homebrew/bin"))
+        #expect(InstallerEngine.shellPathPrefix.contains("/usr/local/bin"))
+        #expect(InstallerEngine.shellPathPrefix.contains("$HOME/.npm-global/bin"))
+        #expect(InstallerEngine.shellPathPrefix.contains("$HOME/.local/bin"))
+    }
+
     @Test func redactsSecretsFromConfigJSON() {
         let raw = """
         {

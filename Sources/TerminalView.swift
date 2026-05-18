@@ -40,7 +40,7 @@ final class TerminalViewModel: ObservableObject {
         
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lc", command]
+        process.arguments = ["-lc", InstallerEngine.shellPathPrefix + command]
         
         let pipe = Pipe()
         process.standardOutput = pipe

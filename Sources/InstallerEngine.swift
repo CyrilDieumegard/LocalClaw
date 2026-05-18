@@ -67,6 +67,8 @@ struct ProcessUsageItem: Identifiable {
 }
 
 final class InstallerEngine: @unchecked Sendable {
+    static let shellPathPrefix = #"export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"; "#
+
     private func lmsCommandPath() -> String {
         if hasCommand("lms") { return "lms" }
         let bundled = "/Applications/LM Studio.app/Contents/Resources/app/.webpack/lms"
@@ -77,7 +79,7 @@ final class InstallerEngine: @unchecked Sendable {
     func shell(_ command: String) -> (Int32, String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lc", command]
+        process.arguments = ["-lc", Self.shellPathPrefix + command]
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -768,7 +770,7 @@ final class InstallerEngine: @unchecked Sendable {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lc", "\(lmsCommandPath()) get \(query) --gguf -y"]
+        process.arguments = ["-lc", Self.shellPathPrefix + "\(lmsCommandPath()) get \(query) --gguf -y"]
 
         let pipe = Pipe()
         process.standardOutput = pipe

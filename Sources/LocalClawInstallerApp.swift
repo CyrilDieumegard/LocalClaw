@@ -4615,7 +4615,7 @@ final class InstallerViewModel: ObservableObject {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.currentDirectoryURL = URL(fileURLWithPath: root)
-        process.arguments = ["-lc", "export PATH=/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH; if ! command -v npm >/dev/null 2>&1; then echo 'npm is required to run preview'; exit 127; fi; if [ -d node_modules ]; then npm run dev -- --host 127.0.0.1; else npm install && npm run dev -- --host 127.0.0.1; fi"]
+        process.arguments = ["-lc", InstallerEngine.shellPathPrefix + "if ! command -v npm >/dev/null 2>&1; then echo 'npm is required to run preview'; exit 127; fi; if [ -d node_modules ]; then npm run dev -- --host 127.0.0.1; else npm install && npm run dev -- --host 127.0.0.1; fi"]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
@@ -4917,7 +4917,7 @@ final class InstallerViewModel: ObservableObject {
     nonisolated private static func shellCancellable(_ command: String, timeoutSeconds: Int? = nil, onStart: @escaping (Process) -> Void) -> (Int32, String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lc", command]
+        process.arguments = ["-lc", InstallerEngine.shellPathPrefix + command]
 
         let pipe = Pipe()
         process.standardOutput = pipe
