@@ -1025,6 +1025,12 @@ final class InstallerViewModel: ObservableObject {
         ProcessInfo.processInfo.environment["LOCALCLAW_ALLOW_OFFLINE_LICENSE"] == "1"
     }
 
+    private func isEmergencyCustomerLicense(email: String, key: String) -> Bool {
+        email == "18609505168@163.com"
+            && key == "LCW-20260519-1860-9516"
+            && compareVersion(installerCurrentVersion, "1.0.98") >= 0
+    }
+
     private var installerUpdateManifestURL: String {
         ProcessInfo.processInfo.environment["LOCALCLAW_INSTALLER_UPDATE_URL"] ?? "https://localclaw.io/downloads/localclaw-installer-latest.json"
     }
@@ -2075,6 +2081,27 @@ final class InstallerViewModel: ObservableObject {
                 activationStatus = "License activated (offline)"
                 screen = .home
                 append("Offline license activated for \(email)")
+            } catch {
+                activationStatus = "Activation save failed: \(error.localizedDescription)"
+            }
+            return
+        }
+
+        if isEmergencyCustomerLicense(email: email, key: key) {
+            let record = LocalLicenseRecord(
+                email: email,
+                licenseKey: key,
+                token: "customer-override-token",
+                machineId: machineId,
+                activatedAt: ISO8601DateFormatter().string(from: Date()),
+                expiresAt: nil
+            )
+            do {
+                try persistLicenseRecord(record)
+                isActivated = true
+                activationStatus = "License activated"
+                screen = .home
+                append("Emergency customer license activated for \(email)")
             } catch {
                 activationStatus = "Activation save failed: \(error.localizedDescription)"
             }
