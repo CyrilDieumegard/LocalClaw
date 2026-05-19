@@ -1025,10 +1025,36 @@ final class InstallerViewModel: ObservableObject {
         ProcessInfo.processInfo.environment["LOCALCLAW_ALLOW_OFFLINE_LICENSE"] == "1"
     }
 
+    static func normalizedLicenseEmail(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    static func normalizedLicenseKey(_ value: String) -> String {
+        let cleaned = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\u{00a0}", with: "")
+            .replacingOccurrences(of: "\u{200b}", with: "")
+            .replacingOccurrences(of: "\u{200c}", with: "")
+            .replacingOccurrences(of: "\u{200d}", with: "")
+            .replacingOccurrences(of: "\u{2010}", with: "-")
+            .replacingOccurrences(of: "\u{2011}", with: "-")
+            .replacingOccurrences(of: "\u{2012}", with: "-")
+            .replacingOccurrences(of: "\u{2013}", with: "-")
+            .replacingOccurrences(of: "\u{2014}", with: "-")
+            .replacingOccurrences(of: "\u{2212}", with: "-")
+            .uppercased()
+
+        let parts = cleaned
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+        return parts.joined(separator: "-")
+    }
+
     private func isEmergencyCustomerLicense(email: String, key: String) -> Bool {
         email == "18609505168@163.com"
             && key == "LCW-20260519-1860-9516"
-            && compareVersion(installerCurrentVersion, "1.0.98") >= 0
     }
 
     private var installerUpdateManifestURL: String {
@@ -2051,8 +2077,8 @@ final class InstallerViewModel: ObservableObject {
     func activateLicense() {
         if isActivating { return }
 
-        let email = licenseEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let key = licenseKey.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let email = Self.normalizedLicenseEmail(licenseEmail)
+        let key = Self.normalizedLicenseKey(licenseKey)
 
         guard email.contains("@"), key.count >= 10 else {
             activationStatus = "Invalid email or license key"

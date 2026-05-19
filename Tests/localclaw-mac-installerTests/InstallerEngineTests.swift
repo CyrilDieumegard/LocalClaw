@@ -98,6 +98,12 @@ struct InstallerEngineTests {
         #expect(quoted == #"'/Users/cyril/LocalClaw'"'"'s update/localclaw.dmg'"#)
     }
 
+    @MainActor @Test func licenseKeyNormalizationHandlesCopiedFormatting() {
+        let normalized = InstallerViewModel.normalizedLicenseKey(" LCW\u{2011}20260519\u{200b} \n 1860\u{2014}9516 ")
+
+        #expect(normalized == "LCW-20260519-1860-9516")
+    }
+
     @Test func cronInventoryRefreshIncludesDisabledJobs() {
         #expect(InstallerViewModel.cronListInventoryCommand == "openclaw --no-color cron list --all --json")
     }
