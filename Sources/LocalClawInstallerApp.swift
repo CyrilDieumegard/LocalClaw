@@ -730,6 +730,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var localLMStudioModels: [String] = []
     @Published var selectedLocalLMStudioModel: String = ""
     @Published var activeLocalLMStudioModel: String = ""
+    @Published var activeLocalLMStudioContext: Int? = nil
     @Published var localLMStudioSetupStatus = ""
     @Published var localLMStudioSetupLog = ""
     @Published var localLMStudioSetupInProgress = false
@@ -1534,13 +1535,15 @@ final class InstallerViewModel: ObservableObject {
                         self.modelsApplyStatus = message
                     }
                 }
-                let activeLocal = InstallerEngine().loadedLMStudioModelInfo()?.model
+                let activeLocalInfo = InstallerEngine().loadedLMStudioModelInfo()
+                let activeLocal = activeLocalInfo?.model
                 await MainActor.run {
                     if result.state == .ok {
                         self.currentModel = "lmstudio/\(activeLocal ?? modelId)"
                         self.selectedChatModel = self.currentModel
                     }
                     self.activeLocalLMStudioModel = activeLocal ?? self.activeLocalLMStudioModel
+                    self.activeLocalLMStudioContext = activeLocalInfo?.context
                     self.selectedChatResponseMode = .local
                     self.reconcileSelectedChatModelForCurrentMode()
                     self.modelsApplyStatus = "[\(result.state.rawValue)] \(result.message)"
@@ -3585,12 +3588,14 @@ final class InstallerViewModel: ObservableObject {
                         self.controlCenterLogs += "[INFO] \(message)\n"
                     }
                 }
-                let loaded = InstallerEngine().loadedLMStudioModelInfo()?.model
+                let loadedInfo = InstallerEngine().loadedLMStudioModelInfo()
+                let loaded = loadedInfo?.model
                 await MainActor.run {
                     if result.state == .ok {
                         let active = loaded ?? modelId
                         self.currentModel = "lmstudio/\(active)"
                         self.activeLocalLMStudioModel = active
+                        self.activeLocalLMStudioContext = loadedInfo?.context
                         self.selectedChatModel = "lmstudio/\(active)"
                         self.controlCenterLogs += "[OK] Switched to Local LLM: lmstudio/\(active)\n"
                     } else {
@@ -3939,6 +3944,7 @@ final class InstallerViewModel: ObservableObject {
     }
 
     var chatMemoryPreview: [String] {
+        guard chatMemoryEnabled else { return [] }
         var notes = chatSavedNotes
         if let session = selectedChatSession {
             let recent = session.messages
@@ -4012,7 +4018,71 @@ final class InstallerViewModel: ObservableObject {
 
     func forgetChatMemory() {
         chatSavedNotes.removeAll()
-        appendChatSystemMessageOnce("Chat memory notes cleared.")
+        chatMemoryEnabled = false
+        appendChatSystemMessageOnce("Chat memory cleared and paused.")
+    }
+
+    struct ChatContextUsage {
+        let usedTokens: Int
+        let maxTokens: Int
+
+        var fraction: Double {
+            guard maxTokens > 0 else { return 0 }
+            return min(1, Double(usedTokens) / Double(maxTokens))
+        }
+
+        var percent: Int {
+            Int((fraction * 100).rounded())
+        }
+
+        var label: String {
+            "\(percent)% context used  \(InstallerViewModel.compactTokenCount(usedTokens)) / \(InstallerViewModel.compactTokenCount(maxTokens))"
+        }
+    }
+
+    var chatContextUsage: ChatContextUsage {
+        let contextText = chatContextTextForUsage()
+        let used = Self.estimatedTokenCount(for: contextText)
+        return ChatContextUsage(usedTokens: used, maxTokens: chatContextLimitTokens)
+    }
+
+    private var chatContextLimitTokens: Int {
+        if inferenceMode == .local || selectedChatModel.hasPrefix("lmstudio/") || currentModel.hasPrefix("lmstudio/") {
+            return max(activeLocalLMStudioContext ?? 32768, 16000)
+        }
+        return 400_000
+    }
+
+    private func chatContextTextForUsage() -> String {
+        var parts: [String] = []
+        let project = chatProjectContext(for: activeChatSessionID)
+        if !project.isEmpty { parts.append(project) }
+        if chatMemoryEnabled {
+            parts.append(contentsOf: chatMemoryPreview)
+        }
+        parts.append(contentsOf: chatMessages.map { "\($0.role): \($0.text)" })
+        let pending = chatInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !pending.isEmpty { parts.append("draft: \(pending)") }
+        return parts.joined(separator: "\n")
+    }
+
+    nonisolated static func estimatedTokenCount(for text: String) -> Int {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return 0 }
+        return max(1, Int(ceil(Double(trimmed.count) / 4.0)))
+    }
+
+    nonisolated static func compactTokenCount(_ tokens: Int) -> String {
+        if tokens >= 1_000_000 {
+            return String(format: "%.1fM", Double(tokens) / 1_000_000)
+        }
+        if tokens >= 100_000 {
+            return "\(tokens / 1000)k"
+        }
+        if tokens >= 1_000 {
+            return String(format: "%.1fk", Double(tokens) / 1000)
+        }
+        return "\(tokens)"
     }
 
     func sendChatMessageToChannel(_ message: ChatMessage) {
@@ -4624,7 +4694,8 @@ final class InstallerViewModel: ObservableObject {
                     self.localLMStudioSetupLog = self.localLMStudioSetupLog.isEmpty ? line : self.localLMStudioSetupLog + "\n" + line
                 }
             }
-            let loaded = InstallerEngine().loadedLMStudioModelInfo()?.model
+            let loadedInfo = InstallerEngine().loadedLMStudioModelInfo()
+            let loaded = loadedInfo?.model
             await MainActor.run {
                 guard self.localLMStudioSetupRequestID == requestID else { return }
                 self.localLMStudioSetupRequestID = nil
@@ -4634,6 +4705,7 @@ final class InstallerViewModel: ObservableObject {
                     let active = loaded ?? modelId
                     self.currentModel = "lmstudio/\(active)"
                     self.activeLocalLMStudioModel = active
+                    self.activeLocalLMStudioContext = loadedInfo?.context
                     self.selectedLocalLMStudioModel = active
                     self.selectedChatResponseMode = .local
                     self.selectedChatModel = "lmstudio/\(active)"
@@ -5726,7 +5798,8 @@ final class InstallerViewModel: ObservableObject {
             let engine = InstallerEngine()
             let model = engine.getCurrentModel()
             let models = engine.listLMStudioLLMModelIds()
-            let loaded = engine.loadedLMStudioModelInfo()?.model
+            let loadedInfo = engine.loadedLMStudioModelInfo()
+            let loaded = loadedInfo?.model
             let authConfigured = engine.hasProviderAuth(provider: provider) || localKeyPresent
             await MainActor.run {
                 let repairedModel = Self.repairedLegacyCloudModelID(model)
@@ -5737,6 +5810,7 @@ final class InstallerViewModel: ObservableObject {
                 self.cloudProviderAuthConfigured = authConfigured
                 self.localLMStudioModels = models
                 self.activeLocalLMStudioModel = loaded ?? ""
+                self.activeLocalLMStudioContext = loadedInfo?.context
                 if self.selectedLocalLMStudioModel.isEmpty {
                     if let loaded, models.contains(loaded) {
                         self.selectedLocalLMStudioModel = loaded
@@ -5754,9 +5828,11 @@ final class InstallerViewModel: ObservableObject {
 
     func refreshLocalLMStudioModels() {
         let models = engine.listLMStudioLLMModelIds()
-        let loaded = engine.loadedLMStudioModelInfo()?.model
+        let loadedInfo = engine.loadedLMStudioModelInfo()
+        let loaded = loadedInfo?.model
         localLMStudioModels = models
         activeLocalLMStudioModel = loaded ?? ""
+        activeLocalLMStudioContext = loadedInfo?.context
         let loadedMatch = localModelMatch(loaded ?? "", in: models)
         if !loadedMatch.isEmpty {
             selectedLocalLMStudioModel = loadedMatch
@@ -5832,7 +5908,8 @@ final class InstallerViewModel: ObservableObject {
                     self.localLMStudioSetupLog = self.localLMStudioSetupLog.isEmpty ? line : self.localLMStudioSetupLog + "\n" + line
                 }
             }
-            let loaded = engine.loadedLMStudioModelInfo()?.model
+            let loadedInfo = engine.loadedLMStudioModelInfo()
+            let loaded = loadedInfo?.model
 
             await MainActor.run {
                 guard self.localLMStudioSetupRequestID == requestID else { return }
@@ -5844,6 +5921,7 @@ final class InstallerViewModel: ObservableObject {
                     let active = loaded ?? modelId
                     self.currentModel = "lmstudio/\(active)"
                     self.activeLocalLMStudioModel = active
+                    self.activeLocalLMStudioContext = loadedInfo?.context
                     self.selectedLocalLMStudioModel = active
                     self.selectedChatResponseMode = .local
                     self.selectedChatModel = "lmstudio/\(active)"
@@ -8656,48 +8734,53 @@ struct ContentView: View {
                 .background(RoundedRectangle(cornerRadius: 16).fill(UI.cardSoft))
                 .overlay(RoundedRectangle(cornerRadius: 16).stroke(UI.lineSoft, lineWidth: 1))
 
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 10) {
-                            ForEach(vm.chatMessages) { message in
-                                chatBubble(message)
-                                    .id(message.id)
-                            }
-                            if vm.chatIsSending {
-                                HStack(spacing: 8) {
-                                    ProgressView()
-                                        .scaleEffect(0.7)
-                                    Text("OpenClaw is thinking...")
-                                        .font(AppFont.body(12))
-                                        .foregroundStyle(UI.muted)
+                VStack(spacing: 8) {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 10) {
+                                ForEach(vm.chatMessages) { message in
+                                    chatBubble(message)
+                                        .id(message.id)
                                 }
-                                .padding(.horizontal, 10)
+                                if vm.chatIsSending {
+                                    HStack(spacing: 8) {
+                                        ProgressView()
+                                            .scaleEffect(0.7)
+                                        Text("OpenClaw is thinking...")
+                                            .font(AppFont.body(12))
+                                            .foregroundStyle(UI.muted)
+                                    }
+                                    .padding(.horizontal, 10)
+                                }
+                                Color.clear
+                                    .frame(height: 18)
+                                    .id("chat-bottom-anchor")
                             }
-                            Color.clear
-                                .frame(height: 18)
-                                .id("chat-bottom-anchor")
+                            .padding(.horizontal, 14)
+                            .padding(.top, 14)
+                            .padding(.bottom, 28)
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.top, 14)
-                        .padding(.bottom, 28)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(RoundedRectangle(cornerRadius: 16).fill(UI.cardSoft))
+                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(UI.lineSoft, lineWidth: 1))
+                        .onChange(of: vm.chatMessages.count) { _ in
+                            scrollChatToBottom(proxy)
+                        }
+                        .onChange(of: vm.chatIsSending) { _ in
+                            scrollChatToBottom(proxy)
+                        }
+                        .onChange(of: vm.activeChatSessionID) { _ in
+                            scrollChatToBottom(proxy)
+                        }
+                        .onAppear {
+                            scrollChatToBottom(proxy)
+                        }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(RoundedRectangle(cornerRadius: 16).fill(UI.cardSoft))
-                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(UI.lineSoft, lineWidth: 1))
-                    .onChange(of: vm.chatMessages.count) { _ in
-                        scrollChatToBottom(proxy)
-                    }
-                    .onChange(of: vm.chatIsSending) { _ in
-                        scrollChatToBottom(proxy)
-                    }
-                    .onChange(of: vm.activeChatSessionID) { _ in
-                        scrollChatToBottom(proxy)
-                    }
-                    .onAppear {
-                        scrollChatToBottom(proxy)
-                    }
+
+                    chatContextUsageBar
                 }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 chatMemoryPanel
             }
@@ -8721,23 +8804,65 @@ struct ContentView: View {
         }
     }
 
+    var chatContextUsageBar: some View {
+        let usage = vm.chatContextUsage
+        let tint = usage.fraction > 0.85 ? Color(NSColor.systemRed) : (usage.fraction > 0.65 ? Color(NSColor.systemOrange) : UI.accent)
+
+        return HStack(spacing: 10) {
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(UI.lineSoft)
+                    Capsule()
+                        .fill(tint)
+                        .frame(width: max(6, proxy.size.width * usage.fraction))
+                }
+            }
+            .frame(width: 92, height: 6)
+
+            Text(usage.label)
+                .font(AppFont.bodySemi(11))
+                .foregroundStyle(UI.muted)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Capsule().fill(UI.cardSoft))
+        .overlay(Capsule().stroke(UI.lineSoft, lineWidth: 1))
+        .frame(maxWidth: .infinity, alignment: .center)
+        .help("Approximate context used by this chat")
+    }
+
     var chatMemoryPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 7) {
                 Label("Memory", systemImage: "memorychip")
                     .font(AppFont.bodySemi(12))
                     .foregroundStyle(UI.text)
+                    .lineLimit(1)
                 Spacer()
-                Toggle(isOn: $vm.chatMemoryEnabled) {
-                    Text(vm.chatMemoryEnabled ? "On" : "Off")
-                        .font(AppFont.bodySemi(10))
+                Button {
+                    vm.chatMemoryEnabled.toggle()
+                } label: {
+                    Image(systemName: vm.chatMemoryEnabled ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(vm.chatMemoryEnabled ? UI.accent : UI.muted)
+                        .frame(width: 28, height: 28)
                 }
-                .toggleStyle(.switch)
-                .foregroundStyle(UI.text)
+                .buttonStyle(.plain)
                 .disabled(vm.chatIsSending)
-                Button("Forget") { vm.forgetChatMemory() }
-                    .buttonStyle(CompactChatButton(primary: false))
-                    .disabled(vm.chatSavedNotes.isEmpty)
+                .help(vm.chatMemoryEnabled ? "Pause memory" : "Enable memory")
+
+                Button(action: { vm.forgetChatMemory() }) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(UI.muted)
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .disabled(vm.chatIsSending || (!vm.chatMemoryEnabled && vm.chatSavedNotes.isEmpty))
+                .help("Forget chat memory")
             }
 
             Text(vm.chatMemoryEnabled ? "Visible context used for this chat." : "Memory is paused for new messages.")
