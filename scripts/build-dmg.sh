@@ -71,6 +71,11 @@ cat > "$APP_PATH/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+CLEAN_APP_PATH="${APP_PATH}.clean"
+rm -rf "$CLEAN_APP_PATH"
+ditto --noextattr --noacl "$APP_PATH" "$CLEAN_APP_PATH"
+rm -rf "$APP_PATH"
+mv "$CLEAN_APP_PATH" "$APP_PATH"
 xattr -cr "$APP_PATH" 2>/dev/null || true
 
 if [[ -n "${DEVELOPER_ID_APP:-}" ]]; then
