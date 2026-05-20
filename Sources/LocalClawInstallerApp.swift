@@ -5473,6 +5473,54 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    func pasteChatImageFromClipboard() {
+        guard let image = Self.imageFromPasteboard(NSPasteboard.general) else {
+            chatStatus = "No image in clipboard"
+            return
+        }
+
+        do {
+            chatImagePath = try Self.saveClipboardImage(image)
+            chatStatus = "Image pasted"
+        } catch {
+            chatStatus = "Could not paste image: \(error.localizedDescription)"
+        }
+    }
+
+    nonisolated static func imageFromPasteboard(_ pasteboard: NSPasteboard) -> NSImage? {
+        if let image = pasteboard.readObjects(forClasses: [NSImage.self])?.first as? NSImage {
+            return image
+        }
+
+        for type in [NSPasteboard.PasteboardType.png, .tiff] where pasteboard.data(forType: type) != nil {
+            if let data = pasteboard.data(forType: type), let image = NSImage(data: data) {
+                return image
+            }
+        }
+
+        return nil
+    }
+
+    nonisolated static func saveClipboardImage(_ image: NSImage) throws -> String {
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]) else {
+            throw NSError(domain: "LocalClawClipboardImage", code: 1, userInfo: [NSLocalizedDescriptionKey: "Clipboard image could not be converted to PNG"])
+        }
+
+        let dir = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".localclaw-installer", isDirectory: true)
+            .appendingPathComponent("chat-images", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let filename = "pasted-image-\(formatter.string(from: Date()))-\(UUID().uuidString.prefix(8)).png"
+        let url = dir.appendingPathComponent(filename)
+        try png.write(to: url, options: .atomic)
+        return url.path
+    }
+
     func removeChatImage() {
         chatImagePath = ""
     }
@@ -8684,8 +8732,9 @@ struct ContentView: View {
 
             HStack(spacing: 14) {
                 chatComposerIcon("plus", help: "Attach image") { vm.attachChatImage() }
-                chatComposerIcon("globe", help: "Web context")
-                chatComposerIcon("apps.iphone", help: "Apps")
+                chatComposerIcon("clipboard", help: "Paste image from clipboard") { vm.pasteChatImageFromClipboard() }
+                chatComposerIcon("globe", help: "Web context", disabled: true)
+                chatComposerIcon("apps.iphone", help: "Apps", disabled: true)
 
                 Spacer(minLength: 12)
 
@@ -8709,6 +8758,9 @@ struct ContentView: View {
         .frame(minHeight: 104, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 22).fill(UI.cardSoft))
         .overlay(RoundedRectangle(cornerRadius: 22).stroke(UI.line, lineWidth: 1))
+        .onPasteCommand(of: [.image]) { _ in
+            vm.pasteChatImageFromClipboard()
+        }
     }
 
     func chatModelPicker(width: CGFloat) -> some View {
@@ -8728,7 +8780,7 @@ struct ContentView: View {
         .help("Choose the model for OpenClaw Chat")
     }
 
-    func chatComposerIcon(_ systemName: String, help: String, action: @escaping () -> Void = {}) -> some View {
+    func chatComposerIcon(_ systemName: String, help: String, disabled: Bool = false, action: @escaping () -> Void = {}) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 17, weight: .semibold))
@@ -8736,7 +8788,7 @@ struct ContentView: View {
                 .frame(width: 26, height: 26)
         }
         .buttonStyle(.plain)
-        .disabled(systemName != "plus")
+        .disabled(disabled)
         .help(help)
     }
 
