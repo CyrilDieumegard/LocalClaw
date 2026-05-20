@@ -51,28 +51,38 @@ mkdir -p ~/.openclaw
 
 # Generate token
 GATEWAY_TOKEN=$(openssl rand -hex 32 2>/dev/null || dd if=/dev/urandom bs=32 count=1 2>/dev/null | xxd -p | tr -d '\n' || echo "$(date +%s)$(uuidgen | tr -d '-')" | md5)
+export GATEWAY_TOKEN
 echo "$GATEWAY_TOKEN" > /tmp/localclaw_token
 
-# Create config
-cat > ~/.openclaw/openclaw.json << EOF
-{
-  "gateway": {
-    "mode": "local",
-    "port": 18789,
-    "auth": {
-      "mode": "token",
-      "token": "$GATEWAY_TOKEN"
-    }
-  },
-  "agents": {
-    "defaults": {
-      "model": {
-        "primary": "MODEL_PLACEHOLDER"
-      }
-    }
+# Merge config without wiping existing channels/accounts.
+export OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
+export LOCALCLAW_MODEL_ID="MODEL_PLACEHOLDER"
+node <<'NODE'
+const fs = require("fs");
+const path = process.env.OPENCLAW_CONFIG;
+let config = {};
+try {
+  if (fs.existsSync(path)) config = JSON.parse(fs.readFileSync(path, "utf8"));
+} catch {}
+config.gateway = {
+  ...(config.gateway || {}),
+  mode: "local",
+  port: 18789,
+  bind: "loopback",
+  auth: {
+    ...((config.gateway && config.gateway.auth) || {}),
+    mode: "token",
+    token: process.env.GATEWAY_TOKEN || ""
   }
-}
-EOF
+};
+config.agents = config.agents || {};
+config.agents.defaults = config.agents.defaults || {};
+config.agents.defaults.model = {
+  ...(config.agents.defaults.model || {}),
+  primary: process.env.LOCALCLAW_MODEL_ID || ""
+};
+fs.writeFileSync(path, JSON.stringify(config, null, 2) + "\n");
+NODE
 
 # Create agent directory and auth file BEFORE starting gateway
 mkdir -p ~/.openclaw/agents/main/agent

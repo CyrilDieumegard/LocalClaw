@@ -773,11 +773,20 @@ final class InstallerViewModel: ObservableObject {
     @Published var channelsStatus: String = "Not loaded"
     @Published var channelsIsLoading = false
     @Published var channelSetupLogs: String = ""
+    @Published var showTelegramSetupPanel = false
+    @Published var telegramSetupToken = ""
+    @Published var telegramSetupPairingCode = ""
+    @Published var telegramSetupStatus = ""
+    @Published var telegramSetupIsRunning = false
     @Published var agents: [AgentInfo] = []
     @Published var agentsStatus: String = "Not loaded"
     @Published var agentsIsLoading = false
     @Published var agentLogs: String = ""
     @Published var showAgentSetupPanel = false
+    @Published var showAgentDeleteConfirmation = false
+    @Published var agentDeleteCandidateID = ""
+    @Published var agentDeleteCandidateName = ""
+    @Published var agentDeleteIsRunning = false
     @Published var agentSetupEditingID = ""
     @Published var agentSetupID = ""
     @Published var agentSetupName = ""
@@ -2863,6 +2872,46 @@ final class InstallerViewModel: ObservableObject {
         agentSetupStatus = ""
     }
 
+    func requestDeleteAgent(_ agent: AgentInfo) {
+        guard !agent.isDefault, !agentDeleteIsRunning else { return }
+        agentDeleteCandidateID = agent.id
+        agentDeleteCandidateName = agent.displayName
+        showAgentDeleteConfirmation = true
+    }
+
+    func deletePendingAgent() {
+        let id = agentDeleteCandidateID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty, id != "main", !agentDeleteIsRunning else { return }
+
+        agentDeleteIsRunning = true
+        let display = agentDeleteCandidateName.isEmpty ? id : agentDeleteCandidateName
+        agentLogs = agentLogs.isEmpty ? "Deleting agent \(display)..." : agentLogs + "\nDeleting agent \(display)..."
+
+        Task.detached {
+            let engine = InstallerEngine()
+            let command = "openclaw --no-color agents delete \(Self.shellSingleQuote(id)) --force --json 2>&1"
+            let result = engine.shell(command)
+            let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            await MainActor.run {
+                self.agentDeleteIsRunning = false
+                self.agentDeleteCandidateID = ""
+                self.agentDeleteCandidateName = ""
+                if result.0 == 0 {
+                    self.agentLogs += "\nDeleted agent \(display)."
+                    if !output.isEmpty { self.agentLogs += "\n\(output)" }
+                    if self.agentSetupEditingID == id {
+                        self.showAgentSetupPanel = false
+                        self.agentSetupEditingID = ""
+                    }
+                    self.refreshAgents()
+                } else {
+                    self.agentLogs += "\nFailed to delete agent \(display): \(output.isEmpty ? "unknown error" : output)"
+                }
+            }
+        }
+    }
+
     private func suggestedNewAgentID() -> String {
         var index = max(agents.count + 1, 1)
         while agents.contains(where: { $0.id == "agent-\(index)" }) {
@@ -3561,6 +3610,149 @@ final class InstallerViewModel: ObservableObject {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
         return formatter.localizedString(for: date, relativeTo: Date())
+    }
+
+    func beginChannelSetup(_ channel: ChannelInfo) {
+        if channel.id == "telegram" {
+            beginTelegramSetup(channel)
+        } else {
+            openTerminalChannelLogin(channel.id)
+        }
+    }
+
+    func beginTelegramSetup(_ channel: ChannelInfo? = nil) {
+        telegramSetupToken = ""
+        telegramSetupPairingCode = ""
+        telegramSetupStatus = channel?.configured == true
+            ? "Telegram is configured. Add a new token to rotate it, or approve a pairing code."
+            : "Paste the bot token from @BotFather, then send /start to the bot and approve the pairing code here."
+        showTelegramSetupPanel = true
+    }
+
+    func cancelTelegramSetup() {
+        guard !telegramSetupIsRunning else { return }
+        showTelegramSetupPanel = false
+        telegramSetupStatus = ""
+        telegramSetupToken = ""
+        telegramSetupPairingCode = ""
+    }
+
+    func saveTelegramBotToken() {
+        guard !telegramSetupIsRunning else { return }
+        let token = telegramSetupToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else {
+            telegramSetupStatus = "Paste the Telegram bot token first."
+            return
+        }
+
+        telegramSetupIsRunning = true
+        telegramSetupStatus = "Saving Telegram token..."
+        channelSetupLogs = channelSetupLogs.isEmpty ? "Saving Telegram token..." : channelSetupLogs + "\nSaving Telegram token..."
+
+        Task.detached {
+            let engine = InstallerEngine()
+            let tokenURL = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("localclaw-telegram-token-\(UUID().uuidString)")
+            do {
+                try token.write(to: tokenURL, atomically: true, encoding: .utf8)
+            } catch {
+                await MainActor.run {
+                    self.telegramSetupIsRunning = false
+                    self.telegramSetupStatus = "Failed to prepare token: \(error.localizedDescription)"
+                    self.channelSetupLogs += "\nTelegram token setup failed before OpenClaw."
+                }
+                return
+            }
+            _ = engine.shell("chmod 600 \(Self.shellSingleQuote(tokenURL.path))")
+            defer { try? FileManager.default.removeItem(at: tokenURL) }
+
+            let tokenFile = Self.shellSingleQuote(tokenURL.path)
+            let command = [
+                "openclaw --no-color plugins enable telegram >/dev/null 2>&1 || openclaw --no-color plugins enable @openclaw/telegram >/dev/null 2>&1 || true",
+                "openclaw --no-color channels add --channel telegram --token-file \(tokenFile) --name Telegram --json 2>&1"
+            ].joined(separator: " && ")
+            let result = engine.shell(command)
+
+            var messages: [String] = []
+            let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
+            if result.0 == 0 {
+                messages.append("Telegram token saved.")
+                if !output.isEmpty { messages.append(output) }
+                let restart = engine.shell("openclaw --no-color gateway restart 2>&1 || true")
+                let restartOutput = restart.1.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !restartOutput.isEmpty { messages.append(restartOutput) }
+                let status = engine.shell("openclaw --no-color channels status --channel telegram --probe --timeout 5000 2>&1 || true")
+                let statusOutput = status.1.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !statusOutput.isEmpty { messages.append(statusOutput) }
+            } else {
+                messages.append("Telegram token setup failed.")
+                if !output.isEmpty { messages.append(output) }
+            }
+
+            await MainActor.run {
+                self.telegramSetupIsRunning = false
+                self.telegramSetupStatus = messages.joined(separator: "\n")
+                self.channelSetupLogs += "\n" + self.telegramSetupStatus
+                self.telegramSetupToken = ""
+                self.refreshChannels()
+            }
+        }
+    }
+
+    func approveTelegramPairing() {
+        guard !telegramSetupIsRunning else { return }
+        let code = telegramSetupPairingCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else {
+            telegramSetupStatus = "Paste the pairing code received in Telegram first."
+            return
+        }
+
+        telegramSetupIsRunning = true
+        telegramSetupStatus = "Approving Telegram pairing..."
+        channelSetupLogs = channelSetupLogs.isEmpty ? "Approving Telegram pairing..." : channelSetupLogs + "\nApproving Telegram pairing..."
+
+        Task.detached {
+            let engine = InstallerEngine()
+            let result = engine.shell("openclaw --no-color pairing approve --channel telegram \(Self.shellSingleQuote(code)) --notify 2>&1")
+            let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            await MainActor.run {
+                self.telegramSetupIsRunning = false
+                self.telegramSetupStatus = result.0 == 0
+                    ? "Telegram pairing approved. Send another message to the bot to test replies."
+                    : "Telegram pairing failed: \(output.isEmpty ? "unknown error" : output)"
+                if result.0 == 0 {
+                    self.telegramSetupPairingCode = ""
+                }
+                self.channelSetupLogs += "\n" + self.telegramSetupStatus
+                if !output.isEmpty { self.channelSetupLogs += "\n\(output)" }
+                self.refreshChannels()
+            }
+        }
+    }
+
+    func restartTelegramAndRefresh() {
+        guard !telegramSetupIsRunning else { return }
+        telegramSetupIsRunning = true
+        telegramSetupStatus = "Restarting Telegram channel..."
+
+        Task.detached {
+            let engine = InstallerEngine()
+            let restart = engine.shell("openclaw --no-color gateway restart 2>&1 || true")
+            let status = engine.shell("openclaw --no-color channels status --channel telegram --probe --timeout 5000 2>&1 || true")
+            let output = [restart.1, status.1]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+
+            await MainActor.run {
+                self.telegramSetupIsRunning = false
+                self.telegramSetupStatus = output.isEmpty ? "Telegram restarted. Status refreshed." : output
+                self.channelSetupLogs += "\nTelegram restart/check finished."
+                if !output.isEmpty { self.channelSetupLogs += "\n\(output)" }
+                self.refreshChannels()
+            }
+        }
     }
 
     func openTerminalChannelLogin(_ channel: String) {
@@ -6351,7 +6543,35 @@ final class InstallerViewModel: ObservableObject {
         echo ""
         echo "[5/6] Configuring OpenClaw..."
         mkdir -p ~/.openclaw
-        echo '{"gateway":{"mode":"local","port":18789,"auth":{"mode":"token","token":"\(gatewayToken)"}},"agents":{"defaults":{"model":{"primary":"\(effectiveModelIdentifier())"}}}}' > ~/.openclaw/openclaw.json
+        export GATEWAY_TOKEN="\(gatewayToken)"
+        export LOCALCLAW_MODEL_ID="\(effectiveModelIdentifier())"
+        export OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
+        node <<'NODE'
+        const fs = require("fs");
+        const path = process.env.OPENCLAW_CONFIG;
+        let config = {};
+        try {
+          if (fs.existsSync(path)) config = JSON.parse(fs.readFileSync(path, "utf8"));
+        } catch {}
+        config.gateway = {
+          ...(config.gateway || {}),
+          mode: "local",
+          port: 18789,
+          bind: "loopback",
+          auth: {
+            ...((config.gateway && config.gateway.auth) || {}),
+            mode: "token",
+            token: process.env.GATEWAY_TOKEN || ""
+          }
+        };
+        config.agents = config.agents || {};
+        config.agents.defaults = config.agents.defaults || {};
+        config.agents.defaults.model = {
+          ...(config.agents.defaults.model || {}),
+          primary: process.env.LOCALCLAW_MODEL_ID || ""
+        };
+        fs.writeFileSync(path, JSON.stringify(config, null, 2) + "\n");
+        NODE
         echo "  ✓ Config saved"
         
         echo ""
@@ -6545,47 +6765,71 @@ final class InstallerViewModel: ObservableObject {
         lines.append("echo \"[6/7] Configuring OpenClaw...\"")
         lines.append("mkdir -p ~/.openclaw")
         lines.append("GATEWAY_TOKEN=\"\(gatewayTokenValue)\"")
+        lines.append("export GATEWAY_TOKEN")
         lines.append("echo \"$GATEWAY_TOKEN\" > /tmp/localclaw_token")
-        lines.append("cat > ~/.openclaw/openclaw.json << EOF")
-        lines.append("{")
-        lines.append("  \"gateway\": {")
-        lines.append("    \"mode\": \"local\",")
-        lines.append("    \"port\": 18789,")
-        lines.append("    \"auth\": {")
-        lines.append("      \"mode\": \"token\",")
-        lines.append("      \"token\": \"\(gatewayTokenValue)\"")
-        lines.append("    }")
-        lines.append("  },")
-        lines.append("  \"agents\": {")
-        lines.append("    \"defaults\": {")
-        lines.append("      \"model\": {")
-        lines.append("        \"primary\": \"\(installLMStudio ? "lmstudio/${LOCAL_MODEL_ID}" : modelId)\"")
-        lines.append("      },")
-        lines.append("      \"sandbox\": {")
-        lines.append("        \"mode\": \"off\"")
-        lines.append("      }")
-        lines.append("    }")
-        lines.append("  }")
         if installLMStudio {
-            lines.append("  ,\"models\": {")
-            lines.append("    \"mode\": \"merge\",")
-            lines.append("    \"providers\": {")
-            lines.append("      \"lmstudio\": {")
-            lines.append("        \"baseUrl\": \"http://127.0.0.1:1234/v1\",")
-            lines.append("        \"apiKey\": \"lmstudio\",")
-            lines.append("        \"api\": \"openai-completions\",")
-            lines.append("        \"models\": [")
-            lines.append("          { \"id\": \"${LOCAL_MODEL_ID}\", \"name\": \"${LOCAL_MODEL_NAME}\", \"reasoning\": false, \"input\": [\"text\"], \"cost\": { \"input\": 0, \"output\": 0, \"cacheRead\": 0, \"cacheWrite\": 0 }, \"contextWindow\": 32768, \"maxTokens\": 4096 }")
-            lines.append("        ]")
-            lines.append("      }")
-            lines.append("    }")
-            lines.append("  },")
-            lines.append("  \"tools\": {")
-            lines.append("    \"deny\": [\"group:web\", \"browser\", \"web_search\", \"web_fetch\"]")
-            lines.append("  }")
+            lines.append("export LOCAL_MODEL_ID")
+            lines.append("export LOCAL_MODEL_NAME")
+            lines.append("LOCALCLAW_MODEL_ID=\"lmstudio/${LOCAL_MODEL_ID}\"")
+            lines.append("export LOCALCLAW_MODEL_ID")
+            lines.append("LOCALCLAW_LMSTUDIO=\"1\"")
+            lines.append("export LOCALCLAW_LMSTUDIO")
+        } else {
+            lines.append("LOCALCLAW_MODEL_ID=\(shellSingleQuote(modelId))")
+            lines.append("export LOCALCLAW_MODEL_ID")
+            lines.append("LOCALCLAW_LMSTUDIO=\"0\"")
+            lines.append("export LOCALCLAW_LMSTUDIO")
         }
+        lines.append("OPENCLAW_CONFIG=\"$HOME/.openclaw/openclaw.json\"")
+        lines.append("export OPENCLAW_CONFIG")
+        lines.append("node <<'NODE'")
+        lines.append("const fs = require(\"fs\");")
+        lines.append("const path = process.env.OPENCLAW_CONFIG;")
+        lines.append("let config = {};")
+        lines.append("try {")
+        lines.append("  if (fs.existsSync(path)) config = JSON.parse(fs.readFileSync(path, \"utf8\"));")
+        lines.append("} catch {}")
+        lines.append("config.gateway = {")
+        lines.append("  ...(config.gateway || {}),")
+        lines.append("  mode: \"local\",")
+        lines.append("  port: 18789,")
+        lines.append("  bind: \"loopback\",")
+        lines.append("  auth: {")
+        lines.append("    ...((config.gateway && config.gateway.auth) || {}),")
+        lines.append("    mode: \"token\",")
+        lines.append("    token: process.env.GATEWAY_TOKEN || \"\"")
+        lines.append("  }")
+        lines.append("};")
+        lines.append("config.agents = config.agents || {};")
+        lines.append("config.agents.defaults = config.agents.defaults || {};")
+        lines.append("config.agents.defaults.model = {")
+        lines.append("  ...(config.agents.defaults.model || {}),")
+        lines.append("  primary: process.env.LOCALCLAW_MODEL_ID || \"\"")
+        lines.append("};")
+        lines.append("config.agents.defaults.sandbox = {")
+        lines.append("  ...(config.agents.defaults.sandbox || {}),")
+        lines.append("  mode: \"off\"")
+        lines.append("};")
+        lines.append("if (process.env.LOCALCLAW_LMSTUDIO === \"1\") {")
+        lines.append("  config.models = config.models || {};")
+        lines.append("  config.models.mode = config.models.mode || \"merge\";")
+        lines.append("  config.models.providers = config.models.providers || {};")
+        lines.append("  const lmstudio = config.models.providers.lmstudio || {};")
+        lines.append("  lmstudio.baseUrl = \"http://127.0.0.1:1234/v1\";")
+        lines.append("  lmstudio.apiKey = \"lmstudio\";")
+        lines.append("  lmstudio.api = \"openai-completions\";")
+        lines.append("  const localModel = { id: process.env.LOCAL_MODEL_ID || \"\", name: process.env.LOCAL_MODEL_NAME || process.env.LOCAL_MODEL_ID || \"Local model\", reasoning: false, input: [\"text\"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32768, maxTokens: 4096 };")
+        lines.append("  const models = Array.isArray(lmstudio.models) ? lmstudio.models.filter((model) => model.id !== localModel.id) : [];")
+        lines.append("  if (localModel.id) models.unshift(localModel);")
+        lines.append("  lmstudio.models = models;")
+        lines.append("  config.models.providers.lmstudio = lmstudio;")
+        lines.append("  config.tools = config.tools || {};")
+        lines.append("  const deny = new Set(Array.isArray(config.tools.deny) ? config.tools.deny : []);")
+        lines.append("  for (const item of [\"group:web\", \"browser\", \"web_search\", \"web_fetch\"]) deny.add(item);")
+        lines.append("  config.tools.deny = Array.from(deny);")
         lines.append("}")
-        lines.append("EOF")
+        lines.append("fs.writeFileSync(path, JSON.stringify(config, null, 2) + \"\\n\");")
+        lines.append("NODE")
         lines.append("echo \"  ✓ Config saved with token\"")
         lines.append("echo \"config:OK\" >> /tmp/localclaw_status")
         // Create auth file BEFORE starting gateway
@@ -7416,6 +7660,12 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Homebrew is needed to install LM Studio, Node.js and OpenClaw. Click 'Install Homebrew' and enter your Mac password when prompted.")
+        }
+        .alert("Delete this agent?", isPresented: $vm.showAgentDeleteConfirmation) {
+            Button("Delete Agent", role: .destructive) { vm.deletePendingAgent() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Deleting \(vm.agentDeleteCandidateName.isEmpty ? vm.agentDeleteCandidateID : vm.agentDeleteCandidateName) also removes its OpenClaw state/workspace and any routes that depend on it. This cannot be undone.")
         }
     }
 
@@ -10885,6 +11135,16 @@ struct ContentView: View {
                 Label("Edit", systemImage: "pencil")
             }
             .buttonStyle(CTAButton(primary: false))
+
+            Button {
+                vm.requestDeleteAgent(agent)
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            .buttonStyle(CTAButton(primary: false))
+            .foregroundStyle(agent.isDefault ? UI.muted.opacity(0.35) : Color(NSColor.systemRed))
+            .disabled(agent.isDefault || vm.agentDeleteIsRunning)
+            .help(agent.isDefault ? "The main agent cannot be deleted." : "Delete this agent and its OpenClaw state/workspace.")
         }
         .padding(16)
         .background(RoundedRectangle(cornerRadius: 14).fill(UI.card))
@@ -12165,6 +12425,10 @@ struct ContentView: View {
                 channelMetricCard("To connect", value: "\(vm.channels.filter { !$0.configured }.count)", icon: "plus.circle.fill", tint: UI.muted)
             }
 
+            if vm.showTelegramSetupPanel {
+                telegramSetupPanel
+            }
+
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     if vm.channels.isEmpty {
@@ -12217,6 +12481,72 @@ struct ContentView: View {
                 vm.refreshChannels()
             }
         }
+    }
+
+    private var telegramSetupPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Label("Telegram setup", systemImage: "paperplane.fill")
+                    .font(AppFont.bodySemi(14))
+                    .foregroundStyle(UI.text)
+                Spacer()
+                if vm.telegramSetupIsRunning {
+                    ProgressView()
+                        .scaleEffect(0.75)
+                }
+                Button("Cancel") { vm.cancelTelegramSetup() }
+                    .buttonStyle(CompactChatButton(primary: false))
+                    .disabled(vm.telegramSetupIsRunning)
+            }
+
+            LazyVGrid(columns: [GridItem(.flexible(minimum: 260)), GridItem(.flexible(minimum: 220))], spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Bot token")
+                        .font(AppFont.bodySemi(11))
+                        .foregroundStyle(UI.muted)
+                    SecureField("Paste token from @BotFather", text: $vm.telegramSetupToken)
+                        .textFieldStyle(.plain)
+                        .font(AppFont.body(12))
+                        .foregroundStyle(UI.text)
+                        .padding(10)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+                    Button("Save token") { vm.saveTelegramBotToken() }
+                        .buttonStyle(CTAButton(primary: true))
+                        .disabled(vm.telegramSetupIsRunning)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Pairing code")
+                        .font(AppFont.bodySemi(11))
+                        .foregroundStyle(UI.muted)
+                    TextField("Code received after /start", text: $vm.telegramSetupPairingCode)
+                        .textFieldStyle(.plain)
+                        .font(AppFont.body(12))
+                        .foregroundStyle(UI.text)
+                        .padding(10)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+                    HStack(spacing: 8) {
+                        Button("Approve pairing") { vm.approveTelegramPairing() }
+                            .buttonStyle(CTAButton(primary: false))
+                            .disabled(vm.telegramSetupIsRunning)
+                        Button("Restart + check") { vm.restartTelegramAndRefresh() }
+                            .buttonStyle(CTAButton(primary: false))
+                            .disabled(vm.telegramSetupIsRunning)
+                    }
+                }
+            }
+
+            Text(vm.telegramSetupStatus.isEmpty ? "Telegram stays in OpenClaw config during LocalClaw updates." : vm.telegramSetupStatus)
+                .font(AppFont.body(11))
+                .foregroundStyle(vm.telegramSetupStatus.lowercased().contains("failed") ? Color(NSColor.systemRed) : UI.muted)
+                .lineLimit(4)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 14).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(UI.accent.opacity(0.24), lineWidth: 1))
     }
 
     private func channelMetricCard(_ title: String, value: String, icon: String, tint: Color) -> some View {
@@ -12276,7 +12606,7 @@ struct ContentView: View {
                 Spacer(minLength: 8)
 
                 Button {
-                    vm.openTerminalChannelLogin(channel.id)
+                    vm.beginChannelSetup(channel)
                 } label: {
                     Label(channel.primaryActionLabel, systemImage: "plus")
                 }
@@ -12306,7 +12636,7 @@ struct ContentView: View {
         HStack(spacing: 10) {
             channelBadge(channel.configured ? "1 Bot token OK" : "1 Add bot token", color: channel.configured ? Color(NSColor.systemGreen) : UI.muted, icon: channel.configured ? "checkmark.circle.fill" : "1.circle")
             channelBadge("2 Pairing approve required", color: channel.connected ? Color(NSColor.systemGreen) : Color(NSColor.systemOrange), icon: channel.connected ? "checkmark.circle.fill" : "person.crop.circle.badge.checkmark")
-            Text("Send /start to the bot, then approve the pairing code in the LocalClaw terminal.")
+            Text("Send /start to the bot, then approve the pairing code in LocalClaw.")
                 .font(AppFont.body(11))
                 .foregroundStyle(UI.muted)
                 .lineLimit(1)
@@ -12342,7 +12672,7 @@ struct ContentView: View {
                 .truncationMode(.middle)
 
             Button("Edit") {
-                vm.openTerminalChannelLogin(channel.id)
+                vm.beginChannelSetup(channel)
             }
             .buttonStyle(CTAButton(primary: false))
             .disabled(channel.accounts.isEmpty)
