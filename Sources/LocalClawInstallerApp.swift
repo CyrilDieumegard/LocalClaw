@@ -5778,19 +5778,84 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func repairLMStudioRuntimeFromChat() {
-        if localLMStudioRepairInProgress { return }
+        if localLMStudioRepairInProgress || localLMStudioSetupInProgress { return }
+        if selectedLocalLMStudioModel.isEmpty {
+            refreshLocalLMStudioModels()
+        }
+        let modelId = Self.localLMStudioModelID(from: selectedLocalLMStudioModel)
+        guard !modelId.isEmpty else {
+            localLMStudioSetupStatus = "No local model found in LM Studio"
+            chatStatus = "Needs setup"
+            return
+        }
+
+        let requestID = UUID()
+        localLMStudioSetupRequestID = requestID
         localLMStudioRepairInProgress = true
-        localLMStudioSetupStatus = "Updating LM Studio runtime..."
+        localLMStudioSetupInProgress = true
+        selectedChatResponseMode = .local
+        selectedLocalLMStudioModel = modelId
+        localLMStudioSetupStatus = "Repairing LM Studio runtime..."
+        let firstLine = "• Repairing LM Studio runtime for \(modelId)"
+        localLMStudioSetupLog = localLMStudioSetupLog.isEmpty ? firstLine : localLMStudioSetupLog + "\n" + firstLine
         chatStatus = "Repairing LM Studio..."
         Task.detached {
-            let result = InstallerEngine().repairLMStudioRuntime()
+            let engine = InstallerEngine()
+            let repair = engine.repairLMStudioRuntime()
+            guard repair.state == .ok else {
+                await MainActor.run {
+                    guard self.localLMStudioSetupRequestID == requestID else { return }
+                    self.localLMStudioSetupRequestID = nil
+                    self.localLMStudioRepairInProgress = false
+                    self.localLMStudioSetupInProgress = false
+                    self.localLMStudioSetupStatus = repair.message
+                    self.chatStatus = "Error"
+                    self.appendChatSystemMessageOnce("I couldn’t repair LM Studio automatically: \(repair.message)")
+                    self.refreshLocalLMStudioModels()
+                }
+                return
+            }
+
             await MainActor.run {
+                guard self.localLMStudioSetupRequestID == requestID else { return }
+                let line = "• \(repair.message)"
+                self.localLMStudioSetupLog = self.localLMStudioSetupLog.isEmpty ? line : self.localLMStudioSetupLog + "\n" + line
+                self.localLMStudioSetupStatus = "Repair finished. Loading \(modelId)..."
+                self.chatStatus = "Setting up local model..."
+            }
+
+            let setup = engine.autoSetupLMStudioModel(modelId: modelId, contextLength: 32768) { message in
+                DispatchQueue.main.async {
+                    guard self.localLMStudioSetupRequestID == requestID else { return }
+                    let line = "• \(message)"
+                    self.localLMStudioSetupStatus = message
+                    self.localLMStudioSetupLog = self.localLMStudioSetupLog.isEmpty ? line : self.localLMStudioSetupLog + "\n" + line
+                }
+            }
+            let loaded = engine.loadedLMStudioModelInfo()?.model
+
+            await MainActor.run {
+                guard self.localLMStudioSetupRequestID == requestID else { return }
+                self.localLMStudioSetupRequestID = nil
                 self.localLMStudioRepairInProgress = false
-                self.localLMStudioSetupStatus = result.message
-                self.chatStatus = result.state == .ok ? "Needs setup" : "Error"
-                self.appendChatSystemMessageOnce(result.state == .ok
-                    ? "LM Studio runtime repair finished. Click AUTO SETUP again to load a compatible local model."
-                    : "I couldn’t repair LM Studio automatically: \(result.message)")
+                self.localLMStudioSetupInProgress = false
+                self.localLMStudioSetupStatus = setup.message
+                if setup.state == .ok {
+                    let active = loaded ?? modelId
+                    self.currentModel = "lmstudio/\(active)"
+                    self.activeLocalLMStudioModel = active
+                    self.selectedLocalLMStudioModel = active
+                    self.selectedChatResponseMode = .local
+                    self.selectedChatModel = "lmstudio/\(active)"
+                    self.chatGatewayPrepared = false
+                    self.resetMainAgentSessions()
+                    self.chatStatus = "Ready"
+                    self.localLMStudioSetupStatus = "LM Studio repaired and ready with \(active)"
+                    self.appendChatSystemMessageOnce("LM Studio repaired and local model ready: \(active).")
+                } else {
+                    self.chatStatus = "Needs setup"
+                    self.appendChatSystemMessageOnce("LM Studio repair finished, but local setup failed: \(setup.message)")
+                }
                 self.refreshLocalLMStudioModels()
             }
         }
@@ -8465,10 +8530,11 @@ struct ContentView: View {
                         vm.autoSetupSelectedLocalLMStudioModel()
                     }
                     .buttonStyle(CompactChatButton(primary: true))
-                    .disabled(vm.localLMStudioSetupInProgress || vm.selectedLocalLMStudioModel.isEmpty)
+                    .disabled(vm.localLMStudioSetupInProgress || vm.localLMStudioRepairInProgress || vm.selectedLocalLMStudioModel.isEmpty)
 
                     Button("SCAN") { vm.refreshLocalLMStudioModels() }
                         .buttonStyle(CompactChatButton(primary: false))
+                        .disabled(vm.localLMStudioSetupInProgress || vm.localLMStudioRepairInProgress)
 
                     Button(vm.localLMStudioRepairInProgress ? "REPAIRING..." : "REPAIR LM STUDIO") {
                         vm.repairLMStudioRuntimeFromChat()
@@ -8526,8 +8592,6 @@ struct ContentView: View {
                         .foregroundStyle(vm.chatStatus == "Ready" ? Color(NSColor.systemGreen) : UI.accent)
                 }
             }
-
-            chatControlStrip
 
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 10) {
@@ -8657,47 +8721,6 @@ struct ContentView: View {
         }
     }
 
-    var chatControlStrip: some View {
-        HStack(spacing: 10) {
-            ForEach(InstallerViewModel.ChatResponseMode.allCases) { mode in
-                Button {
-                    vm.selectedChatResponseMode = mode
-                } label: {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Label(mode.rawValue, systemImage: mode.icon)
-                            .font(AppFont.bodySemi(11))
-                            .lineLimit(1)
-                        Text(mode.detail)
-                            .font(AppFont.body(10))
-                            .foregroundStyle(vm.selectedChatResponseMode == mode ? Color.white.opacity(0.72) : UI.muted)
-                            .lineLimit(1)
-                    }
-                    .foregroundStyle(vm.selectedChatResponseMode == mode ? Color.white : UI.text)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .frame(width: 132, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(vm.selectedChatResponseMode == mode ? UI.accent : UI.cardSoft))
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(vm.selectedChatResponseMode == mode ? UI.accent.opacity(0.4) : UI.lineSoft, lineWidth: 1))
-                }
-                .buttonStyle(.plain)
-                .disabled(vm.chatIsSending)
-            }
-
-            Spacer(minLength: 12)
-
-            Toggle(isOn: $vm.chatMemoryEnabled) {
-                Label(vm.chatMemoryEnabled ? "Memory on" : "Memory off", systemImage: vm.chatMemoryEnabled ? "checkmark.circle.fill" : "circle")
-                    .font(AppFont.bodySemi(11))
-            }
-            .toggleStyle(.switch)
-            .foregroundStyle(UI.text)
-            .disabled(vm.chatIsSending)
-        }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 14).fill(UI.cardSoft))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(UI.lineSoft, lineWidth: 1))
-    }
-
     var chatMemoryPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 7) {
@@ -8705,6 +8728,13 @@ struct ContentView: View {
                     .font(AppFont.bodySemi(12))
                     .foregroundStyle(UI.text)
                 Spacer()
+                Toggle(isOn: $vm.chatMemoryEnabled) {
+                    Text(vm.chatMemoryEnabled ? "On" : "Off")
+                        .font(AppFont.bodySemi(10))
+                }
+                .toggleStyle(.switch)
+                .foregroundStyle(UI.text)
+                .disabled(vm.chatIsSending)
                 Button("Forget") { vm.forgetChatMemory() }
                     .buttonStyle(CompactChatButton(primary: false))
                     .disabled(vm.chatSavedNotes.isEmpty)
