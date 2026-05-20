@@ -7,7 +7,7 @@ cd "$ROOT"
 APP_NAME="LocalClaw"
 DMG_NAME="localclaw"
 BUNDLE_ID="io.localclaw.installer"
-MARKETING_VERSION="1.0.101"
+MARKETING_VERSION="1.0.102"
 BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
 APP_PATH="dist/${APP_NAME}.app"
 DMG_PATH="dist/${DMG_NAME}.dmg"
@@ -70,6 +70,8 @@ cat > "$APP_PATH/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+xattr -cr "$APP_PATH" 2>/dev/null || true
 
 if [[ -n "${DEVELOPER_ID_APP:-}" ]]; then
   echo "[3/6] Signing app with Developer ID"
