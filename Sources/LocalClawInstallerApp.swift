@@ -341,6 +341,27 @@ final class InstallerViewModel: ObservableObject {
         let origin: String
     }
 
+    struct ChannelCredentialField: Identifiable, Sendable {
+        let id: String
+        let label: String
+        let placeholder: String
+        let cliOption: String
+        let secure: Bool
+        let required: Bool
+        let help: String
+    }
+
+    struct ChannelCredentialProfile: Sendable {
+        let channelID: String
+        let title: String
+        let subtitle: String
+        let primaryButton: String
+        let fields: [ChannelCredentialField]
+        let needsLoginAfterAdd: Bool
+
+        var hasFields: Bool { !fields.isEmpty }
+    }
+
     struct ChannelConfigSnapshot {
         let configured: Bool
         let accounts: [String]
@@ -778,6 +799,15 @@ final class InstallerViewModel: ObservableObject {
     @Published var telegramSetupPairingCode = ""
     @Published var telegramSetupStatus = ""
     @Published var telegramSetupIsRunning = false
+    @Published var showChannelCredentialPanel = false
+    @Published var channelCredentialID = ""
+    @Published var channelCredentialLabel = ""
+    @Published var channelCredentialIcon = "bubble.left.and.bubble.right"
+    @Published var channelCredentialAccount = "default"
+    @Published var channelCredentialDisplayName = ""
+    @Published var channelCredentialValues: [String: String] = [:]
+    @Published var channelCredentialStatus = ""
+    @Published var channelCredentialIsRunning = false
     @Published var agents: [AgentInfo] = []
     @Published var agentsStatus: String = "Not loaded"
     @Published var agentsIsLoading = false
@@ -903,7 +933,7 @@ final class InstallerViewModel: ObservableObject {
         defaultChannelCatalog.firstIndex { $0.id == id } ?? (defaultChannelCatalog.count + 1)
     }
 
-    private static func humanChannelLabel(_ id: String) -> String {
+    nonisolated private static func humanChannelLabel(_ id: String) -> String {
         let special: [String: String] = [
             "googlechat": "Google Chat",
             "msteams": "Microsoft Teams",
@@ -929,6 +959,217 @@ final class InstallerViewModel: ObservableObject {
             return "Available to install and connect"
         default:
             return origin.isEmpty ? "OpenClaw channel" : origin.capitalized
+        }
+    }
+
+    nonisolated static func channelCredentialProfile(for channelID: String, label: String? = nil) -> ChannelCredentialProfile {
+        let title = label?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? label! : humanChannelLabel(channelID)
+
+        func field(_ id: String, _ label: String, _ placeholder: String, _ cliOption: String, secure: Bool = true, required: Bool = true, help: String = "") -> ChannelCredentialField {
+            ChannelCredentialField(id: id, label: label, placeholder: placeholder, cliOption: cliOption, secure: secure, required: required, help: help)
+        }
+
+        switch channelID {
+        case "discord":
+            return ChannelCredentialProfile(
+                channelID: channelID,
+                title: "Discord setup",
+                subtitle: "Paste the bot token from the Discord Developer Portal. The bot must be invited to the server with message permissions.",
+                primaryButton: "Save Discord",
+                fields: [
+                    field("botToken", "Bot token", "Discord bot token", "--bot-token", help: "Developer Portal > Bot > Token")
+                ],
+                needsLoginAfterAdd: false
+            )
+        case "slack":
+            return ChannelCredentialProfile(
+                channelID: channelID,
+                title: "Slack setup",
+                subtitle: "Use the Slack bot token. Add an app-level token only if your Slack app uses Socket Mode.",
+                primaryButton: "Save Slack",
+                fields: [
+                    field("botToken", "Bot token", "xoxb-...", "--bot-token", help: "OAuth & Permissions > Bot User OAuth Token"),
+                    field("appToken", "App token", "xapp-... (optional)", "--app-token", required: false, help: "Basic Information > App-Level Tokens")
+                ],
+                needsLoginAfterAdd: false
+            )
+        case "mattermost":
+            return ChannelCredentialProfile(
+                channelID: channelID,
+                title: "Mattermost setup",
+                subtitle: "Use a Mattermost bot token and the base URL of your Mattermost server.",
+                primaryButton: "Save Mattermost",
+                fields: [
+                    field("httpUrl", "Server URL", "https://chat.example.com", "--http-url", secure: false, help: "Mattermost base URL"),
+                    field("botToken", "Bot token", "Mattermost bot token", "--bot-token", help: "System Console > Integrations > Bot Accounts")
+                ],
+                needsLoginAfterAdd: false
+            )
+        case "matrix":
+            return ChannelCredentialProfile(
+                channelID: channelID,
+                title: "Matrix setup",
+                subtitle: "Use the homeserver URL and an access token for the Matrix account.",
+                primaryButton: "Save Matrix",
+                fields: [
+                    field("baseUrl", "Homeserver URL", "https://matrix.example.com", "--base-url", secure: false),
+                    field("token", "Access token", "Matrix access token", "--token")
+                ],
+                needsLoginAfterAdd: false
+            )
+        case "signal":
+            return ChannelCredentialProfile(
+                channelID: channelID,
+                title: "Signal setup",
+                subtitle: "Connect LocalClaw to a Signal bridge or HTTP daemon.",
+                primaryButton: "Save Signal",
+                fields: [
+                    field("signalNumber", "Signal number", "+15551234567", "--signal-number", secure: false),
+                    field("httpUrl", "Bridge URL", "http://127.0.0.1:8080", "--http-url", secure: false)
+                ],
+                needsLoginAfterAdd: false
+            )
+        case "line":
+            return ChannelCredentialProfile(
+                channelID: channelID,
+                title: "LINE setup",
+                subtitle: "Paste the LINE channel access token and optional channel secret.",
+                primaryButton: "Save LINE",
+                fields: [
+                    field("token", "Channel access token", "LINE channel access token", "--token"),
+                    field("secret", "Channel secret", "LINE channel secret (optional)", "--secret", required: false)
+                ],
+                needsLoginAfterAdd: false
+            )
+        case "zalo", "zalouser":
+            return ChannelCredentialProfile(
+                channelID: channelID,
+                title: "\(title) setup",
+                subtitle: "Paste the Zalo token and optional app secret.",
+                primaryButton: "Save \(title)",
+                fields: [
+                    field("token", "Access token", "\(title) access token", "--token"),
+                    field("secret", "App secret", "\(title) app secret (optional)", "--secret", required: false)
+                ],
+                needsLoginAfterAdd: false
+            )
+        case "googlechat":
+            return ChannelCredentialProfile(
+                channelID: channelID,
+                title: "Google Chat setup",
+                subtitle: "Paste the Google Chat credential payload or token and optional callback URL.",
+                primaryButton: "Save Google Chat",
+                fields: [
+                    field("token", "Credential token/payload", "Google Chat token or credential payload", "--token"),
+                    field("url", "Callback URL", "https://... (optional)", "--url", secure: false, required: false)
+                ],
+                needsLoginAfterAdd: false
+            )
+        case "msteams":
+            return ChannelCredentialProfile(
+                channelID: channelID,
+                title: "Microsoft Teams setup",
+                subtitle: "Use your Teams bot/app credentials.",
+                primaryButton: "Save Teams",
+                fields: [
+                    field("appToken", "App token", "Teams app token", "--app-token"),
+                    field("secret", "Client secret", "Teams client secret", "--secret"),
+                    field("url", "Callback URL", "https://... (optional)", "--url", secure: false, required: false)
+                ],
+                needsLoginAfterAdd: false
+            )
+        case "feishu", "wecom", "qqbot":
+            return ChannelCredentialProfile(
+                channelID: channelID,
+                title: "\(title) setup",
+                subtitle: "Use the app token and app secret from the platform developer console.",
+                primaryButton: "Save \(title)",
+                fields: [
+                    field("appToken", "App token", "\(title) app token", "--app-token"),
+                    field("secret", "App secret", "\(title) app secret", "--secret")
+                ],
+                needsLoginAfterAdd: false
+            )
+        case "nextcloud-talk":
+            return ChannelCredentialProfile(
+                channelID: channelID,
+                title: "Nextcloud Talk setup",
+                subtitle: "Use your Nextcloud server URL and app token.",
+                primaryButton: "Save Nextcloud Talk",
+                fields: [
+                    field("baseUrl", "Server URL", "https://cloud.example.com", "--base-url", secure: false),
+                    field("token", "App token", "Nextcloud app token", "--token")
+                ],
+                needsLoginAfterAdd: false
+            )
+        case "twitch":
+            return ChannelCredentialProfile(
+                channelID: channelID,
+                title: "Twitch setup",
+                subtitle: "Use a Twitch chat OAuth token. Set account name to the bot username.",
+                primaryButton: "Save Twitch",
+                fields: [
+                    field("token", "OAuth token", "oauth:...", "--token")
+                ],
+                needsLoginAfterAdd: false
+            )
+        case "nostr":
+            return ChannelCredentialProfile(
+                channelID: channelID,
+                title: "Nostr setup",
+                subtitle: "Use a Nostr private key and optional relay URL.",
+                primaryButton: "Save Nostr",
+                fields: [
+                    field("secret", "Private key", "nsec...", "--secret"),
+                    field("url", "Relay URL", "wss://relay.example.com", "--url", secure: false, required: false)
+                ],
+                needsLoginAfterAdd: false
+            )
+        case "irc":
+            return ChannelCredentialProfile(
+                channelID: channelID,
+                title: "IRC setup",
+                subtitle: "Enter the IRC server URL. Use display name for the bot nick.",
+                primaryButton: "Save IRC",
+                fields: [
+                    field("url", "Server URL", "irc://irc.libera.chat:6697/#channel", "--url", secure: false),
+                    field("password", "Password", "server password (optional)", "--password", required: false)
+                ],
+                needsLoginAfterAdd: false
+            )
+        case "imessage":
+            return ChannelCredentialProfile(
+                channelID: channelID,
+                title: "iMessage setup",
+                subtitle: "Use macOS Messages. The default service is auto; add a DB path only for custom setups.",
+                primaryButton: "Save iMessage",
+                fields: [
+                    field("service", "Service", "auto, imessage, or sms", "--service", secure: false, required: false),
+                    field("dbPath", "Messages DB path", "~/Library/Messages/chat.db (optional)", "--db-path", secure: false, required: false)
+                ],
+                needsLoginAfterAdd: false
+            )
+        case "whatsapp":
+            return ChannelCredentialProfile(
+                channelID: channelID,
+                title: "WhatsApp setup",
+                subtitle: "No token needed. LocalClaw prepares the channel, then opens the WhatsApp QR login flow.",
+                primaryButton: "Start WhatsApp login",
+                fields: [],
+                needsLoginAfterAdd: true
+            )
+        default:
+            return ChannelCredentialProfile(
+                channelID: channelID,
+                title: "\(title) setup",
+                subtitle: "Enter the credentials required by this OpenClaw channel.",
+                primaryButton: "Save \(title)",
+                fields: [
+                    field("token", "Token", "\(title) token", "--token"),
+                    field("url", "URL", "https://... (optional)", "--url", secure: false, required: false)
+                ],
+                needsLoginAfterAdd: false
+            )
         }
     }
 
@@ -3614,9 +3855,201 @@ final class InstallerViewModel: ObservableObject {
 
     func beginChannelSetup(_ channel: ChannelInfo) {
         if channel.id == "telegram" {
+            showChannelCredentialPanel = false
             beginTelegramSetup(channel)
         } else {
-            openTerminalChannelLogin(channel.id)
+            beginChannelCredentialSetup(channel)
+        }
+    }
+
+    var activeChannelCredentialProfile: ChannelCredentialProfile {
+        Self.channelCredentialProfile(for: channelCredentialID, label: channelCredentialLabel)
+    }
+
+    func beginChannelCredentialSetup(_ channel: ChannelInfo) {
+        showTelegramSetupPanel = false
+        let profile = Self.channelCredentialProfile(for: channel.id, label: channel.label)
+        channelCredentialID = channel.id
+        channelCredentialLabel = channel.label
+        channelCredentialIcon = channel.systemImage
+        channelCredentialAccount = channel.accounts.first == "No account connected yet" ? "default" : (channel.accounts.first ?? "default")
+        channelCredentialDisplayName = channel.label
+        channelCredentialValues = Dictionary(uniqueKeysWithValues: profile.fields.map { ($0.id, "") })
+        channelCredentialStatus = profile.subtitle
+        showChannelCredentialPanel = true
+    }
+
+    func cancelChannelCredentialSetup() {
+        guard !channelCredentialIsRunning else { return }
+        showChannelCredentialPanel = false
+        channelCredentialStatus = ""
+        channelCredentialValues = [:]
+    }
+
+    func saveChannelCredentialSetup() {
+        guard !channelCredentialIsRunning else { return }
+        let profile = activeChannelCredentialProfile
+        let channelID = channelCredentialID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !channelID.isEmpty else { return }
+
+        let missing = profile.fields.filter { field in
+            field.required && (channelCredentialValues[field.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        if let firstMissing = missing.first {
+            channelCredentialStatus = "Missing \(firstMissing.label). Fill it before saving \(channelCredentialLabel)."
+            return
+        }
+
+        let account = channelCredentialAccount.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : channelCredentialAccount.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = channelCredentialDisplayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? channelCredentialLabel : channelCredentialDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let values = channelCredentialValues
+        let label = channelCredentialLabel
+
+        channelCredentialIsRunning = true
+        channelCredentialStatus = "Saving \(label)..."
+        channelSetupLogs = channelSetupLogs.isEmpty ? "Saving \(label)..." : channelSetupLogs + "\nSaving \(label)..."
+
+        Task.detached {
+            let engine = InstallerEngine()
+            var tempFiles: [URL] = []
+            var messages: [String] = []
+
+            func writeTempSecret(_ value: String, prefix: String) throws -> URL {
+                let url = URL(fileURLWithPath: NSTemporaryDirectory())
+                    .appendingPathComponent("\(prefix)-\(UUID().uuidString)")
+                try value.write(to: url, atomically: true, encoding: .utf8)
+                _ = engine.shell("chmod 600 \(Self.shellSingleQuote(url.path))")
+                tempFiles.append(url)
+                return url
+            }
+
+            defer {
+                for url in tempFiles {
+                    try? FileManager.default.removeItem(at: url)
+                }
+            }
+
+            let quotedChannel = Self.shellSingleQuote(channelID)
+            let enableCommand = [
+                "openclaw --no-color plugins enable \(quotedChannel) >/dev/null 2>&1",
+                "openclaw --no-color plugins enable \(Self.shellSingleQuote("@openclaw/\(channelID)")) >/dev/null 2>&1",
+                "true"
+            ].joined(separator: " || ")
+
+            var addParts = [
+                "perl -e 'alarm 180; exec @ARGV' openclaw --no-color channels add",
+                "--channel \(quotedChannel)",
+                "--account \(Self.shellSingleQuote(account))",
+                "--name \(Self.shellSingleQuote(displayName))"
+            ]
+
+            do {
+                for field in profile.fields {
+                    let value = (values[field.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !value.isEmpty else { continue }
+                    switch field.cliOption {
+                    case "--token":
+                        let file = try writeTempSecret(value, prefix: "localclaw-\(channelID)-token")
+                        addParts.append("--token-file \(Self.shellSingleQuote(file.path))")
+                    case "--secret":
+                        let file = try writeTempSecret(value, prefix: "localclaw-\(channelID)-secret")
+                        addParts.append("--secret-file \(Self.shellSingleQuote(file.path))")
+                    default:
+                        addParts.append("\(field.cliOption) \(Self.shellSingleQuote(value))")
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.channelCredentialIsRunning = false
+                    self.channelCredentialStatus = "Failed to prepare \(label) credentials: \(error.localizedDescription)"
+                    self.channelSetupLogs += "\n\(self.channelCredentialStatus)"
+                }
+                return
+            }
+
+            let addCommand = addParts.joined(separator: " ") + " 2>&1"
+            let addResult = engine.shell("\(enableCommand); \(addCommand)")
+            let cleanAddOutput = Self.redactedChannelOutput(addResult.1, values: values)
+
+            if addResult.0 == 0 {
+                messages.append("\(label) saved.")
+                if !cleanAddOutput.isEmpty { messages.append(cleanAddOutput) }
+                if profile.needsLoginAfterAdd {
+                    let loginResult = engine.shell("perl -e 'alarm 300; exec @ARGV' openclaw --no-color channels login --channel \(quotedChannel) 2>&1 || true")
+                    let loginOutput = Self.redactedChannelOutput(loginResult.1, values: values)
+                    if !loginOutput.isEmpty { messages.append(loginOutput) }
+                }
+                let restart = engine.shell("openclaw --no-color gateway restart 2>&1 || true")
+                let restartOutput = Self.redactedChannelOutput(restart.1, values: values)
+                if !restartOutput.isEmpty { messages.append(restartOutput) }
+                let status = engine.shell("openclaw --no-color channels status --channel \(quotedChannel) --probe --timeout 5000 2>&1 || true")
+                let statusOutput = Self.redactedChannelOutput(status.1, values: values)
+                if !statusOutput.isEmpty { messages.append(statusOutput) }
+            } else {
+                messages.append(Self.channelCredentialErrorMessage(channel: label, output: cleanAddOutput))
+            }
+
+            await MainActor.run {
+                self.channelCredentialIsRunning = false
+                self.channelCredentialStatus = messages.joined(separator: "\n")
+                self.channelSetupLogs += "\n" + self.channelCredentialStatus
+                if addResult.0 == 0 {
+                    self.channelCredentialValues = Dictionary(uniqueKeysWithValues: profile.fields.map { ($0.id, "") })
+                }
+                self.refreshChannels()
+            }
+        }
+    }
+
+    nonisolated static func redactedChannelOutput(_ output: String, values: [String: String]) -> String {
+        var clean = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        for value in values.values {
+            let secret = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard secret.count >= 6 else { continue }
+            clean = clean.replacingOccurrences(of: secret, with: "<hidden>")
+        }
+        return clean
+    }
+
+    nonisolated static func channelCredentialErrorMessage(channel: String, output: String) -> String {
+        let cleanOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = cleanOutput.lowercased()
+        if lower.contains("install") && lower.contains("plugin") {
+            return "\(channel) needs its OpenClaw plugin installed first. OpenClaw returned:\n\(cleanOutput)"
+        }
+        if lower.contains("unknown option") || lower.contains("does not recognize option") {
+            return "\(channel) setup uses an option unsupported by this OpenClaw version. Update OpenClaw runtime, then retry."
+        }
+        if cleanOutput.isEmpty {
+            return "\(channel) setup failed. Check the credentials and retry."
+        }
+        return "\(channel) setup failed:\n\(cleanOutput)"
+    }
+
+    func checkChannelCredentialStatus() {
+        let channelID = channelCredentialID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !channelID.isEmpty, !channelCredentialIsRunning else { return }
+        let label = channelCredentialLabel.isEmpty ? Self.humanChannelLabel(channelID) : channelCredentialLabel
+        channelCredentialIsRunning = true
+        channelCredentialStatus = "Checking \(label)..."
+
+        Task.detached {
+            let engine = InstallerEngine()
+            let quotedChannel = Self.shellSingleQuote(channelID)
+            let restart = engine.shell("openclaw --no-color gateway restart 2>&1 || true")
+            let status = engine.shell("openclaw --no-color channels status --channel \(quotedChannel) --probe --timeout 5000 2>&1 || true")
+            let output = [restart.1, status.1]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+
+            await MainActor.run {
+                self.channelCredentialIsRunning = false
+                self.channelCredentialStatus = output.isEmpty ? "\(label) checked." : output
+                self.channelSetupLogs += "\n\(label) check finished."
+                if !output.isEmpty { self.channelSetupLogs += "\n\(output)" }
+                self.refreshChannels()
+            }
         }
     }
 
@@ -12445,6 +12878,10 @@ struct ContentView: View {
                 telegramSetupPanel
             }
 
+            if vm.showChannelCredentialPanel {
+                channelCredentialSetupPanel
+            }
+
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     if vm.channels.isEmpty {
@@ -12590,6 +13027,116 @@ struct ContentView: View {
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 14).fill(UI.cardSoft))
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(UI.accent.opacity(0.24), lineWidth: 1))
+    }
+
+    private var channelCredentialSetupPanel: some View {
+        let profile = vm.activeChannelCredentialProfile
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Label(profile.title, systemImage: vm.channelCredentialIcon)
+                    .font(AppFont.bodySemi(14))
+                    .foregroundStyle(UI.text)
+                Spacer()
+                if vm.channelCredentialIsRunning {
+                    ProgressView()
+                        .scaleEffect(0.75)
+                }
+                Button("Cancel") { vm.cancelChannelCredentialSetup() }
+                    .buttonStyle(CompactChatButton(primary: false))
+                    .disabled(vm.channelCredentialIsRunning)
+            }
+
+            Text(profile.subtitle)
+                .font(AppFont.body(12))
+                .foregroundStyle(UI.muted)
+                .fixedSize(horizontal: false, vertical: true)
+
+            LazyVGrid(columns: [GridItem(.flexible(minimum: 220)), GridItem(.flexible(minimum: 220))], spacing: 10) {
+                channelSetupPlainField("Account ID", text: $vm.channelCredentialAccount, placeholder: "default")
+                channelSetupPlainField("Display name", text: $vm.channelCredentialDisplayName, placeholder: vm.channelCredentialLabel)
+                ForEach(profile.fields) { field in
+                    channelSetupCredentialField(field)
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button(profile.primaryButton) { vm.saveChannelCredentialSetup() }
+                    .buttonStyle(CTAButton(primary: true))
+                    .disabled(vm.channelCredentialIsRunning)
+                Button("Check") { vm.checkChannelCredentialStatus() }
+                    .buttonStyle(CTAButton(primary: false))
+                    .disabled(vm.channelCredentialIsRunning)
+
+                Spacer(minLength: 0)
+            }
+
+            Text(vm.channelCredentialStatus.isEmpty ? "Credentials are stored in OpenClaw config and preserved during LocalClaw updates." : vm.channelCredentialStatus)
+                .font(AppFont.body(11))
+                .foregroundStyle(vm.channelCredentialStatus.lowercased().contains("failed") || vm.channelCredentialStatus.lowercased().contains("missing") ? Color(NSColor.systemRed) : UI.muted)
+                .lineLimit(5)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 14).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(UI.accent.opacity(0.24), lineWidth: 1))
+    }
+
+    private func channelSetupCredentialField(_ field: InstallerViewModel.ChannelCredentialField) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 4) {
+                Text(field.label)
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(UI.muted)
+                if field.required {
+                    Text("required")
+                        .font(AppFont.bodySemi(9))
+                        .foregroundStyle(UI.accent)
+                }
+                Spacer(minLength: 0)
+            }
+            Group {
+                if field.secure {
+                    SecureField(field.placeholder, text: channelCredentialBinding(field.id))
+                } else {
+                    TextField(field.placeholder, text: channelCredentialBinding(field.id))
+                }
+            }
+            .textFieldStyle(.plain)
+            .font(AppFont.body(12))
+            .foregroundStyle(UI.text)
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+            if !field.help.isEmpty {
+                Text(field.help)
+                    .font(AppFont.body(10))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+    }
+
+    private func channelSetupPlainField(_ title: String, text: Binding<String>, placeholder: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(AppFont.bodySemi(11))
+                .foregroundStyle(UI.muted)
+            TextField(placeholder, text: text)
+                .textFieldStyle(.plain)
+                .font(AppFont.body(12))
+                .foregroundStyle(UI.text)
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+        }
+    }
+
+    private func channelCredentialBinding(_ key: String) -> Binding<String> {
+        Binding(
+            get: { vm.channelCredentialValues[key] ?? "" },
+            set: { vm.channelCredentialValues[key] = $0 }
+        )
     }
 
     private func channelMetricCard(_ title: String, value: String, icon: String, tint: Color) -> some View {

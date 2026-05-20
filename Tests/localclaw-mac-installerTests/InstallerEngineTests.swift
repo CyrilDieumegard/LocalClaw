@@ -150,6 +150,15 @@ struct InstallerEngineTests {
         #expect(!message.contains("[openclaw]"))
     }
 
+    @Test func discordChannelProfileUsesNativeBotTokenField() {
+        let profile = InstallerViewModel.channelCredentialProfile(for: "discord", label: "Discord")
+
+        #expect(profile.title == "Discord setup")
+        #expect(profile.primaryButton == "Save Discord")
+        #expect(profile.fields.map(\.id) == ["botToken"])
+        #expect(profile.fields.first?.cliOption == "--bot-token")
+    }
+
     @Test func canonicalChatRuntimeModelMapsOpenAIGPTModels() {
         #expect(InstallerViewModel.canonicalChatRuntimeModelID("openrouter/openai/gpt-5.5") == "openrouter/openai/gpt-5.5")
         #expect(InstallerViewModel.canonicalChatRuntimeModelID("openrouter/openai/gpt-5.4") == "openrouter/openai/gpt-5.4")
