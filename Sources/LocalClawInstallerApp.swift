@@ -48,6 +48,21 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    enum AgentModelMode: String, CaseIterable, Identifiable {
+        case local = "Local"
+        case cloud = "Cloud"
+        case oauth = "OAuth"
+
+        var id: String { rawValue }
+        var icon: String {
+            switch self {
+            case .local: return "desktopcomputer"
+            case .cloud: return "cloud.fill"
+            case .oauth: return "person.badge.key"
+            }
+        }
+    }
+
     struct ChatMessage: Identifiable, Codable {
         let id: UUID
         let role: String
@@ -336,6 +351,7 @@ final class InstallerViewModel: ObservableObject {
         let id: String
         let identityName: String
         let identityEmoji: String?
+        let goal: String?
         let workspace: String?
         let agentDir: String?
         let model: String?
@@ -362,6 +378,7 @@ final class InstallerViewModel: ObservableObject {
 
         var detailSummary: String {
             var parts: [String] = []
+            if let goal, !goal.isEmpty { parts.append("Goal: \(goal)") }
             if let model, !model.isEmpty { parts.append("Model: \(model)") }
             parts.append("Bindings: \(bindings)")
             if let workspace, !workspace.isEmpty { parts.append("Workspace: \(workspace)") }
@@ -765,8 +782,12 @@ final class InstallerViewModel: ObservableObject {
     @Published var agentSetupID = ""
     @Published var agentSetupName = ""
     @Published var agentSetupEmoji = ""
+    @Published var agentSetupGoal = ""
     @Published var agentSetupWorkspace = ""
     @Published var agentSetupModel = ""
+    @Published var agentSetupMode: AgentModelMode = .cloud {
+        didSet { reconcileAgentSetupModelForMode() }
+    }
     @Published var agentSetupStatus = ""
     @Published var agentSetupIsRunning = false
     @Published var cronJobs: [CronJobInfo] = []
@@ -2772,7 +2793,13 @@ final class InstallerViewModel: ObservableObject {
         _ = engine.shell("open 'https://docs.openclaw.ai/cli/agents' || true")
     }
 
+    static let agentEmojiChoices = ["⚡", "✨", "🧠", "🛠️", "💬", "🔍", "📚", "🧪", "🧭", "🎯", "🚀", "💼", "🧩", "🛡️", "📊", "🧰"]
+
     var agentModelChoices: [String] {
+        agentModelChoices(for: agentSetupMode)
+    }
+
+    func agentModelChoices(for mode: AgentModelMode) -> [String] {
         var values: [String] = []
         func add(_ value: String) {
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2780,13 +2807,22 @@ final class InstallerViewModel: ObservableObject {
             if !values.contains(trimmed) { values.append(trimmed) }
         }
 
-        add(currentModel)
-        add(selectedChatModel)
-        add(selectedOpenRouterModel)
-        add(effectiveModelIdentifier())
-        for model in openRouterModelsLive.isEmpty ? Self.openRouterModels : openRouterModelsLive { add(model.id) }
-        for model in oauthModelsLive { add(model.id) }
-        for model in localLMStudioModels { add("lmstudio/\(model)") }
+        switch mode {
+        case .local:
+            if currentModel.hasPrefix("lmstudio/") { add(currentModel) }
+            if selectedChatModel.hasPrefix("lmstudio/") { add(selectedChatModel) }
+            for model in localLMStudioModels { add(model.hasPrefix("lmstudio/") ? model : "lmstudio/\(model)") }
+        case .cloud:
+            if currentModel.hasPrefix("openrouter/") { add(currentModel) }
+            if selectedChatModel.hasPrefix("openrouter/") { add(selectedChatModel) }
+            add(selectedOpenRouterModel)
+            for model in openRouterModelsLive.isEmpty ? Self.openRouterModels : openRouterModelsLive { add(model.id) }
+        case .oauth:
+            if Self.isOAuthRuntimeModelID(currentModel) { add(currentModel) }
+            if Self.isOAuthRuntimeModelID(selectedChatModel) { add(selectedChatModel) }
+            add(selectedOAuthProviderOption.modelIdentifier)
+            for model in oauthModelsLive { add(model.id) }
+        }
         return values
     }
 
@@ -2797,8 +2833,10 @@ final class InstallerViewModel: ObservableObject {
         agentSetupEditingID = ""
         agentSetupID = nextID
         agentSetupName = ""
-        agentSetupEmoji = "⚡"
+        agentSetupEmoji = Self.agentEmojiChoices.first ?? "⚡"
+        agentSetupGoal = ""
         agentSetupWorkspace = defaultAgentWorkspace(for: nextID)
+        agentSetupMode = defaultAgentModelMode()
         agentSetupModel = agentModelChoices.first ?? ""
         agentSetupStatus = ""
         showAgentSetupPanel = true
@@ -2810,8 +2848,11 @@ final class InstallerViewModel: ObservableObject {
         agentSetupID = agent.id
         agentSetupName = agent.displayName == agent.id ? "" : agent.displayName
         agentSetupEmoji = agent.identityEmoji ?? ""
+        agentSetupGoal = agent.goal ?? Self.agentGoalFromWorkspace(agent.workspace) ?? ""
         agentSetupWorkspace = agent.workspace ?? defaultAgentWorkspace(for: agent.id)
         agentSetupModel = agent.model ?? currentModelForAgentSetup()
+        agentSetupMode = Self.agentModelMode(for: agentSetupModel)
+        reconcileAgentSetupModelForMode()
         agentSetupStatus = ""
         showAgentSetupPanel = true
     }
@@ -2840,6 +2881,28 @@ final class InstallerViewModel: ObservableObject {
         return selectedChatModel.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private func defaultAgentModelMode() -> AgentModelMode {
+        switch inferenceMode {
+        case .local: return .local
+        case .oauth: return .oauth
+        case .cloud: return .cloud
+        }
+    }
+
+    nonisolated static func agentModelMode(for model: String) -> AgentModelMode {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("lmstudio/") { return .local }
+        if trimmed.hasPrefix("openrouter/") { return .cloud }
+        if isOAuthRuntimeModelID(trimmed) { return .oauth }
+        return .cloud
+    }
+
+    func reconcileAgentSetupModelForMode() {
+        let choices = agentModelChoices
+        if choices.contains(agentSetupModel) { return }
+        agentSetupModel = choices.first ?? ""
+    }
+
     func saveAgentSetup() {
         guard !agentSetupIsRunning else { return }
 
@@ -2852,6 +2915,7 @@ final class InstallerViewModel: ObservableObject {
         let isEditing = !agentSetupEditingID.isEmpty
         let name = agentSetupName.trimmingCharacters(in: .whitespacesAndNewlines)
         let emoji = agentSetupEmoji.trimmingCharacters(in: .whitespacesAndNewlines)
+        let goal = agentSetupGoal.trimmingCharacters(in: .whitespacesAndNewlines)
         let workspace = Self.expandedHomePath(agentSetupWorkspace.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? defaultAgentWorkspace(for: id) : agentSetupWorkspace)
         let model = agentSetupModel.trimmingCharacters(in: .whitespacesAndNewlines)
         let agentDir = agents.first(where: { $0.id == id })?.agentDir
@@ -2893,6 +2957,23 @@ final class InstallerViewModel: ObservableObject {
                 }
             }
 
+            if ok, !name.isEmpty || !emoji.isEmpty || !goal.isEmpty {
+                let identity = Self.writeAgentIdentityFile(agentID: id, name: name, emoji: emoji, goal: goal, workspace: workspace)
+                if !identity.ok {
+                    ok = false
+                    messages.append("Identity file failed: \(identity.message)")
+                } else {
+                    messages.append(goal.isEmpty ? "Identity file saved." : "Goal saved.")
+                }
+            }
+
+            if ok, name.isEmpty && emoji.isEmpty && goal.isEmpty {
+                let identity = Self.writeAgentIdentityFile(agentID: id, name: id, emoji: "", goal: "", workspace: workspace)
+                if identity.ok {
+                    messages.append("Workspace identity file ready.")
+                }
+            }
+
             if ok, !name.isEmpty || !emoji.isEmpty {
                 var command = "openclaw --no-color agents set-identity --agent \(Self.shellSingleQuote(id))"
                 if !name.isEmpty { command += " --name \(Self.shellSingleQuote(name))" }
@@ -2900,7 +2981,7 @@ final class InstallerViewModel: ObservableObject {
                 command += " --json 2>&1"
                 let result = engine.shell(command)
                 ok = result.0 == 0
-                messages.append(ok ? "Identity saved." : "Identity save failed: \(result.1)")
+                messages.append(ok ? "Name and emoji saved." : "Identity save failed: \(result.1)")
             }
 
             await MainActor.run {
@@ -2944,6 +3025,59 @@ final class InstallerViewModel: ObservableObject {
             try FileManager.default.createDirectory(at: stateDir, withIntermediateDirectories: true)
             try trimmed.write(to: stateDir.appendingPathComponent(".model"), atomically: true, encoding: .utf8)
             return (true, stateDir.appendingPathComponent(".model").path)
+        } catch {
+            return (false, error.localizedDescription)
+        }
+    }
+
+    nonisolated static func agentGoalFromWorkspace(_ workspace: String?) -> String? {
+        guard let workspace, !workspace.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let path = URL(fileURLWithPath: expandedHomePath(workspace)).appendingPathComponent("IDENTITY.md")
+        guard let content = try? String(contentsOf: path, encoding: .utf8) else { return nil }
+        return markdownIdentityField("Goal", in: content)
+            ?? markdownIdentityField("Mission", in: content)
+            ?? markdownIdentityField("Objective", in: content)
+    }
+
+    nonisolated private static func markdownIdentityField(_ field: String, in content: String) -> String? {
+        let escaped = NSRegularExpression.escapedPattern(for: field)
+        let pattern = #"- \*\*\#(escaped):\*\*\s*(.+)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        let range = NSRange(content.startIndex..<content.endIndex, in: content)
+        guard let match = regex.firstMatch(in: content, range: range),
+              match.numberOfRanges > 1,
+              let valueRange = Range(match.range(at: 1), in: content) else { return nil }
+        let value = content[valueRange]
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    nonisolated private static func writeAgentIdentityFile(agentID: String, name: String, emoji: String, goal: String, workspace: String) -> (ok: Bool, message: String) {
+        let workspaceURL = URL(fileURLWithPath: expandedHomePath(workspace), isDirectory: true)
+        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? agentID : name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanEmoji = emoji.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "⚡" : emoji.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanGoal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let goalLine = cleanGoal.isEmpty ? "- **Goal:** Help with the work assigned to this agent." : "- **Goal:** \(cleanGoal)"
+        let content = """
+        # IDENTITY.md - Who Am I?
+
+        - **Name:** \(cleanName)
+        - **Creature:** OpenClaw agent
+        - **Vibe:** Focused, reliable, and goal-oriented.
+        \(goalLine)
+        - **Emoji:** \(cleanEmoji)
+        - **Avatar:** *(pending)*
+
+        ---
+        _Managed by LocalClaw_
+        """
+
+        do {
+            try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+            let path = workspaceURL.appendingPathComponent("IDENTITY.md")
+            try content.write(to: path, atomically: true, encoding: .utf8)
+            return (true, path.path)
         } catch {
             return (false, error.localizedDescription)
         }
@@ -3198,6 +3332,7 @@ final class InstallerViewModel: ObservableObject {
                         id: id,
                         identityName: row["identityName"] as? String ?? id,
                         identityEmoji: row["identityEmoji"] as? String,
+                        goal: Self.agentGoalFromWorkspace(row["workspace"] as? String),
                         workspace: row["workspace"] as? String,
                         agentDir: row["agentDir"] as? String,
                         model: row["model"] as? String,
@@ -10775,8 +10910,55 @@ struct ContentView: View {
             LazyVGrid(columns: [GridItem(.flexible(minimum: 180)), GridItem(.flexible(minimum: 220))], spacing: 10) {
                 agentSetupTextField("Agent ID", text: $vm.agentSetupID, placeholder: "support", disabled: !vm.agentSetupEditingID.isEmpty)
                 agentSetupTextField("Display name", text: $vm.agentSetupName, placeholder: "Support agent")
-                agentSetupTextField("Emoji", text: $vm.agentSetupEmoji, placeholder: "⚡")
                 agentSetupTextField("Workspace", text: $vm.agentSetupWorkspace, placeholder: "~/.openclaw/workspaces/support")
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Emoji")
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(UI.muted)
+                LazyVGrid(columns: Array(repeating: GridItem(.fixed(36), spacing: 6), count: 8), alignment: .leading, spacing: 6) {
+                    ForEach(InstallerViewModel.agentEmojiChoices, id: \.self) { emoji in
+                        Button {
+                            vm.agentSetupEmoji = emoji
+                        } label: {
+                            Text(emoji)
+                                .font(.system(size: 18))
+                                .frame(width: 34, height: 30)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(vm.agentSetupEmoji == emoji ? UI.accent.opacity(0.22) : UI.card))
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(vm.agentSetupEmoji == emoji ? UI.accent : UI.lineSoft, lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Goal")
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(UI.muted)
+                TextField("What should this agent do? Example: Handle local coding tasks using only LM Studio.", text: $vm.agentSetupGoal, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(AppFont.body(12))
+                    .foregroundStyle(UI.text)
+                    .lineLimit(2...4)
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Mode")
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(UI.muted)
+                Picker("", selection: $vm.agentSetupMode) {
+                    ForEach(InstallerViewModel.AgentModelMode.allCases) { mode in
+                        Label(mode.rawValue, systemImage: mode.icon).tag(mode)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .tint(UI.accent)
             }
 
             VStack(alignment: .leading, spacing: 6) {
