@@ -3669,7 +3669,7 @@ final class InstallerViewModel: ObservableObject {
             let tokenFile = Self.shellSingleQuote(tokenURL.path)
             let command = [
                 "openclaw --no-color plugins enable telegram >/dev/null 2>&1 || openclaw --no-color plugins enable @openclaw/telegram >/dev/null 2>&1 || true",
-                "openclaw --no-color channels add --channel telegram --token-file \(tokenFile) --name Telegram --json 2>&1"
+                "openclaw --no-color channels add --channel telegram --token-file \(tokenFile) --name Telegram 2>&1"
             ].joined(separator: " && ")
             let result = engine.shell(command)
 
