@@ -4233,11 +4233,14 @@ final class InstallerViewModel: ObservableObject {
             }
             defer { try? FileManager.default.removeItem(atPath: tempMessagePath) }
 
+            let runtimeTurnID = useFreshDeveloperContext || requestInferenceMode == .local
+                ? String(requestID.uuidString.prefix(8))
+                : nil
             let runtimeSessionID = Self.runtimeSessionID(
                 base: sessionID,
                 modelID: modelOverride,
                 useDeveloperSession: useDeveloperSession,
-                freshDeveloperTurnID: useFreshDeveloperContext ? String(requestID.uuidString.prefix(8)) : nil
+                freshTurnID: runtimeTurnID
             )
             let startedAt = Date()
             await MainActor.run {
@@ -4704,17 +4707,20 @@ final class InstallerViewModel: ObservableObject {
         return trimmed
     }
 
-    nonisolated static func runtimeSessionID(base: String, modelID: String, useDeveloperSession: Bool, freshDeveloperTurnID: String? = nil) -> String {
-        guard useDeveloperSession else { return base }
+    nonisolated static func runtimeSessionID(base: String, modelID: String, useDeveloperSession: Bool, freshTurnID: String? = nil) -> String {
+        if !useDeveloperSession {
+            guard let freshTurnID, !freshTurnID.isEmpty else { return base }
+            return "\(base)-turn-\(freshTurnID)"
+        }
         let cleanModel = modelID
             .lowercased()
             .map { character -> Character in
                 character.isLetter || character.isNumber ? character : "-"
-            }
+        }
         let suffix = String(String(cleanModel).split(separator: "-").joined(separator: "-").prefix(72))
         let modelScoped = suffix.isEmpty ? base : "\(base)-\(suffix)"
-        guard let freshDeveloperTurnID, !freshDeveloperTurnID.isEmpty else { return modelScoped }
-        return "\(modelScoped)-turn-\(freshDeveloperTurnID)"
+        guard let freshTurnID, !freshTurnID.isEmpty else { return modelScoped }
+        return "\(modelScoped)-turn-\(freshTurnID)"
     }
 
     nonisolated static func agentThinkingLevel(for mode: ChatResponseMode) -> String {

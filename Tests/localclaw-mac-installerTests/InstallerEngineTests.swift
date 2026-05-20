@@ -161,12 +161,19 @@ struct InstallerEngineTests {
     @Test func developerRuntimeSessionIDCanUseFreshTurnScope() {
         let base = "localclaw-developer-chat-abc"
 
-        let first = InstallerViewModel.runtimeSessionID(base: base, modelID: "openai/gpt-5.5", useDeveloperSession: true, freshDeveloperTurnID: "turn-a")
-        let second = InstallerViewModel.runtimeSessionID(base: base, modelID: "openai/gpt-5.5", useDeveloperSession: true, freshDeveloperTurnID: "turn-b")
+        let first = InstallerViewModel.runtimeSessionID(base: base, modelID: "openai/gpt-5.5", useDeveloperSession: true, freshTurnID: "turn-a")
+        let second = InstallerViewModel.runtimeSessionID(base: base, modelID: "openai/gpt-5.5", useDeveloperSession: true, freshTurnID: "turn-b")
 
         #expect(first != second)
         #expect(first.contains("-turn-turn-a"))
         #expect(second.contains("-turn-turn-b"))
+    }
+
+    @Test func regularChatRuntimeSessionIDCanUseFreshTurnScope() {
+        let base = "localclaw-ui-chat-abc"
+
+        #expect(InstallerViewModel.runtimeSessionID(base: base, modelID: "lmstudio/nvidia/nemotron-3-nano-4b", useDeveloperSession: false) == base)
+        #expect(InstallerViewModel.runtimeSessionID(base: base, modelID: "lmstudio/nvidia/nemotron-3-nano-4b", useDeveloperSession: false, freshTurnID: "local-a") == "\(base)-turn-local-a")
     }
 
     @Test func fastDeveloperRequestsUseLowThinkingAndShortTimeout() {
