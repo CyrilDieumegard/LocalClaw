@@ -760,6 +760,15 @@ final class InstallerViewModel: ObservableObject {
     @Published var agentsStatus: String = "Not loaded"
     @Published var agentsIsLoading = false
     @Published var agentLogs: String = ""
+    @Published var showAgentSetupPanel = false
+    @Published var agentSetupEditingID = ""
+    @Published var agentSetupID = ""
+    @Published var agentSetupName = ""
+    @Published var agentSetupEmoji = ""
+    @Published var agentSetupWorkspace = ""
+    @Published var agentSetupModel = ""
+    @Published var agentSetupStatus = ""
+    @Published var agentSetupIsRunning = false
     @Published var cronJobs: [CronJobInfo] = []
     @Published var cronJobsStatus: String = "Not loaded"
     @Published var cronJobsIsLoading = false
@@ -2761,6 +2770,183 @@ final class InstallerViewModel: ObservableObject {
 
     func openAgentsDocs() {
         _ = engine.shell("open 'https://docs.openclaw.ai/cli/agents' || true")
+    }
+
+    var agentModelChoices: [String] {
+        var values: [String] = []
+        func add(_ value: String) {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, trimmed != "Unknown", trimmed != "Not configured" else { return }
+            if !values.contains(trimmed) { values.append(trimmed) }
+        }
+
+        add(currentModel)
+        add(selectedChatModel)
+        add(selectedOpenRouterModel)
+        add(effectiveModelIdentifier())
+        for model in openRouterModelsLive.isEmpty ? Self.openRouterModels : openRouterModelsLive { add(model.id) }
+        for model in oauthModelsLive { add(model.id) }
+        for model in localLMStudioModels { add("lmstudio/\(model)") }
+        return values
+    }
+
+    func beginNewAgentSetup() {
+        refreshLocalLMStudioModels()
+        if openRouterModelsLive.isEmpty { refreshOpenRouterModels() }
+        let nextID = suggestedNewAgentID()
+        agentSetupEditingID = ""
+        agentSetupID = nextID
+        agentSetupName = ""
+        agentSetupEmoji = "⚡"
+        agentSetupWorkspace = defaultAgentWorkspace(for: nextID)
+        agentSetupModel = agentModelChoices.first ?? ""
+        agentSetupStatus = ""
+        showAgentSetupPanel = true
+    }
+
+    func beginEditAgentSetup(_ agent: AgentInfo) {
+        refreshLocalLMStudioModels()
+        agentSetupEditingID = agent.id
+        agentSetupID = agent.id
+        agentSetupName = agent.displayName == agent.id ? "" : agent.displayName
+        agentSetupEmoji = agent.identityEmoji ?? ""
+        agentSetupWorkspace = agent.workspace ?? defaultAgentWorkspace(for: agent.id)
+        agentSetupModel = agent.model ?? currentModelForAgentSetup()
+        agentSetupStatus = ""
+        showAgentSetupPanel = true
+    }
+
+    func cancelAgentSetup() {
+        guard !agentSetupIsRunning else { return }
+        showAgentSetupPanel = false
+        agentSetupStatus = ""
+    }
+
+    private func suggestedNewAgentID() -> String {
+        var index = max(agents.count + 1, 1)
+        while agents.contains(where: { $0.id == "agent-\(index)" }) {
+            index += 1
+        }
+        return "agent-\(index)"
+    }
+
+    private func defaultAgentWorkspace(for agentID: String) -> String {
+        NSHomeDirectory() + "/.openclaw/workspaces/\(agentID)"
+    }
+
+    private func currentModelForAgentSetup() -> String {
+        let model = currentModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !model.isEmpty, model != "Unknown", model != "Not configured" { return model }
+        return selectedChatModel.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func saveAgentSetup() {
+        guard !agentSetupIsRunning else { return }
+
+        let id = agentSetupID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard id.range(of: #"^[A-Za-z0-9_-]+$"#, options: .regularExpression) != nil else {
+            agentSetupStatus = "Use only letters, numbers, dash or underscore for the agent id."
+            return
+        }
+
+        let isEditing = !agentSetupEditingID.isEmpty
+        let name = agentSetupName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let emoji = agentSetupEmoji.trimmingCharacters(in: .whitespacesAndNewlines)
+        let workspace = Self.expandedHomePath(agentSetupWorkspace.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? defaultAgentWorkspace(for: id) : agentSetupWorkspace)
+        let model = agentSetupModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let agentDir = agents.first(where: { $0.id == id })?.agentDir
+
+        agentSetupIsRunning = true
+        agentSetupStatus = isEditing ? "Saving agent..." : "Creating agent..."
+        agentLogs = agentLogs.isEmpty ? agentSetupStatus : agentLogs + "\n\(agentSetupStatus)"
+
+        Task.detached {
+            let engine = InstallerEngine()
+            var messages: [String] = []
+            var ok = true
+
+            if !isEditing {
+                let modelArg = model.isEmpty ? "" : " --model \(Self.shellSingleQuote(model))"
+                let command = [
+                    "mkdir -p \(Self.shellSingleQuote(workspace))",
+                    "openclaw --no-color agents add \(Self.shellSingleQuote(id)) --workspace \(Self.shellSingleQuote(workspace))\(modelArg) --non-interactive --json 2>&1"
+                ].joined(separator: " && ")
+                let result = engine.shell(command)
+                ok = result.0 == 0
+                messages.append(ok ? "Agent \(id) created." : "Agent create failed: \(result.1)")
+            }
+
+            if ok, !model.isEmpty {
+                if id == "main" {
+                    let config = engine.writeModelToConfig(modelIdentifier: model)
+                    if config.state == .fail {
+                        ok = false
+                        messages.append("Model config failed: \(config.message)")
+                    }
+                }
+                let write = Self.writeAgentModelSelection(agentID: id, model: model, agentDir: agentDir)
+                if !write.ok {
+                    ok = false
+                    messages.append("Model save failed: \(write.message)")
+                } else {
+                    messages.append("Model set to \(model).")
+                }
+            }
+
+            if ok, !name.isEmpty || !emoji.isEmpty {
+                var command = "openclaw --no-color agents set-identity --agent \(Self.shellSingleQuote(id))"
+                if !name.isEmpty { command += " --name \(Self.shellSingleQuote(name))" }
+                if !emoji.isEmpty { command += " --emoji \(Self.shellSingleQuote(emoji))" }
+                command += " --json 2>&1"
+                let result = engine.shell(command)
+                ok = result.0 == 0
+                messages.append(ok ? "Identity saved." : "Identity save failed: \(result.1)")
+            }
+
+            await MainActor.run {
+                self.agentSetupIsRunning = false
+                self.agentSetupStatus = messages.joined(separator: "\n")
+                self.agentLogs += "\n" + self.agentSetupStatus
+                if ok {
+                    self.showAgentSetupPanel = false
+                    self.refreshAgents()
+                    if id == "main" {
+                        self.refreshOpenClawChatInfo()
+                    }
+                }
+            }
+        }
+    }
+
+    nonisolated static func expandedHomePath(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed == "~" { return NSHomeDirectory() }
+        if trimmed.hasPrefix("~/") {
+            return NSHomeDirectory() + "/" + String(trimmed.dropFirst(2))
+        }
+        return trimmed
+    }
+
+    nonisolated private static func writeAgentModelSelection(agentID: String, model: String, agentDir: String?) -> (ok: Bool, message: String) {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return (true, "No model selected") }
+        let stateDir: URL
+        if let agentDir, !agentDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            stateDir = URL(fileURLWithPath: agentDir).deletingLastPathComponent()
+        } else {
+            stateDir = URL(fileURLWithPath: NSHomeDirectory())
+                .appendingPathComponent(".openclaw", isDirectory: true)
+                .appendingPathComponent("agents", isDirectory: true)
+                .appendingPathComponent(agentID, isDirectory: true)
+        }
+
+        do {
+            try FileManager.default.createDirectory(at: stateDir, withIntermediateDirectories: true)
+            try trimmed.write(to: stateDir.appendingPathComponent(".model"), atomically: true, encoding: .utf8)
+            return (true, stateDir.appendingPathComponent(".model").path)
+        } catch {
+            return (false, error.localizedDescription)
+        }
     }
 
     func openCronDocs() {
@@ -8734,7 +8920,7 @@ struct ContentView: View {
                 .background(RoundedRectangle(cornerRadius: 16).fill(UI.cardSoft))
                 .overlay(RoundedRectangle(cornerRadius: 16).stroke(UI.lineSoft, lineWidth: 1))
 
-                VStack(spacing: 8) {
+                ZStack(alignment: .bottom) {
                     ScrollViewReader { proxy in
                         ScrollView {
                             VStack(alignment: .leading, spacing: 10) {
@@ -8758,7 +8944,7 @@ struct ContentView: View {
                             }
                             .padding(.horizontal, 14)
                             .padding(.top, 14)
-                            .padding(.bottom, 28)
+                            .padding(.bottom, 54)
                             .frame(maxWidth: .infinity, alignment: .topLeading)
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -8779,6 +8965,8 @@ struct ContentView: View {
                     }
 
                     chatContextUsageBar
+                        .padding(.bottom, 10)
+                        .allowsHitTesting(false)
                 }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -10425,7 +10613,7 @@ struct ContentView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
-                Button("New Agent") { vm.openTerminalAgentCreate() }
+                Button("New Agent") { vm.beginNewAgentSetup() }
                     .buttonStyle(CTAButton(primary: true))
                 Button("Refresh") { vm.refreshAgents() }
                     .buttonStyle(CTAButton(primary: false))
@@ -10439,6 +10627,10 @@ struct ContentView: View {
                 agentMetricCard("Active", value: "\(vm.agents.filter { $0.isDefault || $0.bindings > 0 }.count)", icon: "bolt.fill", tint: Color(NSColor.systemGreen))
                 agentMetricCard("Routed", value: "\(vm.agents.filter { $0.bindings > 0 }.count)", icon: "arrow.triangle.branch", tint: Color(NSColor.systemBlue))
                 agentMetricCard("Models", value: "\(Set(vm.agents.compactMap { $0.model }).count)", icon: "cpu.fill", tint: Color(NSColor.systemPurple))
+            }
+
+            if vm.showAgentSetupPanel {
+                agentSetupPanel
             }
 
             ScrollView {
@@ -10553,7 +10745,7 @@ struct ContentView: View {
             Spacer(minLength: 8)
 
             Button {
-                vm.openTerminalAgentIdentity(agent.id)
+                vm.beginEditAgentSetup(agent)
             } label: {
                 Label("Edit", systemImage: "pencil")
             }
@@ -10562,6 +10754,90 @@ struct ContentView: View {
         .padding(16)
         .background(RoundedRectangle(cornerRadius: 14).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(agent.statusTint.opacity(0.35), lineWidth: 1))
+    }
+
+    var agentSetupPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Label(vm.agentSetupEditingID.isEmpty ? "New agent" : "Edit agent", systemImage: vm.agentSetupEditingID.isEmpty ? "person.badge.plus" : "slider.horizontal.3")
+                    .font(AppFont.bodySemi(14))
+                    .foregroundStyle(UI.text)
+                Spacer()
+                if vm.agentSetupIsRunning {
+                    ProgressView()
+                        .scaleEffect(0.75)
+                }
+                Button("Cancel") { vm.cancelAgentSetup() }
+                    .buttonStyle(CompactChatButton(primary: false))
+                    .disabled(vm.agentSetupIsRunning)
+            }
+
+            LazyVGrid(columns: [GridItem(.flexible(minimum: 180)), GridItem(.flexible(minimum: 220))], spacing: 10) {
+                agentSetupTextField("Agent ID", text: $vm.agentSetupID, placeholder: "support", disabled: !vm.agentSetupEditingID.isEmpty)
+                agentSetupTextField("Display name", text: $vm.agentSetupName, placeholder: "Support agent")
+                agentSetupTextField("Emoji", text: $vm.agentSetupEmoji, placeholder: "⚡")
+                agentSetupTextField("Workspace", text: $vm.agentSetupWorkspace, placeholder: "~/.openclaw/workspaces/support")
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Model")
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(UI.muted)
+                HStack(spacing: 8) {
+                    Picker("", selection: $vm.agentSetupModel) {
+                        Text("OpenClaw default").tag("")
+                        ForEach(vm.agentModelChoices, id: \.self) { model in
+                            Text(model).tag(model)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 320)
+
+                    TextField("custom model id, ex: lmstudio/google/gemma-4-e2b", text: $vm.agentSetupModel)
+                        .textFieldStyle(.plain)
+                        .font(AppFont.body(12))
+                        .foregroundStyle(UI.text)
+                        .padding(9)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button(vm.agentSetupIsRunning ? "Saving..." : (vm.agentSetupEditingID.isEmpty ? "Create Agent" : "Save Agent")) {
+                    vm.saveAgentSetup()
+                }
+                .buttonStyle(CTAButton(primary: true))
+                .disabled(vm.agentSetupIsRunning)
+
+                Text(vm.agentSetupStatus.isEmpty ? "Create and configure OpenClaw agents without leaving LocalClaw." : vm.agentSetupStatus)
+                    .font(AppFont.body(11))
+                    .foregroundStyle(vm.agentSetupStatus.lowercased().contains("failed") ? Color(NSColor.systemRed) : UI.muted)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 14).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(UI.accent.opacity(0.24), lineWidth: 1))
+    }
+
+    private func agentSetupTextField(_ title: String, text: Binding<String>, placeholder: String, disabled: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(AppFont.bodySemi(11))
+                .foregroundStyle(UI.muted)
+            TextField(placeholder, text: text)
+                .textFieldStyle(.plain)
+                .font(AppFont.body(12))
+                .foregroundStyle(disabled ? UI.muted : UI.text)
+                .padding(9)
+                .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+                .disabled(disabled)
+        }
     }
 
     private func agentBadge(_ label: String, color: Color, icon: String) -> some View {
