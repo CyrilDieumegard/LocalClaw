@@ -46,6 +46,13 @@ struct InstallerEngineTests {
         #expect(InstallerEngine.shellPathPrefix.contains("$HOME/.local/bin"))
     }
 
+    @Test func nodeVersionSupportMatchesOpenClawRequirement() {
+        #expect(!InstallerEngine.isNodeVersionSupported("v22.18.0"))
+        #expect(InstallerEngine.isNodeVersionSupported("v22.19.0"))
+        #expect(InstallerEngine.isNodeVersionSupported("v26.0.0"))
+        #expect(!InstallerEngine.isNodeVersionSupported("Not installed"))
+    }
+
     @Test func redactsSecretsFromConfigJSON() {
         let raw = """
         {

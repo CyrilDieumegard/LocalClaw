@@ -1447,12 +1447,12 @@ final class InstallerViewModel: ObservableObject {
 
         statusHomebrew = engine.hasCommand("brew") ? "SKIP" : "PENDING"
         statusLMStudio = engine.hasLMStudioApp() ? "SKIP" : "PENDING"
-        statusNode = engine.hasCommand("node") ? "SKIP" : "PENDING"
+        statusNode = engine.isInstalledNodeSupported() ? "SKIP" : "PENDING"
         hasExistingOpenClawSetup = engine.hasCommand("openclaw")
         statusOpenClaw = hasExistingOpenClawSetup ? "SKIP" : "PENDING"
         statusOpenClawCheck = "PENDING"
 
-        ocStepNode = engine.hasCommand("node") ? "OK" : "PENDING"
+        ocStepNode = engine.isInstalledNodeSupported() ? "OK" : "PENDING"
         ocStepCli = engine.hasCommand("openclaw") ? "OK" : "PENDING"
         ocStepRepair = "PENDING"
         ocStepVerify = "PENDING"
@@ -1889,7 +1889,7 @@ final class InstallerViewModel: ObservableObject {
             statusModel = "SKIP"
             statusOpenClawCheck = "PENDING"
             hasExistingOpenClawSetup = engine.hasCommand("openclaw")
-            ocStepNode = engine.hasCommand("node") ? "OK" : "PENDING"
+            ocStepNode = engine.isInstalledNodeSupported() ? "OK" : "PENDING"
             ocStepCli = hasExistingOpenClawSetup ? "SKIP" : "PENDING"
             ocStepRepair = "PENDING"
             ocStepVerify = "PENDING"
@@ -1902,7 +1902,7 @@ final class InstallerViewModel: ObservableObject {
             statusModel = "PENDING"
             statusOpenClawCheck = "PENDING"
             hasExistingOpenClawSetup = engine.hasCommand("openclaw")
-            ocStepNode = engine.hasCommand("node") ? "OK" : "PENDING"
+            ocStepNode = engine.isInstalledNodeSupported() ? "OK" : "PENDING"
             ocStepCli = hasExistingOpenClawSetup ? "SKIP" : "PENDING"
             ocStepRepair = "PENDING"
             ocStepVerify = "PENDING"
@@ -2641,7 +2641,7 @@ final class InstallerViewModel: ObservableObject {
         lmStudioVersion = engine.installedLMStudioVersion()
 
         brewUpToDate = brewVersion != "Not installed"
-        nodeUpToDate = nodeVersion != "Not installed"
+        nodeUpToDate = InstallerEngine.isNodeVersionSupported(nodeVersion)
         lmStudioUpToDate = lmStudioVersion != "Not installed"
 
         refreshInstallerManifest()
@@ -6973,11 +6973,15 @@ final class InstallerViewModel: ObservableObject {
         
         echo ""
         echo "[3/6] Installing Node.js..."
-        if command -v node &>/dev/null; then
-            echo "  ✓ Already installed"
+        if command -v node &>/dev/null && node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 19) ? 0 : 1)' &>/dev/null; then
+            echo "  ✓ Node $(node --version) ready"
         else
-            echo "  → Installing..."
-            brew install node
+            echo "  → Installing/upgrading Node.js 22.19+..."
+            brew upgrade node || brew install node
+            if ! command -v node &>/dev/null || ! node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 19) ? 0 : 1)' &>/dev/null; then
+                echo "  ✗ Node 22.19+ is required for OpenClaw"
+                exit 1
+            fi
         fi
         
         echo ""
@@ -7183,12 +7187,17 @@ final class InstallerViewModel: ObservableObject {
         lines.append("")
         lines.append("echo \"\"")
         lines.append("echo \"[4/7] Installing Node.js...\"")
-        lines.append("if command -v node &>/dev/null; then")
-        lines.append("    echo \"  ✓ Already installed\"")
+        lines.append("if command -v node &>/dev/null && node -e 'const [major, minor] = process.versions.node.split(\".\").map(Number); process.exit(major > 22 || (major === 22 && minor >= 19) ? 0 : 1)' &>/dev/null; then")
+        lines.append("    echo \"  ✓ Node $(node --version) ready\"")
         lines.append("    echo \"node:OK\" >> /tmp/localclaw_status")
         lines.append("else")
-        lines.append("    echo \"  → Installing...\"")
-        lines.append("    brew install node")
+        lines.append("    echo \"  → Installing/upgrading Node.js 22.19+...\"")
+        lines.append("    brew upgrade node || brew install node")
+        lines.append("    if ! command -v node &>/dev/null || ! node -e 'const [major, minor] = process.versions.node.split(\".\").map(Number); process.exit(major > 22 || (major === 22 && minor >= 19) ? 0 : 1)' &>/dev/null; then")
+        lines.append("        echo \"  ✗ Node 22.19+ is required for OpenClaw\"")
+        lines.append("        echo \"node:FAIL\" >> /tmp/localclaw_status")
+        lines.append("        exit 1")
+        lines.append("    fi")
         lines.append("    echo \"node:OK\" >> /tmp/localclaw_status")
         lines.append("fi")
         lines.append("")
@@ -10619,7 +10628,7 @@ struct ContentView: View {
     private func installComponentInstalled(name: String) -> Bool {
         switch name {
         case "Homebrew": return vm.brewVersion != "Not installed" && vm.brewVersion != "Checking..."
-        case "Node": return vm.nodeVersion != "Not installed" && vm.nodeVersion != "Checking..."
+        case "Node": return vm.nodeUpToDate
         case "OpenClaw": return vm.openclawInstalledVersion != "Not installed" && vm.openclawInstalledVersion != "Checking..."
         case "LM Studio": return vm.lmStudioVersion != "Not installed" && vm.lmStudioVersion != "Checking..."
         default: return false
@@ -11156,7 +11165,7 @@ struct ContentView: View {
             VStack(spacing: 8) {
                 versionRow("OpenClaw", vm.openclawInstalledVersion, vm.openclawLatestVersion, isUpToDate: vm.openclawUpdateStatus == "Up to date")
                 versionRow("Homebrew", vm.brewVersion, "latest via brew update", isUpToDate: vm.brewUpToDate)
-                versionRow("Node", vm.nodeVersion, "latest via brew upgrade", isUpToDate: vm.nodeUpToDate)
+                versionRow("Node", vm.nodeVersion, "22.19+ required for OpenClaw", isUpToDate: vm.nodeUpToDate)
                 versionRow("LM Studio", vm.lmStudioVersion, "latest via brew cask", isUpToDate: vm.lmStudioUpToDate)
                 versionRow("LocalClaw", "\(vm.installerCurrentVersion) (build \(vm.installerBuildNumber))", vm.installerLatestVersion, isUpToDate: vm.installerUpdateStatus == "Up to date")
             }

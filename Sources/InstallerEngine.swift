@@ -68,6 +68,35 @@ struct ProcessUsageItem: Identifiable {
 
 final class InstallerEngine: @unchecked Sendable {
     static let shellPathPrefix = #"export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"; "#
+    static let minimumNodeVersion = "22.19.0"
+
+    static func versionComponents(from value: String) -> [Int]? {
+        guard let range = value.range(of: #"\d+(?:\.\d+){0,2}"#, options: .regularExpression) else {
+            return nil
+        }
+        var parts = value[range].split(separator: ".").map { Int($0) ?? 0 }
+        while parts.count < 3 { parts.append(0) }
+        return Array(parts.prefix(3))
+    }
+
+    static func compareVersion(_ lhs: String, _ rhs: String) -> Int? {
+        guard let left = versionComponents(from: lhs), let right = versionComponents(from: rhs) else {
+            return nil
+        }
+        for index in 0..<3 {
+            if left[index] != right[index] {
+                return left[index] > right[index] ? 1 : -1
+            }
+        }
+        return 0
+    }
+
+    static func isNodeVersionSupported(_ version: String) -> Bool {
+        guard let comparison = compareVersion(version, minimumNodeVersion) else {
+            return false
+        }
+        return comparison >= 0
+    }
 
     private func lmsCommandPath() -> String {
         if hasCommand("lms") { return "lms" }
@@ -213,17 +242,40 @@ final class InstallerEngine: @unchecked Sendable {
 
     func installNodeIfNeeded() -> StepResult {
         if hasCommand("node") {
-            return StepResult(state: .skip, message: "Node already installed")
+            let current = installedVersion(for: "node")
+            if Self.isNodeVersionSupported(current) {
+                return StepResult(state: .skip, message: "Node \(current) already installed")
+            }
+
+            let (code, out) = shell("brew upgrade node || brew install node")
+            let updated = installedVersion(for: "node")
+            if code == 0 && Self.isNodeVersionSupported(updated) {
+                return StepResult(state: .ok, message: "Node updated to \(updated)")
+            }
+
+            return StepResult(
+                state: .fail,
+                message: "OpenClaw requires Node \(Self.minimumNodeVersion)+. Current: \(current). \(out)"
+            )
         }
         let (code, out) = shell("brew install node")
-        return code == 0
-            ? StepResult(state: .ok, message: "Node installed")
-            : StepResult(state: .fail, message: out)
+        let installed = installedVersion(for: "node")
+        if code == 0 && Self.isNodeVersionSupported(installed) {
+            return StepResult(state: .ok, message: "Node installed: \(installed)")
+        }
+        return StepResult(
+            state: .fail,
+            message: "OpenClaw requires Node \(Self.minimumNodeVersion)+. \(out)"
+        )
     }
 
     func installOpenClawIfNeeded() -> StepResult {
         if hasCommand("openclaw") {
             return StepResult(state: .skip, message: "openclaw command already present")
+        }
+        let node = installNodeIfNeeded()
+        if node.state == .fail {
+            return StepResult(state: .fail, message: "Node setup failed before OpenClaw install.\n\(node.message)")
         }
         let (code, out) = shell("npm i -g openclaw@latest")
         return code == 0
@@ -1250,6 +1302,10 @@ final class InstallerEngine: @unchecked Sendable {
         return (code == 0 && !out.isEmpty) ? out : "Unknown"
     }
 
+    func isInstalledNodeSupported() -> Bool {
+        Self.isNodeVersionSupported(installedVersion(for: "node"))
+    }
+
     private func normalizeVersion(_ value: String) -> String {
         let cleaned = value
             .replacingOccurrences(of: "OpenClaw ", with: "")
@@ -1299,15 +1355,30 @@ final class InstallerEngine: @unchecked Sendable {
 
     func upgradeNodeIfInstalled() -> StepResult {
         if !hasCommand("node") {
-            return StepResult(state: .skip, message: "Node not installed")
+            return installNodeIfNeeded()
         }
+        let before = installedVersion(for: "node")
         let (code, out) = shell("brew upgrade node")
-        return code == 0 ? StepResult(state: .ok, message: "Node upgraded or already up to date") : StepResult(state: .fail, message: out)
+        let current = installedVersion(for: "node")
+        if code == 0 && Self.isNodeVersionSupported(current) {
+            return StepResult(state: .ok, message: "Node upgraded or already up to date: \(current)")
+        }
+        if Self.isNodeVersionSupported(current) || Self.isNodeVersionSupported(before) {
+            return StepResult(state: .skip, message: "Node \(current) is compatible but not managed by Homebrew")
+        }
+        if code == 0 || !Self.isNodeVersionSupported(current) {
+            return installNodeIfNeeded()
+        }
+        return StepResult(state: .fail, message: out)
     }
 
     func updateOpenClawIfInstalled() -> StepResult {
         if !hasCommand("openclaw") {
             return StepResult(state: .skip, message: "OpenClaw not installed")
+        }
+        let node = installNodeIfNeeded()
+        if node.state == .fail {
+            return StepResult(state: .fail, message: "Node setup failed before OpenClaw update.\n\(node.message)")
         }
         let (code, out) = shell("npm i -g openclaw@latest")
         return code == 0 ? StepResult(state: .ok, message: "OpenClaw updated") : StepResult(state: .fail, message: out)

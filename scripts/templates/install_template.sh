@@ -25,12 +25,17 @@ INSTALL_LM_STUDIO_PLACEHOLDER
 
 echo ""
 echo "[4/7] Installing Node.js..."
-if command -v node &>/dev/null; then
-    echo "  ✓ Already installed"
+if command -v node &>/dev/null && node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 19) ? 0 : 1)' &>/dev/null; then
+    echo "  ✓ Node $(node --version) ready"
     echo "node:OK" >> /tmp/localclaw_status
 else
-    echo "  → Installing..."
-    brew install node
+    echo "  → Installing/upgrading Node.js 22.19+..."
+    brew upgrade node || brew install node
+    if ! command -v node &>/dev/null || ! node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 19) ? 0 : 1)' &>/dev/null; then
+        echo "  ✗ Node 22.19+ is required for OpenClaw"
+        echo "node:FAIL" >> /tmp/localclaw_status
+        exit 1
+    fi
     echo "node:OK" >> /tmp/localclaw_status
 fi
 
