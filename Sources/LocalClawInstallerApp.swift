@@ -4734,27 +4734,27 @@ final class InstallerViewModel: ObservableObject {
             case .fast:
                 return 90
             case .deep:
-                return 240
+                return 600
             case .local:
-                return 180
+                return 420
             case .cloud:
-                return 150
+                return 420
             }
         }
         switch mode {
         case .fast:
             return 60
         case .deep:
-            return 240
+            return 600
         case .local:
-            return 180
+            return 420
         case .cloud:
-            return 150
+            return 420
         }
     }
 
     nonisolated static func wallClockTimeoutSeconds(forAgentTimeout timeout: Int) -> Int {
-        min(max(timeout + 20, 45), 260)
+        min(max(timeout + 120, 90), 900)
     }
 
     struct QuickDeveloperEditResult {
@@ -5352,7 +5352,7 @@ final class InstallerViewModel: ObservableObject {
         timeoutLock.unlock()
         let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
         if didTimeout {
-            let suffix = "LocalClaw stopped OpenClaw after \(timeoutSeconds ?? 0)s because this request exceeded the Developer time budget."
+            let suffix = "LocalClaw stopped this developer request after \(timeoutSeconds ?? 0)s because it exceeded the time budget. OpenClaw itself may still be running; check Gateway status before restarting."
             return (124, trimmed.isEmpty ? suffix : "\(trimmed)\n\n\(suffix)")
         }
         return (process.terminationStatus, trimmed)
@@ -5454,7 +5454,7 @@ final class InstallerViewModel: ObservableObject {
         timeoutLock.unlock()
         let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
         if didTimeout {
-            let suffix = "LocalClaw stopped OpenClaw after \(timeoutSeconds ?? 0)s because this request exceeded the time budget."
+            let suffix = "LocalClaw stopped this chat request after \(timeoutSeconds ?? 0)s because it exceeded the time budget. OpenClaw itself may still be running; check Gateway status before restarting."
             return (124, trimmed.isEmpty ? suffix : "\(trimmed)\n\n\(suffix)")
         }
         return (process.terminationStatus, trimmed)
@@ -9774,8 +9774,8 @@ struct ContentView: View {
                 Text("WHAT WAS INSTALLED")
                     .font(AppFont.heading(11)).kerning(0.6).foregroundStyle(UI.accent)
                 statusRow("Homebrew", vm.statusHomebrew)
-                statusRow("LM Studio", vm.selectedModel.isEmpty ? "Skipped" : vm.statusLMStudio)
-                statusRow("Model", vm.selectedModel.isEmpty ? "Skipped" : vm.statusModel)
+                statusRow("LM Studio", vm.selectedModel.isEmpty ? "SKIP" : vm.statusLMStudio)
+                statusRow("Model", vm.selectedModel.isEmpty ? "SKIP" : vm.statusModel)
                 statusRow("Node.js", vm.statusNodeJS)
                 statusRow("OpenClaw", vm.statusOpenClaw)
                 statusRow("Config", vm.statusConfig)
@@ -11839,7 +11839,7 @@ struct ContentView: View {
             switch name {
             case "Homebrew": return vm.statusHomebrew == "OK" || vm.brewVersion != "Not installed" && vm.brewVersion != "Checking..."
             case "LM Studio": return vm.lmStudioVersion != "Not installed" && vm.lmStudioVersion != "Checking..."
-            case "Node": return vm.nodeVersion != "Not installed" && vm.nodeVersion != "Checking..."
+            case "Node", "Node.js": return vm.nodeVersion != "Not installed" && vm.nodeVersion != "Checking..."
             case "OpenClaw": return vm.hasExistingOpenClawSetup || vm.openclawInstalledVersion != "Not installed"
             default: return isInstalled
             }

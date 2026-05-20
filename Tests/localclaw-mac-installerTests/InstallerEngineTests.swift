@@ -172,8 +172,8 @@ struct InstallerEngineTests {
     @Test func fastDeveloperRequestsUseLowThinkingAndShortTimeout() {
         #expect(InstallerViewModel.agentThinkingLevel(for: .fast) == "low")
         #expect(InstallerViewModel.agentTimeoutSeconds(for: .fast, useDeveloperSession: true) == 90)
-        #expect(InstallerViewModel.agentTimeoutSeconds(for: .cloud, useDeveloperSession: true) == 150)
-        #expect(InstallerViewModel.agentTimeoutSeconds(for: .deep, useDeveloperSession: true) == 240)
+        #expect(InstallerViewModel.agentTimeoutSeconds(for: .cloud, useDeveloperSession: true) == 420)
+        #expect(InstallerViewModel.agentTimeoutSeconds(for: .deep, useDeveloperSession: true) == 600)
     }
 
     @Test func simpleDeveloperEditsUseTightBudget() {
@@ -181,7 +181,7 @@ struct InstallerEngineTests {
         #expect(InstallerViewModel.isSimpleDeveloperEdit("mets le theme en violet"))
         #expect(!InstallerViewModel.isSimpleDeveloperEdit("refactor the backend auth and database migration"))
         #expect(InstallerViewModel.simpleDeveloperEditTimeoutSeconds == 60)
-        #expect(InstallerViewModel.wallClockTimeoutSeconds(forAgentTimeout: 60) == 80)
+        #expect(InstallerViewModel.wallClockTimeoutSeconds(forAgentTimeout: 60) == 180)
     }
 
     @Test func localLMStudioModelIDNormalizesPickerValues() {
