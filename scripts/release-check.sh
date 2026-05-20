@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-APP_PATH="dist/LocalClawInstaller.app"
+APP_PATH="dist/LocalClaw.app"
 DMG_PATH="dist/localclaw.dmg"
 
 echo "== LocalClaw release check =="
