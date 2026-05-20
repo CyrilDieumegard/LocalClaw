@@ -4233,7 +4233,7 @@ final class InstallerViewModel: ObservableObject {
             }
             defer { try? FileManager.default.removeItem(atPath: tempMessagePath) }
 
-            let runtimeTurnID = useFreshDeveloperContext || requestInferenceMode == .local
+            let runtimeTurnID = (!useDeveloperSession || useFreshDeveloperContext || requestInferenceMode == .local)
                 ? String(requestID.uuidString.prefix(8))
                 : nil
             let runtimeSessionID = Self.runtimeSessionID(
