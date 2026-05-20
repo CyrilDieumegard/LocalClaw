@@ -6842,6 +6842,7 @@ struct ContentView: View {
     @StateObject private var vm = InstallerViewModel()
     @State private var helpTab: HelpTab = .stepByStep
     @State private var isSidebarVisible = true
+    @State private var pasteEventMonitor: Any?
     @AppStorage("localclaw.appearance") private var appearance = "dark"
 
     var body: some View {
@@ -6909,7 +6910,16 @@ struct ContentView: View {
         .frame(minWidth: 1100, idealWidth: 1440, maxWidth: .infinity,
                minHeight: 760, idealHeight: 920, maxHeight: .infinity)
         .preferredColorScheme(appearance == "light" ? .light : .dark)
-        .onAppear { vm.bootstrap() }
+        .onAppear {
+            vm.bootstrap()
+            installClipboardImagePasteShortcutIfNeeded()
+        }
+        .onDisappear {
+            if let pasteEventMonitor {
+                NSEvent.removeMonitor(pasteEventMonitor)
+                self.pasteEventMonitor = nil
+            }
+        }
         .sheet(isPresented: $vm.showCronJobCreator) {
             cronJobCreatorSheet
         }
@@ -8760,6 +8770,22 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 22).stroke(UI.line, lineWidth: 1))
         .onPasteCommand(of: [.image]) { _ in
             vm.pasteChatImageFromClipboard()
+        }
+    }
+
+    private func installClipboardImagePasteShortcutIfNeeded() {
+        guard pasteEventMonitor == nil else { return }
+        pasteEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let isCommandV = event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command
+                && event.charactersIgnoringModifiers?.lowercased() == "v"
+            guard isCommandV,
+                  vm.screen == .chat,
+                  InstallerViewModel.imageFromPasteboard(NSPasteboard.general) != nil else {
+                return event
+            }
+
+            vm.pasteChatImageFromClipboard()
+            return nil
         }
     }
 
