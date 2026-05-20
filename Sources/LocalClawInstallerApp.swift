@@ -3624,8 +3624,8 @@ final class InstallerViewModel: ObservableObject {
         telegramSetupToken = ""
         telegramSetupPairingCode = ""
         telegramSetupStatus = channel?.configured == true
-            ? "Telegram is configured. Add a new token to rotate it, or approve a pairing code."
-            : "Paste the bot token from @BotFather, then send /start to the bot and approve the pairing code here."
+            ? "Step 1 is already done. Send /start to the Telegram bot, then paste the fresh pairing code in Step 2."
+            : "Step 1: save the bot token. Step 2: send /start to the Telegram bot, then approve the fresh pairing code."
         showTelegramSetupPanel = true
     }
 
@@ -3719,8 +3719,8 @@ final class InstallerViewModel: ObservableObject {
             await MainActor.run {
                 self.telegramSetupIsRunning = false
                 self.telegramSetupStatus = result.0 == 0
-                    ? "Telegram pairing approved. Send another message to the bot to test replies."
-                    : "Telegram pairing failed: \(output.isEmpty ? "unknown error" : output)"
+                    ? "Step 2 complete. Telegram pairing approved. Send another message to the bot to test replies."
+                    : Self.telegramPairingErrorMessage(code: code, output: output)
                 if result.0 == 0 {
                     self.telegramSetupPairingCode = ""
                 }
@@ -3729,6 +3729,22 @@ final class InstallerViewModel: ObservableObject {
                 self.refreshChannels()
             }
         }
+    }
+
+    nonisolated static func telegramPairingErrorMessage(code: String, output: String) -> String {
+        let cleanCode = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = cleanOutput.lowercased()
+        if lower.contains("no pending pairing request") {
+            return "No pending Telegram request found for \(cleanCode). Send /start to the bot again, wait for a new code, then paste that exact fresh code in Step 2."
+        }
+        if lower.contains("could not start the cli") {
+            return "OpenClaw could not approve the code yet. Click Restart + check, send /start to the bot again, then approve the new code."
+        }
+        if cleanOutput.isEmpty {
+            return "Telegram pairing failed. Send /start to the bot again and retry with a fresh code."
+        }
+        return "Telegram pairing failed: \(cleanOutput)"
     }
 
     func restartTelegramAndRefresh() {
@@ -12500,10 +12516,23 @@ struct ContentView: View {
             }
 
             LazyVGrid(columns: [GridItem(.flexible(minimum: 260)), GridItem(.flexible(minimum: 220))], spacing: 12) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Bot token")
-                        .font(AppFont.bodySemi(11))
-                        .foregroundStyle(UI.muted)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Text("1")
+                            .font(AppFont.bodySemi(12))
+                            .foregroundStyle(.white)
+                            .frame(width: 24, height: 24)
+                            .background(Circle().fill(UI.accent))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Save bot token")
+                                .font(AppFont.bodySemi(13))
+                                .foregroundStyle(UI.text)
+                            Text("Paste the @BotFather token once. LocalClaw restarts the gateway after saving it.")
+                                .font(AppFont.body(11))
+                                .foregroundStyle(UI.muted)
+                                .lineLimit(2)
+                        }
+                    }
                     SecureField("Paste token from @BotFather", text: $vm.telegramSetupToken)
                         .textFieldStyle(.plain)
                         .font(AppFont.body(12))
@@ -12511,15 +12540,29 @@ struct ContentView: View {
                         .padding(10)
                         .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
-                    Button("Save token") { vm.saveTelegramBotToken() }
+                    Button("1 Save token + restart") { vm.saveTelegramBotToken() }
                         .buttonStyle(CTAButton(primary: true))
                         .disabled(vm.telegramSetupIsRunning)
                 }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Pairing code")
-                        .font(AppFont.bodySemi(11))
-                        .foregroundStyle(UI.muted)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Text("2")
+                            .font(AppFont.bodySemi(12))
+                            .foregroundStyle(UI.text)
+                            .frame(width: 24, height: 24)
+                            .background(Circle().fill(UI.card))
+                            .overlay(Circle().stroke(UI.lineSoft, lineWidth: 1))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Approve Telegram user")
+                                .font(AppFont.bodySemi(13))
+                                .foregroundStyle(UI.text)
+                            Text("After Step 1, send /start to the bot, then paste the fresh pairing code here.")
+                                .font(AppFont.body(11))
+                                .foregroundStyle(UI.muted)
+                                .lineLimit(2)
+                        }
+                    }
                     TextField("Code received after /start", text: $vm.telegramSetupPairingCode)
                         .textFieldStyle(.plain)
                         .font(AppFont.body(12))
@@ -12528,10 +12571,10 @@ struct ContentView: View {
                         .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
                     HStack(spacing: 8) {
-                        Button("Approve pairing") { vm.approveTelegramPairing() }
-                            .buttonStyle(CTAButton(primary: false))
+                        Button("2 Approve pairing code") { vm.approveTelegramPairing() }
+                            .buttonStyle(CTAButton(primary: true))
                             .disabled(vm.telegramSetupIsRunning)
-                        Button("Restart + check") { vm.restartTelegramAndRefresh() }
+                        Button("Check") { vm.restartTelegramAndRefresh() }
                             .buttonStyle(CTAButton(primary: false))
                             .disabled(vm.telegramSetupIsRunning)
                     }

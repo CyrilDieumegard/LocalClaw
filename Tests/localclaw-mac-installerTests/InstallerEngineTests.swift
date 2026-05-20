@@ -139,6 +139,17 @@ struct InstallerEngineTests {
         #expect(snapshots["slack"] == nil)
     }
 
+    @Test func telegramPairingErrorExplainsMissingPendingCode() {
+        let message = InstallerViewModel.telegramPairingErrorMessage(
+            code: "PR5HK9V5",
+            output: "[openclaw] Reason: No pending pairing request found for code \"PR5HK9V5\"."
+        )
+
+        #expect(message.contains("No pending Telegram request"))
+        #expect(message.contains("/start"))
+        #expect(!message.contains("[openclaw]"))
+    }
+
     @Test func canonicalChatRuntimeModelMapsOpenAIGPTModels() {
         #expect(InstallerViewModel.canonicalChatRuntimeModelID("openrouter/openai/gpt-5.5") == "openrouter/openai/gpt-5.5")
         #expect(InstallerViewModel.canonicalChatRuntimeModelID("openrouter/openai/gpt-5.4") == "openrouter/openai/gpt-5.4")
