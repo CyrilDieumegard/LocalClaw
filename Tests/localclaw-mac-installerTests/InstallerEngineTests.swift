@@ -71,6 +71,23 @@ struct InstallerEngineTests {
         #expect(!InstallerEngine.providerAuthConfigured(in: profiles, provider: "openai"))
     }
 
+    @Test func usageSummaryFiltersBySelectedWindow() {
+        let calendar = Calendar(identifier: .gregorian)
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let today = InstallerViewModel.ModelUsageRecord(createdAt: now, model: "openrouter/openai/gpt-5.4-mini", inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500, estimatedCostUSD: 0)
+        let yesterday = InstallerViewModel.ModelUsageRecord(createdAt: calendar.date(byAdding: .day, value: -1, to: now)!, model: "openai-codex/gpt-5.4", inputTokens: 2_000, outputTokens: 1_000, totalTokens: 3_000, estimatedCostUSD: 0)
+        let old = InstallerViewModel.ModelUsageRecord(createdAt: calendar.date(byAdding: .day, value: -5, to: now)!, model: "lmstudio/nvidia/nemotron-3-nano-4b", inputTokens: 10_000, outputTokens: 10_000, totalTokens: 20_000, estimatedCostUSD: 0)
+
+        let todaySummary = InstallerViewModel.usageSummary(records: [today, yesterday, old], window: .today, now: now, calendar: calendar)
+        let threeDaySummary = InstallerViewModel.usageSummary(records: [today, yesterday, old], window: .threeDays, now: now, calendar: calendar)
+
+        #expect(todaySummary.totalTokens == 1_500)
+        #expect(todaySummary.requestCount == 1)
+        #expect(threeDaySummary.totalTokens == 4_500)
+        #expect(threeDaySummary.inputTokens == 3_000)
+        #expect(InstallerViewModel.formatTokenCount(12_300) == "12.3K")
+    }
+
     @Test func redactsSecretsFromConfigJSON() {
         let raw = """
         {

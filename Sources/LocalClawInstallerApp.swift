@@ -173,6 +173,31 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    enum UsageWindow: String, CaseIterable, Identifiable {
+        case today = "Today"
+        case threeDays = "3 days"
+        case sevenDays = "7 days"
+        case thirtyDays = "30 days"
+
+        var id: String { rawValue }
+
+        var dayCount: Int {
+            switch self {
+            case .today: return 1
+            case .threeDays: return 3
+            case .sevenDays: return 7
+            case .thirtyDays: return 30
+            }
+        }
+    }
+
+    struct UsageSummary: Equatable {
+        let inputTokens: Int
+        let outputTokens: Int
+        let totalTokens: Int
+        let requestCount: Int
+    }
+
     struct SkillMissingRequirements: Codable {
         var bins: [String]?
         var anyBins: [String]?
@@ -847,7 +872,10 @@ final class InstallerViewModel: ObservableObject {
     @Published var estimatedMonthlyTokensM: Double = 2.0
     @Published var estimatedMonthlyCostUSD: Double = 0
     @Published var costAdvice: String = ""
-    @Published var tokenMonitoringEnabled: Bool = false
+    @Published var tokenMonitoringEnabled: Bool = true
+    @Published var selectedHomeUsageWindow: UsageWindow = .today {
+        didSet { UserDefaults.standard.set(selectedHomeUsageWindow.rawValue, forKey: Self.homeUsageWindowDefaultsKey) }
+    }
     @Published var modelUsageRecords: [ModelUsageRecord] = [] {
         didSet { persistModelUsageRecords() }
     }
@@ -865,6 +893,7 @@ final class InstallerViewModel: ObservableObject {
     private static let developerProjectNameDefaultsKey = "localclaw.developer.projectName.v1"
     private static let developerFreshContextDefaultsKey = "localclaw.developer.freshContext.v1"
     private static let modelUsageDefaultsKey = "localclaw.modelUsage.records.v1"
+    private static let homeUsageWindowDefaultsKey = "localclaw.home.usageWindow.v1"
     nonisolated static let simpleDeveloperEditTimeoutSeconds = 60
 
     init() {
@@ -881,6 +910,10 @@ final class InstallerViewModel: ObservableObject {
         }
         if UserDefaults.standard.object(forKey: Self.developerFreshContextDefaultsKey) != nil {
             developerFreshContextEnabled = UserDefaults.standard.bool(forKey: Self.developerFreshContextDefaultsKey)
+        }
+        if let rawUsageWindow = UserDefaults.standard.string(forKey: Self.homeUsageWindowDefaultsKey),
+           let usageWindow = UsageWindow(rawValue: rawUsageWindow) {
+            selectedHomeUsageWindow = usageWindow
         }
         restoreChatSessions()
         restoreChatSavedNotes()
@@ -4750,6 +4783,32 @@ final class InstallerViewModel: ObservableObject {
         modelUsageRecords = Array(modelUsageRecords.prefix(200))
     }
 
+    var selectedHomeUsageSummary: UsageSummary {
+        Self.usageSummary(records: modelUsageRecords, window: selectedHomeUsageWindow)
+    }
+
+    nonisolated static func usageSummary(records: [ModelUsageRecord], window: UsageWindow, now: Date = Date(), calendar: Calendar = .current) -> UsageSummary {
+        let startOfToday = calendar.startOfDay(for: now)
+        let startDate = calendar.date(byAdding: .day, value: -(window.dayCount - 1), to: startOfToday) ?? startOfToday
+        let filtered = records.filter { $0.createdAt >= startDate && $0.createdAt <= now }
+        return UsageSummary(
+            inputTokens: filtered.reduce(0) { $0 + $1.inputTokens },
+            outputTokens: filtered.reduce(0) { $0 + $1.outputTokens },
+            totalTokens: filtered.reduce(0) { $0 + $1.totalTokens },
+            requestCount: filtered.count
+        )
+    }
+
+    nonisolated static func formatTokenCount(_ tokens: Int) -> String {
+        if tokens >= 1_000_000 {
+            return String(format: "%.1fM", Double(tokens) / 1_000_000)
+        }
+        if tokens >= 1_000 {
+            return String(format: "%.1fK", Double(tokens) / 1_000)
+        }
+        return "\(tokens)"
+    }
+
     nonisolated private static func estimateUsageCostUSD(model: String, totalTokens: Int) -> Double {
         let lower = model.lowercased()
         let ratePerMillion: Double
@@ -8525,13 +8584,7 @@ struct ContentView: View {
                         icon: "heart.text.square.fill",
                         tint: dashboardHealthTint
                     )
-                    dashboardKpiCard(
-                        title: "Budget",
-                        value: String(format: "$%.2f/mo", vm.estimatedMonthlyCostUSD),
-                        detail: String(format: "%.1fM tokens estimated", vm.estimatedMonthlyTokensM),
-                        icon: "chart.bar.xaxis",
-                        tint: UI.accent
-                    )
+                    dashboardUsageKpiCard()
                     dashboardKpiCard(
                         title: "Channels",
                         value: "\(vm.channels.filter { $0.connected || $0.running }.count) active",
@@ -8938,6 +8991,45 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, minHeight: 132, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(tint.opacity(0.22), lineWidth: 1))
+    }
+
+    private func dashboardUsageKpiCard() -> some View {
+        let summary = vm.selectedHomeUsageSummary
+        let inputLabel = InstallerViewModel.formatTokenCount(summary.inputTokens)
+        let outputLabel = InstallerViewModel.formatTokenCount(summary.outputTokens)
+        let requestLabel = summary.requestCount == 1 ? "1 request" : "\(summary.requestCount) requests"
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "chart.bar.xaxis")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(UI.accent)
+                Spacer()
+                Picker("", selection: $vm.selectedHomeUsageWindow) {
+                    ForEach(InstallerViewModel.UsageWindow.allCases) { window in
+                        Text(window.rawValue).tag(window)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 96)
+            }
+            Text(InstallerViewModel.formatTokenCount(summary.totalTokens))
+                .font(AppFont.bodySemi(19))
+                .foregroundStyle(UI.text)
+                .lineLimit(1)
+            Text("Tokens used")
+                .font(AppFont.bodySemi(11))
+                .foregroundStyle(UI.muted)
+            Text(summary.totalTokens == 0 ? "No recorded usage yet" : "\(requestLabel) · in \(inputLabel) / out \(outputLabel)")
+                .font(AppFont.body(11))
+                .foregroundStyle(UI.muted)
+                .lineLimit(2)
+                .frame(minHeight: 28, alignment: .topLeading)
+        }
+        .padding(13)
+        .frame(maxWidth: .infinity, minHeight: 132, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.accent.opacity(0.22), lineWidth: 1))
     }
 
     private func dashboardPanel<Content: View>(title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
