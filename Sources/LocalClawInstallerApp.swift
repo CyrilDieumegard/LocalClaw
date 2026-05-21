@@ -477,6 +477,21 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    struct CronDeliveryDestination: Identifiable, Equatable {
+        let id: String
+        let channel: String
+        let destination: String
+        let label: String
+        let detail: String?
+
+        var displayLabel: String {
+            if let detail, !detail.isEmpty {
+                return "\(label) · \(detail)"
+            }
+            return label
+        }
+    }
+
     enum CloudAuthMode: String, CaseIterable, Identifiable {
         case api = "API"
         case oauth = "OAuth"
@@ -887,6 +902,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var cronCreateDeliveryChannel = "telegram"
     @Published var cronCreateDeliveryAccount = ""
     @Published var cronCreateDeliveryTo = ""
+    @Published var cronDeliveryDestinations: [CronDeliveryDestination] = []
     @Published var cronCreateIsRunning = false
     @Published var cronCreateError = ""
     @Published var cronDeleteCandidate: CronJobInfo? = nil
@@ -3633,6 +3649,10 @@ final class InstallerViewModel: ObservableObject {
         channels.filter { $0.configured || $0.connected || $0.running }
     }
 
+    var activeCronDeliveryDestinations: [CronDeliveryDestination] {
+        cronDeliveryDestinations.filter { $0.channel == cronCreateDeliveryChannel }
+    }
+
     var cronDeliverySummary: String {
         switch cronCreateDeliveryMode {
         case "none":
@@ -3650,6 +3670,86 @@ final class InstallerViewModel: ObservableObject {
             return "Delivery: last active OpenClaw channel."
         }
     }
+
+    nonisolated static func knownCronDeliveryDestinations() -> [CronDeliveryDestination] {
+        var destinations: [String: CronDeliveryDestination] = [:]
+        for destination in knownTelegramDestinations() {
+            destinations[destination.id] = destination
+        }
+        return destinations.values.sorted {
+            $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending
+        }
+    }
+
+    nonisolated private static func knownTelegramDestinations() -> [CronDeliveryDestination] {
+        var result: [String: CronDeliveryDestination] = [:]
+        let home = NSHomeDirectory()
+        let messagePath = "\(home)/.openclaw/agents/main/sessions/sessions.json.telegram-messages.json"
+        if let text = try? String(contentsOfFile: messagePath, encoding: .utf8) {
+            for line in text.split(whereSeparator: \.isNewline) {
+                guard let data = String(line).data(using: .utf8),
+                      let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let node = root["node"] as? [String: Any],
+                      let source = node["sourceMessage"] as? [String: Any],
+                      let chat = source["chat"] as? [String: Any],
+                      let chatID = Self.telegramIDString(chat["id"]) else {
+                    continue
+                }
+                let type = chat["type"] as? String
+                let username = chat["username"] as? String
+                let label = Self.telegramChatLabel(chat: chat)
+                let detailParts = [username.map { "@\($0)" }, type].compactMap { $0 }
+                result["telegram:\(chatID)"] = CronDeliveryDestination(
+                    id: "telegram:\(chatID)",
+                    channel: "telegram",
+                    destination: chatID,
+                    label: label,
+                    detail: detailParts.isEmpty ? nil : detailParts.joined(separator: " · ")
+                )
+            }
+        }
+
+        let allowPath = "\(home)/.openclaw/credentials/telegram-default-allowFrom.json"
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: allowPath)),
+           let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let allowFrom = root["allowFrom"] as? [Any] {
+            for raw in allowFrom {
+                guard let id = Self.telegramIDString(raw), result["telegram:\(id)"] == nil else { continue }
+                result["telegram:\(id)"] = CronDeliveryDestination(
+                    id: "telegram:\(id)",
+                    channel: "telegram",
+                    destination: id,
+                    label: "Telegram \(id)",
+                    detail: "approved"
+                )
+            }
+        }
+
+        return Array(result.values)
+    }
+
+    nonisolated private static func telegramIDString(_ raw: Any?) -> String? {
+        if let value = raw as? String, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return value.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let value = raw as? Int { return String(value) }
+        if let value = raw as? Int64 { return String(value) }
+        if let value = raw as? Double, value.rounded() == value { return String(Int64(value)) }
+        return nil
+    }
+
+    nonisolated private static func telegramChatLabel(chat: [String: Any]) -> String {
+        if let title = chat["title"] as? String, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return title.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let first = (chat["first_name"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let last = (chat["last_name"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let full = [first, last].filter { !$0.isEmpty }.joined(separator: " ")
+        if !full.isEmpty { return full }
+        if let username = chat["username"] as? String, !username.isEmpty { return "@\(username)" }
+        return "Telegram chat"
+    }
+
 
     func createCronJobFromForm() {
         let name = cronCreateName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3807,6 +3907,25 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    func setCronJob(_ jobID: String, enabled: Bool) {
+        let action = enabled ? "enable" : "disable"
+        cronJobLogs = cronJobLogs.isEmpty ? "\(enabled ? "Starting" : "Stopping") cron job \(jobID)..." : cronJobLogs + "\n\(enabled ? "Starting" : "Stopping") cron job \(jobID)..."
+        let quotedID = Self.shellSingleQuote(jobID)
+        Task.detached {
+            let engine = InstallerEngine()
+            let result = engine.shell("openclaw --no-color cron \(action) \(quotedID) 2>&1")
+            await MainActor.run {
+                let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
+                if output.isEmpty {
+                    self.cronJobLogs += "\nCron job \(enabled ? "started" : "stopped")."
+                } else {
+                    self.cronJobLogs += "\n\(output)"
+                }
+                self.refreshCronJobs()
+            }
+        }
+    }
+
     func refreshAgents() {
         guard !agentsIsLoading else { return }
         agentsIsLoading = true
@@ -3957,9 +4076,11 @@ final class InstallerViewModel: ObservableObject {
             let listResult = engine.shell("openclaw --no-color channels list --all --json 2>&1")
             let statusResult = engine.shell("openclaw --no-color channels status --json --probe --timeout 5000 2>&1")
             let configSnapshots = Self.configuredChannelSnapshots()
+            let deliveryDestinations = Self.knownCronDeliveryDestinations()
 
             await MainActor.run {
                 self.channelsIsLoading = false
+                self.cronDeliveryDestinations = deliveryDestinations
 
                 let listRoot: [String: Any] = {
                     guard listResult.0 == 0,
@@ -12492,6 +12613,24 @@ struct ContentView: View {
                             .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
                             .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
 
+                        if !vm.activeCronDeliveryDestinations.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Known destinations")
+                                    .font(AppFont.bodySemi(11))
+                                    .foregroundStyle(UI.muted)
+                                LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 8)], spacing: 8) {
+                                    ForEach(vm.activeCronDeliveryDestinations) { destination in
+                                        Button(destination.displayLabel) {
+                                            vm.cronCreateDeliveryTo = destination.destination
+                                        }
+                                        .buttonStyle(PresetPillButton(selected: vm.cronCreateDeliveryTo == destination.destination))
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                    }
+                                }
+                            }
+                        }
+
                         if vm.activeCronDeliveryChannels.isEmpty {
                             Text("No configured channel found yet. Connect Telegram, Discord, Slack or another channel first, then refresh.")
                                 .font(AppFont.body(11))
@@ -12730,6 +12869,10 @@ struct ContentView: View {
 
                 Button("Run") { vm.runCronJobNow(job.id) }
                     .buttonStyle(CTAButton(primary: false))
+                Button(job.enabled ? "Stop" : "Start") {
+                    vm.setCronJob(job.id, enabled: !job.enabled)
+                }
+                .buttonStyle(CTAButton(primary: false))
                 Button("Delete") { vm.requestDeleteCronJob(job) }
                     .buttonStyle(CTAButton(primary: false))
             }
