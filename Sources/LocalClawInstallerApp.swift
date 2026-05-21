@@ -1268,6 +1268,10 @@ final class InstallerViewModel: ObservableObject {
         return configuredChannelSnapshots(from: root)
     }
 
+    nonisolated static func persistentTelegramTokenFilePath() -> String {
+        NSHomeDirectory() + "/.openclaw/secrets/telegram-default-token"
+    }
+
     // Installation status tracking (using existing status variables)
     var statusNodeJS: String {
         get { statusNode }
@@ -4218,9 +4222,10 @@ final class InstallerViewModel: ObservableObject {
 
         Task.detached {
             let engine = InstallerEngine()
-            let tokenURL = URL(fileURLWithPath: NSTemporaryDirectory())
-                .appendingPathComponent("localclaw-telegram-token-\(UUID().uuidString)")
+            let tokenURL = URL(fileURLWithPath: Self.persistentTelegramTokenFilePath())
+            let tokenDirectory = tokenURL.deletingLastPathComponent()
             do {
+                try FileManager.default.createDirectory(at: tokenDirectory, withIntermediateDirectories: true)
                 try token.write(to: tokenURL, atomically: true, encoding: .utf8)
             } catch {
                 await MainActor.run {
@@ -4230,8 +4235,8 @@ final class InstallerViewModel: ObservableObject {
                 }
                 return
             }
+            _ = engine.shell("chmod 700 \(Self.shellSingleQuote(tokenDirectory.path))")
             _ = engine.shell("chmod 600 \(Self.shellSingleQuote(tokenURL.path))")
-            defer { try? FileManager.default.removeItem(at: tokenURL) }
 
             let tokenFile = Self.shellSingleQuote(tokenURL.path)
             let command = [
@@ -4244,6 +4249,7 @@ final class InstallerViewModel: ObservableObject {
             let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
             if result.0 == 0 {
                 messages.append("Telegram token saved.")
+                messages.append("Token stored in a persistent private file.")
                 if !output.isEmpty { messages.append(output) }
                 let restart = engine.shell("openclaw --no-color gateway restart 2>&1 || true")
                 let restartOutput = restart.1.trimmingCharacters(in: .whitespacesAndNewlines)
