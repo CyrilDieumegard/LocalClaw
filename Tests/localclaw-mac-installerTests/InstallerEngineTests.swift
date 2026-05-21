@@ -113,10 +113,12 @@ struct InstallerEngineTests {
 
         #expect(snapshot.displayName == "Codex")
         #expect(snapshot.primaryUsedPercent == 73)
-        #expect(snapshot.buttonLabel == "Usage 73%")
+        #expect(snapshot.primaryRemainingPercent == 27)
+        #expect(snapshot.buttonLabel == "Usage 27% left")
         #expect(snapshot.windows.count == 2)
         #expect(snapshot.tooltipLabel.contains("Codex Week"))
         #expect(snapshot.tooltipLabel.contains("80% left"))
+        #expect(snapshot.tooltipLabel.contains("73% used"))
     }
 
     @Test func redactsSecretsFromConfigJSON() {
@@ -324,6 +326,11 @@ struct InstallerEngineTests {
         #expect(InstallerViewModel.localLMStudioModelID(from: "  lmstudio/nvidia/nemotron-3-nano-4b  ") == "nvidia/nemotron-3-nano-4b")
     }
 
+    @Test func machineYearUsesMacStudioModelIdentifier() {
+        #expect(InstallerViewModel.machineYear(modelIdentifier: "Mac14,13", modelName: "Mac Studio") == "2023")
+        #expect(InstallerViewModel.machineYear(modelIdentifier: "Mac13,2", modelName: "Mac Studio") == "2022")
+    }
+
     @MainActor
     @Test func oauthSelectionKeepsSelectedOAuthRuntimeModel() {
         let vm = InstallerViewModel()
@@ -425,8 +432,8 @@ struct InstallerEngineTests {
 
         #expect(vm.inferenceMode == .oauth)
         #expect(vm.selectedCloudAuthMode == .oauth)
-        #expect(vm.availableChatModels.map(\.id) == ["openai-codex/gpt-5.4"])
-        #expect(vm.selectedChatModel == "openai-codex/gpt-5.4")
+        #expect(vm.availableChatModels.map(\.id).contains("openai-codex/gpt-5.5"))
+        #expect(vm.selectedChatModel == "openai-codex/gpt-5.5")
         #expect(vm.effectiveAuthProvider() == "openai-codex")
     }
 
@@ -445,8 +452,8 @@ struct InstallerEngineTests {
         #expect(vm.selectedChatResponseMode == .cloud)
         #expect(vm.selectedCloudAuthMode == .oauth)
         #expect(vm.selectedProvider == .openAI)
-        #expect(vm.selectedChatModel == "openai-codex/gpt-5.4")
-        #expect(vm.availableChatModels.map(\.id) == ["openai-codex/gpt-5.4"])
+        #expect(vm.selectedChatModel == "openai-codex/gpt-5.5")
+        #expect(vm.availableChatModels.map(\.id).contains("openai-codex/gpt-5.5"))
         vm.presentOAuthSetupAssistantIfNeeded(authConfigured: false)
         #expect(vm.showOAuthSetupAssistant == true)
     }

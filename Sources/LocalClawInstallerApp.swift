@@ -235,8 +235,12 @@ final class InstallerViewModel: ObservableObject {
             windows.first?.usedPercent
         }
 
+        var primaryRemainingPercent: Int? {
+            primaryUsedPercent.map { max(0, 100 - $0) }
+        }
+
         var buttonLabel: String {
-            if let primaryUsedPercent { return "Usage \(primaryUsedPercent)%" }
+            if let primaryRemainingPercent { return "Usage \(primaryRemainingPercent)% left" }
             if error?.isEmpty == false { return "Usage unavailable" }
             return "Usage"
         }
@@ -245,6 +249,7 @@ final class InstallerViewModel: ObservableObject {
             var parts: [String] = [displayName]
             if let plan, !plan.isEmpty { parts.append(plan) }
             parts.append(contentsOf: windows.map(\.detailLabel))
+            if let primaryUsedPercent { parts.append("\(primaryUsedPercent)% used") }
             if let error, !error.isEmpty { parts.append(error) }
             return parts.joined(separator: " · ")
         }
@@ -610,12 +615,12 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
-    struct OpenRouterModel: Identifiable, Hashable {
+    struct OpenRouterModel: Identifiable, Hashable, Sendable {
         let id: String
         let displayName: String
     }
 
-    struct OAuthProviderOption: Identifiable, Hashable {
+    struct OAuthProviderOption: Identifiable, Hashable, Sendable {
         let id: String
         let displayName: String
         let detail: String
@@ -633,6 +638,12 @@ final class InstallerViewModel: ObservableObject {
             authProvider: "openai-codex",
             available: true
         )
+    ]
+
+    nonisolated static let oauthFallbackModels: [OpenRouterModel] = [
+        OpenRouterModel(id: "openai-codex/gpt-5.5", displayName: "GPT 5.5"),
+        OpenRouterModel(id: "openai-codex/gpt-5.4", displayName: "GPT 5.4"),
+        OpenRouterModel(id: "openai-codex/gpt-5.4-mini", displayName: "GPT 5.4 Mini")
     ]
 
     static let openRouterModels: [OpenRouterModel] = [
@@ -1674,18 +1685,30 @@ final class InstallerViewModel: ObservableObject {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let macos = engine.shell("/usr/bin/sw_vers -productVersion").1.trimmingCharacters(in: .whitespacesAndNewlines)
         let build = engine.shell("/usr/bin/sw_vers -buildVersion").1.trimmingCharacters(in: .whitespacesAndNewlines)
-        let boot = engine.shell("/usr/sbin/sysctl -n kern.boottime | /usr/bin/awk -F'\\} ' '{print $2}'").1
+        let startupDisk = engine.shell("/usr/sbin/diskutil info / 2>/dev/null | /usr/bin/awk -F': *' '/Volume Name/{print $2; exit}'").1
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let year = String(Calendar.current.component(.year, from: Date()))
+        let year = Self.machineYear(modelIdentifier: modelIdentifier, modelName: modelName)
 
         var lines: [String] = []
         if !modelName.isEmpty { lines.append("Model: \(modelName)") }
+        if let year { lines.append("Year: \(year)") }
         if !modelIdentifier.isEmpty { lines.append("ID: \(modelIdentifier)") }
+        if !startupDisk.isEmpty { lines.append("Disk: \(startupDisk)") }
         if !macos.isEmpty { lines.append("macOS \(macos) (\(build))") }
-        if !boot.isEmpty { lines.append("Boot: \(boot)") }
-        lines.append("Year: \(year)")
 
         machineDetails = lines.joined(separator: "\n")
+    }
+
+    nonisolated static func machineYear(modelIdentifier: String, modelName: String) -> String? {
+        let identifier = modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        if identifier.hasPrefix("Mac14,13") || identifier.hasPrefix("Mac14,14") { return "2023" }
+        if identifier.hasPrefix("Mac13,1") || identifier.hasPrefix("Mac13,2") { return "2022" }
+        if identifier.hasPrefix("Mac15,") { return "2023/2024" }
+        if identifier.hasPrefix("Mac16,") { return "2024/2025" }
+        let name = modelName.lowercased()
+        if name.contains("m2") { return "2023" }
+        if name.contains("m1") { return "2020/2022" }
+        return nil
     }
 
     func copyMachineDetails() {
@@ -2339,12 +2362,18 @@ final class InstallerViewModel: ObservableObject {
 
             do {
                 let decoded = try JSONDecoder().decode(OpenClawModelsResponse.self, from: data)
-                let mapped = decoded.models
+                var seenOAuthModelIDs = Set<String>()
+                let mapped = (Self.oauthFallbackModels + decoded.models
                     .filter { item in
                         Self.isOAuthRuntimeModelID(item.key) && item.local != true && item.available != false
                     }
                     .map { item in
                         OpenRouterModel(id: item.key, displayName: item.name ?? Self.readableModelName(item.key))
+                    })
+                    .filter { model in
+                        if seenOAuthModelIDs.contains(model.id) { return false }
+                        seenOAuthModelIDs.insert(model.id)
+                        return true
                     }
                     .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
 
@@ -3333,7 +3362,7 @@ final class InstallerViewModel: ObservableObject {
         case .oauth:
             if Self.isOAuthRuntimeModelID(currentModel) { add(currentModel) }
             if Self.isOAuthRuntimeModelID(selectedChatModel) { add(selectedChatModel) }
-            add(selectedOAuthProviderOption.modelIdentifier)
+            for model in Self.oauthFallbackModels { add(model.id) }
             for model in oauthModelsLive { add(model.id) }
         }
         return values
@@ -5922,10 +5951,8 @@ final class InstallerViewModel: ObservableObject {
         }
 
         if showingOAuthModels {
-            let oauthModels = oauthModelsLive.isEmpty
-                ? [OpenRouterModel(id: selectedOAuthProviderOption.modelIdentifier, displayName: selectedOAuthProviderOption.displayName)]
-                : oauthModelsLive
-            models.append(contentsOf: oauthModels)
+            models.append(contentsOf: Self.oauthFallbackModels)
+            models.append(contentsOf: oauthModelsLive)
         } else if showingLocalModels {
             for local in localLMStudioModels {
                 models.append(OpenRouterModel(id: "lmstudio/\(local)", displayName: "Local · \(local)"))
@@ -5966,7 +5993,7 @@ final class InstallerViewModel: ObservableObject {
             refreshOAuthModels()
         }
         if !Self.isOAuthRuntimeModelID(selectedChatModel) {
-            selectedChatModel = oauthModelsLive.first?.id ?? selectedOAuthProviderOption.modelIdentifier
+            selectedChatModel = Self.oauthFallbackModels.first?.id ?? selectedOAuthProviderOption.modelIdentifier
         }
         currentModel = selectedChatModel
     }
@@ -8982,6 +9009,27 @@ struct ContentView: View {
 
             Spacer()
 
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("VERSION")
+                        .font(AppFont.heading(10))
+                        .kerning(1.8)
+                        .foregroundStyle(UI.muted)
+                    Spacer()
+                    Circle()
+                        .fill(vm.openclawInstalledVersion == "Not installed" ? Color(NSColor.systemRed) : Color(NSColor.systemGreen))
+                        .frame(width: 11, height: 11)
+                }
+                Text(openClawSidebarVersionLabel)
+                    .font(AppFont.bodySemi(14))
+                    .foregroundStyle(UI.text)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
+
             VStack(alignment: .leading, spacing: 4) {
                 Text("Machine")
                     .font(AppFont.body(11))
@@ -9027,6 +9075,13 @@ struct ContentView: View {
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 14).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private var openClawSidebarVersionLabel: String {
+        let version = vm.openclawInstalledVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+        if version.isEmpty || version == "Checking..." { return "Checking..." }
+        if version == "Not installed" { return "Not installed" }
+        return version.hasPrefix("v") ? version : "v\(version)"
     }
 
     private func sidebarButton(_ title: String, icon: String, isActive: Bool, isBeta: Bool = false, action: @escaping () -> Void) -> some View {
@@ -13618,12 +13673,8 @@ struct ContentView: View {
                 if vm.inferenceMode == .oauth {
                     HStack(spacing: 8) {
                         Picker("OAuth model", selection: $vm.selectedChatModel) {
-                            if vm.oauthModelsLive.isEmpty {
-                                Text("OpenAI OAuth").tag(vm.selectedOAuthProviderOption.modelIdentifier)
-                            } else {
-                                ForEach(vm.oauthModelsLive) { model in
-                                    Text(model.displayName).tag(model.id)
-                                }
+                            ForEach(vm.availableChatModels.filter { InstallerViewModel.isOAuthRuntimeModelID($0.id) }) { model in
+                                Text(model.displayName).tag(model.id)
                             }
                         }
                         .frame(maxWidth: .infinity)
@@ -13726,9 +13777,9 @@ struct ContentView: View {
             if vm.isCloudLikeInferenceMode {
                 modelInventoryList(
                     title: vm.inferenceMode == .oauth ? "OAuth backend" : "Cloud catalog",
-                    count: vm.inferenceMode == .oauth ? 1 : (vm.openRouterModelsLive.isEmpty ? InstallerViewModel.openRouterModels.count : vm.openRouterModelsLive.count),
-                    emptyText: vm.inferenceMode == .oauth ? "OpenAI OAuth model configured." : "No cloud catalog loaded.",
-                    rows: vm.inferenceMode == .oauth ? ["openai-codex/gpt-5.4"] : Array((vm.openRouterModelsLive.isEmpty ? InstallerViewModel.openRouterModels.map(\.displayName) : vm.openRouterModelsLive.map(\.displayName)).prefix(8)),
+                    count: vm.inferenceMode == .oauth ? vm.availableChatModels.filter { InstallerViewModel.isOAuthRuntimeModelID($0.id) }.count : (vm.openRouterModelsLive.isEmpty ? InstallerViewModel.openRouterModels.count : vm.openRouterModelsLive.count),
+                    emptyText: vm.inferenceMode == .oauth ? "No OAuth model loaded yet." : "No cloud catalog loaded.",
+                    rows: vm.inferenceMode == .oauth ? vm.availableChatModels.filter { InstallerViewModel.isOAuthRuntimeModelID($0.id) }.map(\.id) : Array((vm.openRouterModelsLive.isEmpty ? InstallerViewModel.openRouterModels.map(\.displayName) : vm.openRouterModelsLive.map(\.displayName)).prefix(8)),
                     icon: vm.inferenceMode == .oauth ? "person.badge.key" : "cloud.fill"
                 )
             } else {
