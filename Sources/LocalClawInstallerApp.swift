@@ -802,12 +802,12 @@ final class InstallerViewModel: ObservableObject {
     // Uninstall Center
     @Published var isUninstalling = false
     @Published var uninstallLogs: String = ""
-    @Published var uninstallLMStudioSelected = true
-    @Published var uninstallModelsSelected = true
-    @Published var uninstallOpenClawSelected = true
+    @Published var uninstallLMStudioSelected = false
+    @Published var uninstallModelsSelected = false
+    @Published var uninstallOpenClawSelected = false
     @Published var uninstallNodeSelected = false
     @Published var uninstallHomebrewSelected = false
-    @Published var uninstallConfigsSelected = true
+    @Published var uninstallConfigsSelected = false
 
     @Published var hasLMStudioInstalled = false
     @Published var hasLocalModelsInstalled = false
@@ -7661,6 +7661,157 @@ final class InstallerViewModel: ObservableObject {
             FileManager.default.fileExists(atPath: NSHomeDirectory() + "/.cache/lm-studio")
     }
 
+    struct UninstallSelectionItem: Identifiable {
+        let id: String
+        let title: String
+        let detail: String
+        let dangerous: Bool
+    }
+
+    private final class UninstallConfirmationDelegate: NSObject, NSTextFieldDelegate {
+        private weak var input: NSTextField?
+        private weak var confirmButton: NSButton?
+
+        init(input: NSTextField, confirmButton: NSButton?) {
+            self.input = input
+            self.confirmButton = confirmButton
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            confirmButton?.isEnabled = input?.stringValue == "UNINSTALL"
+        }
+    }
+
+    var selectedUninstallItems: [UninstallSelectionItem] {
+        var items: [UninstallSelectionItem] = []
+        if uninstallLMStudioSelected {
+            items.append(UninstallSelectionItem(
+                id: "lm-studio",
+                title: "LM Studio app",
+                detail: "LM Studio application and LM Studio runtime cache",
+                dangerous: false
+            ))
+        }
+        if uninstallModelsSelected {
+            items.append(UninstallSelectionItem(
+                id: "local-models",
+                title: "Local LLM models",
+                detail: "Downloaded model files in ~/.lmstudio/models and ~/.cache/lm-studio/models",
+                dangerous: true
+            ))
+        }
+        if uninstallOpenClawSelected {
+            items.append(UninstallSelectionItem(
+                id: "openclaw",
+                title: "OpenClaw CLI and services",
+                detail: "OpenClaw CLI, gateway service files, agents, and OpenClaw cache",
+                dangerous: true
+            ))
+        }
+        if uninstallNodeSelected {
+            items.append(UninstallSelectionItem(
+                id: "node",
+                title: "Node.js and npm/npx",
+                detail: "Node.js binaries, npm/npx/corepack links, ~/.npm, ~/.nvm, and ~/.node-gyp",
+                dangerous: false
+            ))
+        }
+        if uninstallHomebrewSelected {
+            items.append(UninstallSelectionItem(
+                id: "homebrew",
+                title: "Homebrew",
+                detail: "Homebrew itself using the official Homebrew uninstall script",
+                dangerous: true
+            ))
+        }
+        if uninstallConfigsSelected {
+            items.append(UninstallSelectionItem(
+                id: "configs",
+                title: "Configs and cache",
+                detail: "~/.openclaw, ~/.openclaw-gateway, ~/.cache/openclaw, ~/.cache/lm-studio, and OpenClaw/nvm shell entries",
+                dangerous: true
+            ))
+        }
+        return items
+    }
+
+    var uninstallSelectedCount: Int {
+        selectedUninstallItems.count
+    }
+
+    var hasUninstallSelection: Bool {
+        uninstallSelectedCount > 0
+    }
+
+    var uninstallPrimaryButtonTitle: String {
+        if isUninstalling { return "Working..." }
+        if uninstallSelectedCount == 0 { return "Select items to uninstall" }
+        return "Uninstall \(uninstallSelectedCount) selected item\(uninstallSelectedCount == 1 ? "" : "s")"
+    }
+
+    func prepareUninstallCenter() {
+        resetUninstallSelection()
+        refreshUninstallInventory()
+    }
+
+    func resetUninstallSelection() {
+        uninstallLMStudioSelected = false
+        uninstallModelsSelected = false
+        uninstallOpenClawSelected = false
+        uninstallNodeSelected = false
+        uninstallHomebrewSelected = false
+        uninstallConfigsSelected = false
+    }
+
+    func confirmAndRunSelectedUninstall() {
+        if isUninstalling || !hasUninstallSelection { return }
+        let items = selectedUninstallItems
+        guard confirmSelectedUninstall(items: items) else { return }
+        runSelectedUninstall()
+    }
+
+    private func confirmSelectedUninstall(items: [UninstallSelectionItem]) -> Bool {
+        let count = items.count
+        let itemList = items.map { "- \($0.title): \($0.detail)" }.joined(separator: "\n")
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "Confirm uninstall"
+        alert.informativeText = """
+        LocalClaw will remove exactly these selected items:
+
+        \(itemList)
+
+        Type UNINSTALL to enable the final button.
+        """
+        alert.addButton(withTitle: "Uninstall \(count) selected item\(count == 1 ? "" : "s")")
+        alert.addButton(withTitle: "Cancel")
+
+        let confirmButton = alert.buttons.first
+        confirmButton?.isEnabled = false
+
+        let label = NSTextField(wrappingLabelWithString: "Required confirmation:")
+        label.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+
+        let input = NSTextField(string: "")
+        input.placeholderString = "UNINSTALL"
+
+        let stack = NSStackView(views: [label, input])
+        stack.orientation = .vertical
+        stack.spacing = 8
+        stack.alignment = .leading
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            stack.widthAnchor.constraint(equalToConstant: 360),
+            input.widthAnchor.constraint(equalToConstant: 360)
+        ])
+
+        let delegate = UninstallConfirmationDelegate(input: input, confirmButton: confirmButton)
+        input.delegate = delegate
+
+        alert.accessoryView = stack
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     func runSelectedUninstall() {
         if isUninstalling { return }
 
@@ -7674,7 +7825,7 @@ final class InstallerViewModel: ObservableObject {
                 "rm -rf \"$HOME/.lmstudio/models\"",
                 "rm -rf \"$HOME/.cache/lm-studio/models\""
             ]),
-            ("OpenClaw", uninstallOpenClawSelected, [
+            ("OpenClaw CLI and services", uninstallOpenClawSelected, [
                 "npm uninstall -g openclaw 2>/dev/null || true",
                 "brew uninstall openclaw 2>/dev/null || true",
                 "rm -rf \"$HOME/.openclaw\" \"$HOME/.openclaw-gateway\" \"$HOME/.cache/openclaw\""
@@ -7717,6 +7868,7 @@ final class InstallerViewModel: ObservableObject {
                 self.uninstallAppend("✅ Uninstall finished")
                 self.isUninstalling = false
                 self.refreshUninstallInventory()
+                self.resetUninstallSelection()
             }
         }
     }
@@ -13402,6 +13554,10 @@ struct ContentView: View {
                         Text("Remove components cleanly, one by one.")
                             .font(AppFont.body(13))
                             .foregroundStyle(UI.muted)
+                        Text("Only select what you really want to remove. This can delete your OpenClaw setup, local models, and configuration.")
+                            .font(AppFont.bodySemi(12))
+                            .foregroundStyle(Color(NSColor.systemOrange))
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer()
                     Label(vm.isUninstalling ? "Running" : "Ready", systemImage: vm.isUninstalling ? "hourglass" : "checkmark.circle.fill")
@@ -13414,12 +13570,46 @@ struct ContentView: View {
 
                 HStack(alignment: .top, spacing: 14) {
                     VStack(alignment: .leading, spacing: 8) {
-                        uninstallRow("LM Studio app", isOn: $vm.uninstallLMStudioSelected, installed: vm.hasLMStudioInstalled)
-                        uninstallRow("Local LLM models", isOn: $vm.uninstallModelsSelected, installed: vm.hasLocalModelsInstalled)
-                        uninstallRow("OpenClaw CLI and services", isOn: $vm.uninstallOpenClawSelected, installed: vm.hasOpenClawInstalled)
-                        uninstallRow("Node.js and npm/npx", isOn: $vm.uninstallNodeSelected, installed: vm.hasNodeInstalled)
-                        uninstallRow("Homebrew", isOn: $vm.uninstallHomebrewSelected, installed: vm.hasHomebrewInstalled)
-                        uninstallRow("Configs and cache", isOn: $vm.uninstallConfigsSelected, installed: vm.hasConfigCacheInstalled)
+                        uninstallRow(
+                            "LM Studio app",
+                            isOn: $vm.uninstallLMStudioSelected,
+                            installed: vm.hasLMStudioInstalled,
+                            removalText: "LM Studio application and LM Studio runtime cache"
+                        )
+                        uninstallRow(
+                            "Local LLM models",
+                            isOn: $vm.uninstallModelsSelected,
+                            installed: vm.hasLocalModelsInstalled,
+                            removalText: "Downloaded model files in ~/.lmstudio/models and ~/.cache/lm-studio/models",
+                            dangerous: true
+                        )
+                        uninstallRow(
+                            "OpenClaw CLI and services",
+                            isOn: $vm.uninstallOpenClawSelected,
+                            installed: vm.hasOpenClawInstalled,
+                            removalText: "OpenClaw CLI, gateway service files, agents, and OpenClaw cache",
+                            dangerous: true
+                        )
+                        uninstallRow(
+                            "Node.js and npm/npx",
+                            isOn: $vm.uninstallNodeSelected,
+                            installed: vm.hasNodeInstalled,
+                            removalText: "Node.js binaries, npm/npx/corepack links, ~/.npm, ~/.nvm, and ~/.node-gyp"
+                        )
+                        uninstallRow(
+                            "Homebrew",
+                            isOn: $vm.uninstallHomebrewSelected,
+                            installed: vm.hasHomebrewInstalled,
+                            removalText: "Homebrew itself using the official Homebrew uninstall script",
+                            dangerous: true
+                        )
+                        uninstallRow(
+                            "Configs and cache",
+                            isOn: $vm.uninstallConfigsSelected,
+                            installed: vm.hasConfigCacheInstalled,
+                            removalText: "~/.openclaw, ~/.openclaw-gateway, ~/.cache/openclaw, ~/.cache/lm-studio, and OpenClaw/nvm shell entries",
+                            dangerous: true
+                        )
                     }
                     .padding(12)
                     .frame(maxWidth: 520, alignment: .leading)
@@ -13437,14 +13627,53 @@ struct ContentView: View {
 
                         Divider().overlay(UI.lineSoft)
 
+                        Text("Selected removal")
+                            .font(AppFont.bodySemi(13))
+                            .foregroundStyle(UI.text)
+                        if vm.hasUninstallSelection {
+                            VStack(alignment: .leading, spacing: 7) {
+                                ForEach(vm.selectedUninstallItems) { item in
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        HStack(spacing: 6) {
+                                            Text(item.title)
+                                                .font(AppFont.bodySemi(12))
+                                                .foregroundStyle(item.dangerous ? Color(NSColor.systemRed) : UI.text)
+                                            if item.dangerous {
+                                                Text("Dangerous")
+                                                    .font(AppFont.bodySemi(9))
+                                                    .foregroundStyle(Color(NSColor.systemRed))
+                                                    .padding(.horizontal, 6)
+                                                    .padding(.vertical, 2)
+                                                    .background(RoundedRectangle(cornerRadius: 999).fill(Color(NSColor.systemRed).opacity(0.12)))
+                                            }
+                                        }
+                                        Text(item.detail)
+                                            .font(AppFont.body(11))
+                                            .foregroundStyle(UI.muted)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                            }
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+                        } else {
+                            Text("Nothing selected.")
+                                .font(AppFont.body(12))
+                                .foregroundStyle(UI.muted)
+                        }
+
+                        Divider().overlay(UI.lineSoft)
+
                         Text("Actions")
                             .font(AppFont.bodySemi(13))
                             .foregroundStyle(UI.text)
-                        Button(vm.isUninstalling ? "Working..." : "Uninstall Selected") {
-                            vm.runSelectedUninstall()
+                        Button(vm.uninstallPrimaryButtonTitle) {
+                            vm.confirmAndRunSelectedUninstall()
                         }
                         .buttonStyle(CTAButton(primary: true))
-                        .disabled(vm.isUninstalling)
+                        .disabled(vm.isUninstalling || !vm.hasUninstallSelection)
 
                         Button("Back") { vm.screen = .home }
                             .buttonStyle(CTAButton(primary: false))
@@ -13478,19 +13707,37 @@ struct ContentView: View {
             .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
         }
         .scrollIndicators(.hidden)
-        .onAppear { vm.refreshUninstallInventory() }
+        .onAppear { vm.prepareUninstallCenter() }
     }
 
-    func uninstallRow(_ title: String, isOn: Binding<Bool>, installed: Bool) -> some View {
-        HStack(spacing: 10) {
+    func uninstallRow(_ title: String, isOn: Binding<Bool>, installed: Bool, removalText: String, dangerous: Bool = false) -> some View {
+        let isSelected = isOn.wrappedValue
+        let dangerColor = Color(NSColor.systemRed)
+        return HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(AppFont.bodySemi(13))
-                    .foregroundStyle(UI.text)
-                    .lineLimit(1)
+                HStack(spacing: 7) {
+                    Text(title)
+                        .font(AppFont.bodySemi(13))
+                        .foregroundStyle(dangerous ? dangerColor : UI.text)
+                        .lineLimit(1)
+                    if dangerous {
+                        Text("Dangerous")
+                            .font(AppFont.bodySemi(9))
+                            .foregroundStyle(dangerColor)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(RoundedRectangle(cornerRadius: 999).fill(dangerColor.opacity(0.12)))
+                    }
+                }
                 Text(installed ? "Installed" : "Not installed")
                     .font(AppFont.body(11))
                     .foregroundStyle(installed ? Color(NSColor.systemGreen) : UI.muted)
+                if isSelected {
+                    Text("Removes: \(removalText)")
+                        .font(AppFont.body(11))
+                        .foregroundStyle(dangerous ? dangerColor : UI.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Spacer()
@@ -13503,8 +13750,8 @@ struct ContentView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: 8).fill(dangerous ? dangerColor.opacity(isSelected ? 0.14 : 0.06) : UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(dangerous ? dangerColor.opacity(isSelected ? 0.70 : 0.35) : UI.lineSoft, lineWidth: 1))
         .opacity(installed ? 1 : 0.7)
     }
 
