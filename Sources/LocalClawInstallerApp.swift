@@ -422,6 +422,23 @@ final class InstallerViewModel: ObservableObject {
             isDefault || bindings > 0 ? Color(NSColor.systemGreen) : UI.accent
         }
 
+        var runtimeLabel: String {
+            guard let model, !model.isEmpty else { return "Runtime unknown" }
+            if model.hasPrefix("lmstudio/") { return "Local LLM" }
+            if model.hasPrefix("openrouter/") { return "Cloud LLM" }
+            if model.hasPrefix("openai/") || model.hasPrefix("google-gemini-cli/") { return "OAuth LLM" }
+            return "Custom runtime"
+        }
+
+        var runtimeTint: Color {
+            switch runtimeLabel {
+            case "Local LLM": return Color(NSColor.systemGreen)
+            case "OAuth LLM": return Color(NSColor.systemPurple)
+            case "Cloud LLM": return UI.accent
+            default: return UI.muted
+            }
+        }
+
         var detailSummary: String {
             var parts: [String] = []
             if let goal, !goal.isEmpty { parts.append("Goal: \(goal)") }
@@ -440,6 +457,7 @@ final class InstallerViewModel: ObservableObject {
         let enabled: Bool
         let scheduleLabel: String
         let payloadLabel: String
+        let agentID: String?
         let sessionTarget: String?
         let nextRun: String?
         let lastRun: String?
@@ -450,6 +468,7 @@ final class InstallerViewModel: ObservableObject {
 
         var detailSummary: String {
             var parts: [String] = [scheduleLabel, payloadLabel]
+            if let agentID, !agentID.isEmpty { parts.append("Agent: \(agentID)") }
             if let sessionTarget, !sessionTarget.isEmpty { parts.append("Session: \(sessionTarget)") }
             if let deliveryLabel, !deliveryLabel.isEmpty { parts.append("Delivery: \(deliveryLabel)") }
             if let nextRun, !nextRun.isEmpty { parts.append("Next: \(nextRun)") }
@@ -3491,6 +3510,8 @@ final class InstallerViewModel: ObservableObject {
             return [mode, channel, to].compactMap { $0 }.joined(separator: " / ")
         }()
 
+        let agentID = Self.cronAgentID(row: row, payload: payload)
+
         return CronJobInfo(
             id: id,
             name: row["name"] as? String ?? id,
@@ -3498,11 +3519,27 @@ final class InstallerViewModel: ObservableObject {
             enabled: row["enabled"] as? Bool ?? true,
             scheduleLabel: scheduleLabel,
             payloadLabel: payloadLabel,
+            agentID: agentID,
             sessionTarget: row["sessionTarget"] as? String,
             nextRun: row["nextRunAt"] as? String ?? row["nextRun"] as? String,
             lastRun: row["lastRunAt"] as? String ?? row["lastRun"] as? String,
             deliveryLabel: deliveryLabel
         )
+    }
+
+    nonisolated private static func cronAgentID(row: [String: Any], payload: [String: Any]) -> String? {
+        let keys = ["agentID", "agentId", "agent", "agent_id"]
+        for source in [payload, row] {
+            for key in keys {
+                if let value = source[key] as? String, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return value
+                }
+            }
+        }
+        if let kind = payload["kind"] as? String, kind.lowercased().contains("agent") {
+            return "main"
+        }
+        return nil
     }
 
     nonisolated private static func durationLabel(milliseconds: Double) -> String {
@@ -12083,6 +12120,9 @@ struct ContentView: View {
             if vm.cronJobsStatus == "Not loaded" {
                 vm.refreshCronJobs()
             }
+            if vm.agentsStatus == "Not loaded" || vm.agents.isEmpty {
+                vm.refreshAgents()
+            }
         }
     }
 
@@ -12106,6 +12146,42 @@ struct ContentView: View {
         .frame(maxWidth: .infinity)
         .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private func cronAgent(for job: InstallerViewModel.CronJobInfo) -> InstallerViewModel.AgentInfo? {
+        guard let agentID = job.agentID, !agentID.isEmpty else { return nil }
+        return vm.agents.first { $0.id == agentID }
+    }
+
+    private func cronAgentName(for job: InstallerViewModel.CronJobInfo) -> String {
+        if let agent = cronAgent(for: job) {
+            return agent.displayName
+        }
+        return job.agentID ?? "No agent"
+    }
+
+    private func cronRuntimeLabel(for job: InstallerViewModel.CronJobInfo) -> String {
+        if let agent = cronAgent(for: job) {
+            return agent.runtimeLabel
+        }
+        if job.agentID != nil {
+            return vm.agentsIsLoading ? "Checking runtime..." : "Runtime unknown"
+        }
+        return "No agent"
+    }
+
+    private func cronRuntimeTint(for job: InstallerViewModel.CronJobInfo) -> Color {
+        if let agent = cronAgent(for: job) {
+            return agent.runtimeTint
+        }
+        return job.agentID == nil ? UI.muted : Color(NSColor.systemOrange)
+    }
+
+    private func cronModelLabel(for job: InstallerViewModel.CronJobInfo) -> String? {
+        guard let agent = cronAgent(for: job),
+              let model = agent.model,
+              !model.isEmpty else { return nil }
+        return model
     }
 
     private var cronJobCreatorSheet: some View {
@@ -12152,10 +12228,17 @@ struct ContentView: View {
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
 
                     if let selectedAgent = vm.agents.first(where: { $0.id == vm.cronCreateAgentID }) {
-                        Text(selectedAgent.detailSummary)
-                            .font(AppFont.body(11))
-                            .foregroundStyle(UI.muted)
-                            .lineLimit(2)
+                        HStack(spacing: 8) {
+                            cronBadge("Agent: \(selectedAgent.displayName)", color: UI.muted, icon: "person.crop.circle")
+                            cronBadge(selectedAgent.runtimeLabel, color: selectedAgent.runtimeTint, icon: selectedAgent.runtimeLabel == "Local LLM" ? "desktopcomputer" : "cloud.fill")
+                        }
+                        if let model = selectedAgent.model, !model.isEmpty {
+                            Text(model)
+                                .font(AppFont.body(11))
+                                .foregroundStyle(UI.muted)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
                     } else if vm.agentsIsLoading {
                         Text("Loading agents...")
                             .font(AppFont.body(11))
@@ -12313,6 +12396,10 @@ struct ContentView: View {
                             .font(AppFont.bodySemi(17))
                             .foregroundStyle(UI.text)
                         cronBadge(job.statusLabel, color: job.statusTint, icon: job.enabled ? "checkmark.circle.fill" : "pause.circle.fill")
+                        if job.agentID != nil {
+                            cronBadge("Agent: \(cronAgentName(for: job))", color: UI.muted, icon: "person.crop.circle")
+                            cronBadge(cronRuntimeLabel(for: job), color: cronRuntimeTint(for: job), icon: cronRuntimeLabel(for: job) == "Local LLM" ? "desktopcomputer" : "cloud.fill")
+                        }
                     }
                     Text(job.id)
                         .font(AppFont.bodySemi(11))
@@ -12330,6 +12417,18 @@ struct ContentView: View {
                         .foregroundStyle(UI.muted)
                         .lineLimit(3)
                         .truncationMode(.middle)
+                    if let model = cronModelLabel(for: job) {
+                        Text(model)
+                            .font(AppFont.body(11))
+                            .foregroundStyle(UI.muted)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    } else if job.agentID != nil && !vm.agentsIsLoading {
+                        Text("Agent runtime not found. Refresh Agents to verify the model before relying on this job.")
+                            .font(AppFont.body(11))
+                            .foregroundStyle(Color(NSColor.systemOrange))
+                            .lineLimit(2)
+                    }
                 }
 
                 Spacer(minLength: 8)
