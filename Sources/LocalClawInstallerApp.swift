@@ -8153,6 +8153,9 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ReturnToHome"))) { _ in
             vm.screen = .home
         }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("OpenModelsCenter"))) { _ in
+            vm.screen = .models
+        }
         .frame(minWidth: 1100, idealWidth: 1440, maxWidth: .infinity,
                minHeight: 760, idealHeight: 920, maxHeight: .infinity)
         .preferredColorScheme(appearance == "light" ? .light : .dark)
@@ -12336,7 +12339,7 @@ struct ContentView: View {
                             Text("Performance and monitoring")
                                 .font(AppFont.bodySemi(12))
                                 .foregroundStyle(UI.accent)
-                            faqRow(question: "How can I confirm Local LLM mode is really active?", answer: "In top bar, mode should display LOCAL LLM. In Control Center, apply Local LLM mode and run a quick test message.")
+                            faqRow(question: "How can I confirm Local LLM mode is really active?", answer: "In top bar, mode should display LOCAL LLM. In Models, apply Local LLM mode and run a quick test message.")
                             faqRow(question: "Why is Local mode slower on my machine?", answer: "Large models use more RAM and swap. Pick a smaller model and run Fix My Speed in Control Center.")
                             faqRow(question: "How do I reset safely without losing everything?", answer: "Use Backup Config first in Help > Health commands, then run Quick Repair.")
                         }

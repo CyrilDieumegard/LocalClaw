@@ -902,7 +902,6 @@ struct AdvancedCommandCenterView: View {
 
     enum WorkspaceTab: String, CaseIterable, Identifiable {
         case overview = "Overview"
-        case models = "Models"
         case operations = "Operations"
         var id: String { rawValue }
     }
@@ -923,7 +922,7 @@ struct AdvancedCommandCenterView: View {
                 }
                 .pickerStyle(.segmented)
                 .tint(UI.accent)
-                .frame(width: 330)
+                .frame(width: 260)
 
                 Spacer()
             }
@@ -931,10 +930,6 @@ struct AdvancedCommandCenterView: View {
 
             if workspaceTab == .overview {
                 overviewPanel
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(UI.card)
-            } else if workspaceTab == .models {
-                modelsPanel
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(UI.card)
             } else {
@@ -1000,10 +995,10 @@ struct AdvancedCommandCenterView: View {
     private var headerSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Image(systemName: "terminal.fill")
+                Image(systemName: "slider.horizontal.3")
                     .font(.title2)
                     .foregroundStyle(UI.accent)
-                Text("Command Center")
+                Text("Control Center")
                     .font(AppFont.heading(20))
                     .foregroundStyle(UI.text)
                 Spacer()
@@ -1027,7 +1022,7 @@ struct AdvancedCommandCenterView: View {
                 .buttonStyle(.plain)
             }
             
-            Text("System health, model mode, and recovery tools")
+            Text("Gateway health, repair actions, live resources, and logs")
                 .font(AppFont.body(12))
                 .foregroundStyle(UI.muted)
         }
@@ -1054,7 +1049,7 @@ struct AdvancedCommandCenterView: View {
                 healthTile("Gateway", value: viewModel.gatewayStatus.rawValue, icon: viewModel.gatewayStatus.icon, color: viewModel.gatewayStatus.color)
                 healthTile("LLM mode", value: viewModel.inferenceModeSelection.rawValue, icon: "switch.2", color: UI.accent)
                 healthTile("Monitor", value: viewModel.isMonitoring ? "Active" : "Off", icon: viewModel.isMonitoring ? "waveform" : "waveform.slash", color: viewModel.isMonitoring ? .green : UI.muted)
-                healthTile("Model", value: viewModel.inferenceModeSelection == .local ? "LM Studio" : shortModelName(viewModel.selectedModel), icon: "brain.head.profile", color: .blue)
+                healthTile("Active model", value: viewModel.inferenceModeSelection == .local ? "LM Studio" : shortModelName(viewModel.selectedModel), icon: "cpu.fill", color: .blue)
                 healthTile("OpenClaw", value: viewModel.systemInfo.openclawVersion, icon: "terminal", color: .green)
                 healthTile("Port", value: viewModel.systemInfo.gatewayPort, icon: "network", color: .purple)
             }
@@ -1103,12 +1098,12 @@ struct AdvancedCommandCenterView: View {
 
             HStack(spacing: 10) {
                 compactActionButton("Start", icon: "play.fill", color: .green) { viewModel.startGateway() }
-                compactActionButton("Switch model", icon: "brain.head.profile", color: UI.accent) { workspaceTab = .models }
+                compactActionButton("Models", icon: "cpu.fill", color: UI.accent) { openModelsCenter() }
                 compactActionButton("Test dashboard", icon: "globe", color: .blue) { viewModel.openDashboard() }
                 compactActionButton("Fix issues", icon: "wrench.and.screwdriver.fill", color: .orange) { workspaceTab = .operations }
             }
 
-            Text("Use this screen for the normal workflow. Technical recovery tools are under Operations.")
+            Text("Use Control Center for health and repair. Model changes live in the Models section.")
                 .font(AppFont.body(11))
                 .foregroundStyle(UI.muted)
         }
@@ -1323,6 +1318,10 @@ struct AdvancedCommandCenterView: View {
             )
         }
         .buttonStyle(.plain)
+    }
+
+    private func openModelsCenter() {
+        NotificationCenter.default.post(name: Notification.Name("OpenModelsCenter"), object: nil)
     }
 
     private func healthTile(_ title: String, value: String, icon: String, color: Color) -> some View {
