@@ -883,6 +883,10 @@ final class InstallerViewModel: ObservableObject {
     @Published var cronCreateScheduleKind = "every"
     @Published var cronCreateScheduleValue = "30m"
     @Published var cronCreateMessage = ""
+    @Published var cronCreateDeliveryMode = "last"
+    @Published var cronCreateDeliveryChannel = "telegram"
+    @Published var cronCreateDeliveryAccount = ""
+    @Published var cronCreateDeliveryTo = ""
     @Published var cronCreateIsRunning = false
     @Published var cronCreateError = ""
     @Published var healthLogs: String = ""
@@ -3556,14 +3560,44 @@ final class InstallerViewModel: ObservableObject {
         cronCreateScheduleKind = "every"
         cronCreateScheduleValue = "30m"
         cronCreateMessage = ""
+        cronCreateDeliveryMode = "last"
+        cronCreateDeliveryChannel = activeCronDeliveryChannels.first?.id ?? "telegram"
+        cronCreateDeliveryAccount = ""
+        cronCreateDeliveryTo = ""
         cronCreateError = ""
     }
 
     func prepareCronJobCreator() {
         cronCreateAgentID = agents.first(where: { $0.id == cronCreateAgentID })?.id ?? agents.first(where: { $0.isDefault })?.id ?? "main"
+        cronCreateDeliveryChannel = activeCronDeliveryChannels.first?.id ?? cronCreateDeliveryChannel
         showCronJobCreator = true
         if agents.isEmpty || agentsStatus == "Not loaded" {
             refreshAgents()
+        }
+        if channels.isEmpty || channelsStatus == "Not loaded" {
+            refreshChannels()
+        }
+    }
+
+    var activeCronDeliveryChannels: [ChannelInfo] {
+        channels.filter { $0.configured || $0.connected || $0.running }
+    }
+
+    var cronDeliverySummary: String {
+        switch cronCreateDeliveryMode {
+        case "none":
+            return "The job will run without sending the final result to a channel."
+        case "channel":
+            let channel = activeCronDeliveryChannels.first(where: { $0.id == cronCreateDeliveryChannel })
+            let label = channel?.label ?? Self.humanChannelLabel(cronCreateDeliveryChannel)
+            let to = cronCreateDeliveryTo.trimmingCharacters(in: .whitespacesAndNewlines)
+            let account = cronCreateDeliveryAccount.trimmingCharacters(in: .whitespacesAndNewlines)
+            var parts = ["Delivery: \(label)"]
+            if !account.isEmpty { parts.append("Account: \(account)") }
+            if !to.isEmpty { parts.append("To: \(to)") }
+            return parts.joined(separator: " · ")
+        default:
+            return "Delivery: last active OpenClaw channel."
         }
     }
 
@@ -3575,6 +3609,10 @@ final class InstallerViewModel: ObservableObject {
 
         guard !name.isEmpty, !rawScheduleValue.isEmpty, !message.isEmpty else {
             cronCreateError = "Name, schedule and message are required."
+            return
+        }
+        if cronCreateDeliveryMode == "channel", cronCreateDeliveryChannel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            cronCreateError = "Pick a delivery channel, or choose Last channel / No delivery."
             return
         }
 
@@ -3596,9 +3634,12 @@ final class InstallerViewModel: ObservableObject {
             "--message \(Self.shellSingleQuote(message))",
             "--session isolated",
             "\(scheduleFlag) \(Self.shellSingleQuote(scheduleValue))",
+            cronDeliveryCommandArguments(),
             "--json",
             "2>&1"
-        ].joined(separator: " ")
+        ]
+        .filter { !$0.isEmpty }
+        .joined(separator: " ")
 
         Task.detached {
             let engine = InstallerEngine()
@@ -3617,6 +3658,29 @@ final class InstallerViewModel: ObservableObject {
                     self.cronJobLogs += "\nFailed to create cron job \(name): \(self.cronCreateError)"
                 }
             }
+        }
+    }
+
+    private func cronDeliveryCommandArguments() -> String {
+        switch cronCreateDeliveryMode {
+        case "none":
+            return "--no-deliver"
+        case "channel":
+            var args = [
+                "--announce",
+                "--channel \(Self.shellSingleQuote(cronCreateDeliveryChannel))"
+            ]
+            let account = cronCreateDeliveryAccount.trimmingCharacters(in: .whitespacesAndNewlines)
+            let to = cronCreateDeliveryTo.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !account.isEmpty {
+                args.append("--account \(Self.shellSingleQuote(account))")
+            }
+            if !to.isEmpty {
+                args.append("--to \(Self.shellSingleQuote(to))")
+            }
+            return args.joined(separator: " ")
+        default:
+            return "--announce --channel last"
         }
     }
 
@@ -12276,6 +12340,78 @@ struct ContentView: View {
                                 vm.cronCreateScheduleValue = preset.value
                             }
                             .buttonStyle(PresetPillButton(selected: vm.cronCreateScheduleKind == preset.kind && vm.cronCreateScheduleValue == preset.value))
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Destination")
+                            .font(AppFont.bodySemi(12))
+                            .foregroundStyle(UI.muted)
+                        Spacer()
+                        Button("Refresh channels") { vm.refreshChannels() }
+                            .buttonStyle(.plain)
+                            .font(AppFont.bodySemi(11))
+                            .foregroundStyle(UI.accent)
+                            .disabled(vm.channelsIsLoading)
+                    }
+
+                    Picker("", selection: $vm.cronCreateDeliveryMode) {
+                        Text("Last used channel").tag("last")
+                        Text("Choose channel").tag("channel")
+                        Text("No delivery").tag("none")
+                    }
+                    .pickerStyle(.segmented)
+
+                    Text(vm.cronDeliverySummary)
+                        .font(AppFont.body(11))
+                        .foregroundStyle(UI.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if vm.cronCreateDeliveryMode == "channel" {
+                        HStack(spacing: 8) {
+                            Picker("", selection: $vm.cronCreateDeliveryChannel) {
+                                if vm.activeCronDeliveryChannels.isEmpty {
+                                    Text("No configured channel").tag("")
+                                } else {
+                                    ForEach(vm.activeCronDeliveryChannels) { channel in
+                                        Text("\(channel.label) · \(channel.connectionLabel)").tag(channel.id)
+                                    }
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 9)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+
+                            TextField("Account ID optional", text: $vm.cronCreateDeliveryAccount)
+                                .textFieldStyle(.plain)
+                                .font(AppFont.body(13))
+                                .foregroundStyle(UI.text)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 9)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+                                .frame(width: 170)
+                        }
+
+                        TextField("Destination optional: Telegram chatId, Discord channel/user, phone number...", text: $vm.cronCreateDeliveryTo)
+                            .textFieldStyle(.plain)
+                            .font(AppFont.body(13))
+                            .foregroundStyle(UI.text)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 9)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+
+                        if vm.activeCronDeliveryChannels.isEmpty {
+                            Text("No configured channel found yet. Connect Telegram, Discord, Slack or another channel first, then refresh.")
+                                .font(AppFont.body(11))
+                                .foregroundStyle(Color(NSColor.systemOrange))
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
