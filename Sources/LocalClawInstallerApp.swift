@@ -924,6 +924,7 @@ final class InstallerViewModel: ObservableObject {
     nonisolated static let simpleDeveloperEditTimeoutSeconds = 60
 
     init() {
+        Self.ensureTelegramDefaultAccountToken()
         if let savedMode = UserDefaults.standard.string(forKey: Self.selectedChatResponseModeDefaultsKey),
            let mode = ChatResponseMode(rawValue: savedMode) {
             selectedChatResponseMode = mode
