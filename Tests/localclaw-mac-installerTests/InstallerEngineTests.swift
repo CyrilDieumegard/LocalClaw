@@ -88,6 +88,37 @@ struct InstallerEngineTests {
         #expect(InstallerViewModel.formatTokenCount(12_300) == "12.3K")
     }
 
+    @Test func oauthUsageParserToleratesWarningsBeforeJSON() throws {
+        let raw = """
+        [tasks/registry] Failed to restore task registry
+        {
+          "usage": {
+            "updatedAt": 1779395478146,
+            "providers": [
+              {
+                "provider": "openai-codex",
+                "displayName": "Codex",
+                "plan": "Codex Week",
+                "windows": [
+                  { "label": "5h", "usedPercent": 73, "resetAt": 1779398278146 },
+                  { "label": "Codex Week", "usedPercent": 20 }
+                ]
+              }
+            ]
+          }
+        }
+        """
+
+        let snapshot = try #require(InstallerViewModel.oauthUsageSnapshot(from: raw, providerHint: "openai-codex"))
+
+        #expect(snapshot.displayName == "Codex")
+        #expect(snapshot.primaryUsedPercent == 73)
+        #expect(snapshot.buttonLabel == "Usage 73%")
+        #expect(snapshot.windows.count == 2)
+        #expect(snapshot.tooltipLabel.contains("Codex Week"))
+        #expect(snapshot.tooltipLabel.contains("80% left"))
+    }
+
     @Test func redactsSecretsFromConfigJSON() {
         let raw = """
         {

@@ -198,6 +198,58 @@ final class InstallerViewModel: ObservableObject {
         let requestCount: Int
     }
 
+    struct OAuthUsageWindow: Identifiable, Equatable {
+        let id: String
+        let label: String
+        let usedPercent: Int
+        let resetAt: Date?
+
+        var resetLabel: String? {
+            guard let resetAt else { return nil }
+            let seconds = Int(resetAt.timeIntervalSince(Date()))
+            if seconds <= 0 { return "resets now" }
+            let hours = seconds / 3600
+            let minutes = max(1, (seconds % 3600) / 60)
+            if hours > 0 { return "resets \(hours)h \(minutes)m" }
+            return "resets \(minutes)m"
+        }
+
+        var remainingLabel: String {
+            "\(max(0, 100 - usedPercent))% left"
+        }
+
+        var detailLabel: String {
+            [label, resetLabel, remainingLabel].compactMap { $0 }.joined(separator: " · ")
+        }
+    }
+
+    struct OAuthUsageSnapshot: Equatable {
+        let provider: String
+        let displayName: String
+        let plan: String?
+        let windows: [OAuthUsageWindow]
+        let error: String?
+        let updatedAt: Date?
+
+        var primaryUsedPercent: Int? {
+            windows.first?.usedPercent
+        }
+
+        var buttonLabel: String {
+            if let primaryUsedPercent { return "Usage \(primaryUsedPercent)%" }
+            if error?.isEmpty == false { return "Usage unavailable" }
+            return "Usage"
+        }
+
+        var tooltipLabel: String {
+            var parts: [String] = [displayName]
+            if let plan, !plan.isEmpty { parts.append(plan) }
+            parts.append(contentsOf: windows.map(\.detailLabel))
+            if let error, !error.isEmpty { parts.append(error) }
+            return parts.joined(separator: " · ")
+        }
+    }
+
     struct SkillMissingRequirements: Codable {
         var bins: [String]?
         var anyBins: [String]?
@@ -704,6 +756,8 @@ final class InstallerViewModel: ObservableObject {
     @Published var selectedOpenRouterModel: String = "openrouter/openai/gpt-5.4-mini"
     @Published var openRouterModelsLive: [OpenRouterModel] = []
     @Published var oauthModelsLive: [OpenRouterModel] = []
+    @Published var oauthUsageSnapshot: OAuthUsageSnapshot? = nil
+    @Published var oauthUsageIsLoading: Bool = false
     @Published var showOAuthSetupAssistant: Bool = false
     @Published var oauthSetupStatus: String = "Not connected"
     @Published var skillsSearchQuery: String = ""
@@ -1864,6 +1918,7 @@ final class InstallerViewModel: ObservableObject {
             refreshOAuthAuthStatus()
             if cloudProviderAuthConfigured {
                 refreshOAuthModels()
+                refreshOAuthUsage(force: true)
             } else {
                 presentOAuthSetupAssistantIfNeeded(authConfigured: false)
             }
@@ -1877,6 +1932,91 @@ final class InstallerViewModel: ObservableObject {
             refreshLocalLMStudioModels()
         }
         reconcileSelectedChatModelForCurrentMode()
+    }
+
+    func refreshOAuthUsage(force: Bool = false) {
+        guard isOpenAIOAuthMode else {
+            oauthUsageSnapshot = nil
+            oauthUsageIsLoading = false
+            return
+        }
+        guard force || oauthUsageSnapshot == nil else { return }
+        guard !oauthUsageIsLoading else { return }
+
+        oauthUsageIsLoading = true
+        let providerHint = selectedOAuthProviderOption.authProvider
+        Task.detached {
+            let result = InstallerEngine().shell("openclaw --no-color status --usage --json 2>&1")
+            let snapshot = Self.oauthUsageSnapshot(from: result.1, providerHint: providerHint)
+            await MainActor.run {
+                self.oauthUsageSnapshot = snapshot
+                self.oauthUsageIsLoading = false
+            }
+        }
+    }
+
+    nonisolated static func oauthUsageSnapshot(from output: String, providerHint: String = "openai-codex") -> OAuthUsageSnapshot? {
+        let clean = stripANSI(output)
+        guard let start = clean.firstIndex(of: "{"),
+              let data = String(clean[start...]).data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+
+        let usageRoot = root["usage"] as? [String: Any] ?? root
+        guard let providers = usageRoot["providers"] as? [[String: Any]] else { return nil }
+        let selected = providers.first { provider in
+            (provider["provider"] as? String) == providerHint
+        } ?? providers.first { provider in
+            ((provider["displayName"] as? String) ?? "").localizedCaseInsensitiveContains("codex")
+        } ?? providers.first
+        guard let selected else { return nil }
+
+        let provider = (selected["provider"] as? String) ?? providerHint
+        let displayName = (selected["displayName"] as? String) ?? "Codex"
+        let plan = selected["plan"] as? String
+        let error = selected["error"] as? String
+        let windowsRaw = selected["windows"] as? [[String: Any]] ?? []
+        let windows = windowsRaw.compactMap { usageWindow(from: $0) }
+        let updatedAt = dateFromUsageValue(usageRoot["updatedAt"])
+        return OAuthUsageSnapshot(provider: provider, displayName: displayName, plan: plan, windows: windows, error: error, updatedAt: updatedAt)
+    }
+
+    nonisolated private static func usageWindow(from raw: [String: Any]) -> OAuthUsageWindow? {
+        guard let label = raw["label"] as? String else { return nil }
+        let usedPercent = intFromUsageValue(raw["usedPercent"] ?? raw["usagePercent"] ?? raw["percentUsed"])
+        let remainingPercent = intFromUsageValue(raw["remainingPercent"] ?? raw["leftPercent"] ?? raw["percentRemaining"])
+        guard let percent = usedPercent ?? remainingPercent.map({ 100 - $0 }) else { return nil }
+        return OAuthUsageWindow(
+            id: label,
+            label: label,
+            usedPercent: min(100, max(0, percent)),
+            resetAt: dateFromUsageValue(raw["resetAt"] ?? raw["resetsAt"])
+        )
+    }
+
+    nonisolated private static func intFromUsageValue(_ value: Any?) -> Int? {
+        if let int = value as? Int { return int }
+        if let double = value as? Double { return Int(double.rounded()) }
+        if let string = value as? String {
+            let cleaned = string.replacingOccurrences(of: "%", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if let double = Double(cleaned) { return Int(double.rounded()) }
+        }
+        return nil
+    }
+
+    nonisolated private static func dateFromUsageValue(_ value: Any?) -> Date? {
+        if let int = value as? Int {
+            return Date(timeIntervalSince1970: TimeInterval(int > 9_999_999_999 ? Double(int) / 1000 : Double(int)))
+        }
+        if let double = value as? Double {
+            return Date(timeIntervalSince1970: double > 9_999_999_999 ? double / 1000 : double)
+        }
+        if let string = value as? String {
+            if let double = Double(string) {
+                return Date(timeIntervalSince1970: double > 9_999_999_999 ? double / 1000 : double)
+            }
+            return ISO8601DateFormatter().date(from: string)
+        }
+        return nil
     }
 
     func refreshOAuthAuthStatus() {
@@ -2215,6 +2355,7 @@ final class InstallerViewModel: ObservableObject {
                             self.selectedChatModel = self.oauthModelsLive.first?.id ?? self.selectedOAuthProviderOption.modelIdentifier
                         }
                         self.currentModel = self.selectedChatModel
+                        self.refreshOAuthUsage()
                     }
                     self.append("✓ Loaded \(mapped.count) OAuth models")
                 }
@@ -9668,6 +9809,7 @@ struct ContentView: View {
                     }
                 }
                 Spacer()
+                oauthUsagePill
                 Toggle("Fast context", isOn: $vm.developerFreshContextEnabled)
                     .toggleStyle(.switch)
                     .font(AppFont.bodySemi(11))
@@ -9758,6 +9900,7 @@ struct ContentView: View {
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 16).fill(UI.cardSoft.opacity(0.65)))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(UI.lineSoft, lineWidth: 1))
+        .onAppear { vm.refreshOAuthUsage() }
     }
 
     private var developerEmptyState: some View {
@@ -10246,6 +10389,7 @@ struct ContentView: View {
                         chatInfoPill(vm.openClawChatModeLabel, icon: vm.inferenceMode == .local ? "desktopcomputer" : "cloud.fill")
                         chatInfoPill(vm.openClawChatModelLabel, icon: "cpu")
                     }
+                    oauthUsagePill
                     chatModelPicker(width: 260)
                     Spacer()
                     Label(vm.chatStatus, systemImage: vm.chatStatus == "Ready" ? "checkmark.circle.fill" : "circle.fill")
@@ -10378,7 +10522,10 @@ struct ContentView: View {
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.06), radius: 6, x: 0, y: 2)
-        .onAppear { vm.refreshOpenClawChatInfo() }
+        .onAppear {
+            vm.refreshOpenClawChatInfo()
+            vm.refreshOAuthUsage()
+        }
     }
 
     func scrollChatToBottom(_ proxy: ScrollViewProxy) {
@@ -10821,6 +10968,40 @@ struct ContentView: View {
             .padding(.vertical, 5)
             .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
             .overlay(RoundedRectangle(cornerRadius: 999).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    @ViewBuilder
+    var oauthUsagePill: some View {
+        if vm.isOpenAIOAuthMode {
+            let snapshot = vm.oauthUsageSnapshot
+            let percent = snapshot?.primaryUsedPercent
+            let label = vm.oauthUsageIsLoading ? "Usage..." : (snapshot?.buttonLabel ?? "Usage")
+            let tint = percent.map { $0 >= 90 ? Color(NSColor.systemRed) : ($0 >= 75 ? Color(NSColor.systemOrange) : UI.accent) } ?? UI.muted
+
+            Button(action: { vm.refreshOAuthUsage(force: true) }) {
+                HStack(spacing: 8) {
+                    if vm.oauthUsageIsLoading {
+                        ProgressView()
+                            .scaleEffect(0.55)
+                            .frame(width: 12, height: 12)
+                    } else {
+                        Image(systemName: "gauge.with.dots.needle.bottom.50percent")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    Text(label)
+                        .font(AppFont.bodySemi(11))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(percent == nil ? UI.muted : UI.text)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(UI.cardSoft))
+                .overlay(Capsule().stroke(tint.opacity(percent == nil ? 0.45 : 0.9), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .disabled(vm.oauthUsageIsLoading)
+            .help(snapshot?.tooltipLabel ?? "Refresh OAuth usage")
+        }
     }
 
     func chatBubble(_ message: InstallerViewModel.ChatMessage) -> some View {
