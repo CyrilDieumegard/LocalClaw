@@ -2,9 +2,9 @@ import SwiftUI
 import Foundation
 import Combine
 
-// MARK: - Terminal View Component (Partie 1)
+// MARK: - Terminal View Component (Part 1)
 
-/// Un terminal natif intégré avec output temps réel et input
+/// Native terminal with real-time output and input
 @MainActor
 final class TerminalViewModel: ObservableObject {
     @Published var output: String = ""
@@ -76,7 +76,7 @@ final class TerminalViewModel: ObservableObject {
                 }
             }
         } catch {
-            append("❌ Erreur: \(error.localizedDescription)")
+            append("❌ Error: \(error.localizedDescription)")
             isRunning = false
             currentProcess = nil
         }
@@ -91,7 +91,7 @@ final class TerminalViewModel: ObservableObject {
     func cancel() {
         guard let process = currentProcess, isRunning else { return }
         process.terminate()
-        append("⚠️  Commande interrompue par l'utilisateur")
+        append("⚠️  Command interrupted by user")
         isRunning = false
         currentProcess = nil
     }
@@ -215,7 +215,7 @@ struct TerminalView: View {
                     .font(.system(size: 12))
             }
             .buttonStyle(.borderless)
-            .help("Effacer")
+            .help("Clear")
 
             if viewModel.isRunning {
                 Button(action: { viewModel.cancel() }) {
@@ -224,7 +224,7 @@ struct TerminalView: View {
                         .foregroundColor(.red)
                 }
                 .buttonStyle(.borderless)
-                .help("Annuler la commande")
+                .help("Cancel command")
             }
         }
         .padding(.horizontal, 12)
@@ -238,7 +238,7 @@ struct TerminalView: View {
                 .font(.system(size: 13, design: .monospaced))
                 .foregroundStyle(UI.accent)
             
-            TextField("Entrez une commande...", text: $viewModel.inputText)
+            TextField("Enter a command...", text: $viewModel.inputText)
                 .font(.system(size: 13, design: .monospaced))
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { viewModel.executeInput() }
@@ -298,7 +298,7 @@ struct ToolbarButtonStyle: ButtonStyle {
     }
 }
 
-// Preview - désactivé pour la compilation
+// Preview disabled for compilation
 // #Preview {
 //     TerminalView()
 //         .frame(width: 600, height: 400)

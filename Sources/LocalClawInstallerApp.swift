@@ -2584,7 +2584,7 @@ final class InstallerViewModel: ObservableObject {
                 await MainActor.run {
                     self.isRunning = false
                     self.screen = .install
-                    self.append("Preflight bloqué: Xcode CLI Tools requis avant l'installation.")
+                    self.append("Preflight blocked: Xcode CLI Tools are required before installation.")
                 }
                 return
             }
@@ -2594,7 +2594,7 @@ final class InstallerViewModel: ObservableObject {
                 await MainActor.run {
                     self.isRunning = false
                     self.screen = .install
-                    self.append("Preflight bloqué: Homebrew doit être installé avant la suite.")
+                    self.append("Preflight blocked: Homebrew must be installed before continuing.")
                 }
                 return
             }
@@ -2604,7 +2604,7 @@ final class InstallerViewModel: ObservableObject {
                 await MainActor.run {
                     self.isRunning = false
                     self.screen = .install
-                    self.append("Preflight bloqué: corrige brew doctor avant OpenClaw/OAuth.")
+                    self.append("Preflight blocked: fix brew doctor before OpenClaw/OAuth.")
                 }
                 return
             }
@@ -2628,7 +2628,7 @@ final class InstallerViewModel: ObservableObject {
                     await MainActor.run {
                         self.isRunning = false
                         self.screen = .install
-                        self.append("Installation OpenClaw échouée. OAuth bloqué tant que OpenClaw n'est pas installé.")
+                        self.append("OpenClaw installation failed. OAuth is blocked until OpenClaw is installed.")
                     }
                     return
                 }
@@ -5867,13 +5867,13 @@ final class InstallerViewModel: ObservableObject {
             .lowercased()
 
         let palettes: [(keys: [String], name: String, colors: [String])] = [
-            (["jaune", "yellow"], "yellow", ["#181107", "#fef3c7", "#fde68a", "#facc15", "#eab308", "#ca8a04", "#854d0e"]),
+            (["yellow"], "yellow", ["#181107", "#fef3c7", "#fde68a", "#facc15", "#eab308", "#ca8a04", "#854d0e"]),
             (["violet", "purple"], "purple", ["#120a24", "#f5f3ff", "#ddd6fe", "#c084fc", "#a855f7", "#7c3aed", "#4c1d95"]),
-            (["bleu", "blue"], "blue", ["#07111f", "#eff6ff", "#bfdbfe", "#60a5fa", "#2563eb", "#1d4ed8", "#172554"]),
-            (["vert", "green"], "green", ["#06140d", "#ecfdf5", "#bbf7d0", "#4ade80", "#16a34a", "#15803d", "#14532d"]),
-            (["rouge", "red"], "red", ["#1f0909", "#fef2f2", "#fecaca", "#f87171", "#ef4444", "#b91c1c", "#7f1d1d"]),
+            (["blue"], "blue", ["#07111f", "#eff6ff", "#bfdbfe", "#60a5fa", "#2563eb", "#1d4ed8", "#172554"]),
+            (["green"], "green", ["#06140d", "#ecfdf5", "#bbf7d0", "#4ade80", "#16a34a", "#15803d", "#14532d"]),
+            (["red"], "red", ["#1f0909", "#fef2f2", "#fecaca", "#f87171", "#ef4444", "#b91c1c", "#7f1d1d"]),
             (["orange"], "orange", ["#1c0f05", "#fff7ed", "#fed7aa", "#fb923c", "#f97316", "#c2410c", "#7c2d12"]),
-            (["rose", "pink"], "pink", ["#1f0713", "#fdf2f8", "#fbcfe8", "#f472b6", "#ec4899", "#be185d", "#831843"]),
+            (["pink"], "pink", ["#1f0713", "#fdf2f8", "#fbcfe8", "#f472b6", "#ec4899", "#be185d", "#831843"]),
             (["turquoise", "cyan"], "turquoise", ["#041616", "#ecfeff", "#a5f3fc", "#22d3ee", "#06b6d4", "#0e7490", "#164e63"])
         ]
 
@@ -5961,7 +5961,7 @@ final class InstallerViewModel: ObservableObject {
             }
         }
 
-        let namedColors = ["purple", "violet", "yellow", "jaune", "blue", "bleu", "green", "vert", "red", "rouge", "orange", "pink", "rose", "turquoise", "cyan"]
+        let namedColors = ["purple", "violet", "yellow", "blue", "green", "red", "orange", "pink", "turquoise", "cyan"]
         for color in namedColors where color != palette.name {
             result = result.replacingOccurrences(of: "\\b\(NSRegularExpression.escapedPattern(for: color))\\b", with: palette.name, options: [.regularExpression, .caseInsensitive])
         }
@@ -5972,7 +5972,7 @@ final class InstallerViewModel: ObservableObject {
         let clean = text
             .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
             .lowercased()
-        let editWords = ["change", "changer", "remplace", "remplacer", "mets", "met", "passer", "update", "modifier", "couleur", "color", "theme", "css", "style", "titre", "title", "texte", "text", "button", "bouton"]
+        let editWords = ["change", "replace", "set", "update", "modify", "color", "theme", "css", "style", "title", "text", "button"]
         let heavyWords = ["architecture", "database", "supabase", "auth", "stripe", "payment", "deploy", "migration", "test", "debug", "fix crash", "api", "backend", "refactor", "security"]
         let hasEditSignal = editWords.contains { clean.contains($0) }
         let hasHeavySignal = heavyWords.contains { clean.contains($0) }
@@ -8562,7 +8562,7 @@ struct ContentView: View {
                         Text("HOME")
                             .font(AppFont.heading(30))
                             .foregroundStyle(UI.text)
-                        Text("Dashboard live de ton installation OpenClaw : santé, consommation, channels, modèle actif et derniers événements.")
+                        Text("Live dashboard for your OpenClaw setup: health, token usage, channels, active model, and recent events.")
                             .font(AppFont.body(13))
                             .foregroundStyle(UI.muted)
                     }
@@ -13864,7 +13864,7 @@ struct ContentView: View {
         .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
     }
 
-    // MARK: - Nouveau Command Center (Partie 3 - Advanced)
+    // MARK: - New Command Center (Part 3 - Advanced)
     
     var commandCenter: some View {
         AdvancedCommandCenterView()

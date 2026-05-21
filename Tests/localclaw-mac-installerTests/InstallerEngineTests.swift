@@ -247,7 +247,7 @@ struct InstallerEngineTests {
 
     @Test func simpleDeveloperEditsUseTightBudget() {
         #expect(InstallerViewModel.isSimpleDeveloperEdit("change the game color to purple"))
-        #expect(InstallerViewModel.isSimpleDeveloperEdit("mets le theme en violet"))
+        #expect(InstallerViewModel.isSimpleDeveloperEdit("set the theme to violet"))
         #expect(!InstallerViewModel.isSimpleDeveloperEdit("refactor the backend auth and database migration"))
         #expect(InstallerViewModel.simpleDeveloperEditTimeoutSeconds == 60)
         #expect(InstallerViewModel.wallClockTimeoutSeconds(forAgentTimeout: 60) == 180)
@@ -293,7 +293,7 @@ struct InstallerEngineTests {
         """
         .write(to: root.appendingPathComponent("style.css"), atomically: true, encoding: .utf8)
 
-        let result = InstallerViewModel.applyQuickDeveloperColorEdit(projectPath: root.path, requestText: "change la couleur du jeu pour du jaune")
+        let result = InstallerViewModel.applyQuickDeveloperColorEdit(projectPath: root.path, requestText: "change the game color to yellow")
         let updated = try String(contentsOf: root.appendingPathComponent("style.css"), encoding: .utf8)
 
         #expect(result?.colorName == "yellow")

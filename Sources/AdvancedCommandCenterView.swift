@@ -18,7 +18,7 @@ final class AsyncCommandRunner: @unchecked Sendable {
         process.standardOutput = pipe
         process.standardError = pipe
         
-        // Lire la sortie en temps réel sans bloquer
+        // Read output in real time without blocking
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard let text = String(data: data, encoding: .utf8), !text.isEmpty else { return }
@@ -48,7 +48,7 @@ final class AsyncCommandRunner: @unchecked Sendable {
     }
 }
 
-// MARK: - Advanced Command Center (Partie 3)
+// MARK: - Advanced Command Center (Part 3)
 
 /// ViewModel for real-time Gateway monitoring
 @MainActor
@@ -302,7 +302,7 @@ final class CommandCenterViewModel: ObservableObject {
         let entry = LogEntry(timestamp: Date(), level: level, message: message)
         gatewayLogs.append(entry)
         
-        // Garder seulement les 500 dernières entrées
+        // Keep only the last 500 entries
         if gatewayLogs.count > 500 {
             gatewayLogs.removeFirst(gatewayLogs.count - 500)
         }
@@ -403,7 +403,7 @@ final class CommandCenterViewModel: ObservableObject {
     func restartGateway() {
         addLog(.command, "Restarting gateway...")
         
-        // Étape 1: Stop
+        // Step 1: Stop
         executeCommandAsync("openclaw gateway stop", onOutput: { line in
             DispatchQueue.main.async {
                 self.addLog(.info, "[stop] \(line)")
@@ -413,7 +413,7 @@ final class CommandCenterViewModel: ObservableObject {
                 self.addLog(.info, "Waiting 2 seconds...")
             }
             
-            // Attendre 2 secondes puis start
+            // Wait 2 seconds, then start
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
                 self.executeCommandAsync("openclaw gateway start", onOutput: { line in
                     DispatchQueue.main.async {

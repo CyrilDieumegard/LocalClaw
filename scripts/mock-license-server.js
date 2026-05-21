@@ -17,9 +17,9 @@ const server = http.createServer((req, res) => {
       const email = String(payload.email || '').toLowerCase().trim();
       const key = String(payload.licenseKey || '').toUpperCase().trim();
 
-      // Règle simple de test
+      // Simple test rule
       // email: cyril@test.local
-      // clé: LOCALCLAW-V1-TEST
+      // key: LOCALCLAW-V1-TEST
       if (email === 'cyril@test.local' && key === 'LOCALCLAW-V1-TEST') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({
