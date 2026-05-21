@@ -589,7 +589,6 @@ final class InstallerEngine: @unchecked Sendable {
 
     func hasProviderAuth(provider: String) -> Bool {
         let fm = FileManager.default
-        let profileKey = "\(provider):default"
         let authPaths = [
             NSHomeDirectory() + "/.openclaw/agents/main/agent/auth-profiles.json",
             NSHomeDirectory() + "/.openclaw/openclaw.json"
@@ -601,20 +600,7 @@ final class InstallerEngine: @unchecked Sendable {
             let rootProfiles = json["profiles"] as? [String: Any]
             let nestedProfiles = (json["auth"] as? [String: Any])?["profiles"] as? [String: Any]
             for profiles in [rootProfiles, nestedProfiles].compactMap({ $0 }) {
-                if let profile = profiles[profileKey] as? [String: Any] {
-                    if let key = profile["key"] as? String,
-                       !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        return true
-                    }
-                    if let type = profile["type"] as? String,
-                       type.lowercased().contains("oauth") {
-                        return true
-                    }
-                    if let token = profile["token"] as? String,
-                       !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        return true
-                    }
-                }
+                if Self.providerAuthConfigured(in: profiles, provider: provider) { return true }
             }
         }
 
@@ -632,6 +618,26 @@ final class InstallerEngine: @unchecked Sendable {
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 return trimmed.hasPrefix("\(envKey)=") && trimmed.split(separator: "=", maxSplits: 1).count == 2
             }) { return true }
+        }
+        return false
+    }
+
+    static func providerAuthConfigured(in profiles: [String: Any], provider: String) -> Bool {
+        let providerPrefix = "\(provider):"
+        for (profileKey, rawProfile) in profiles where profileKey.hasPrefix(providerPrefix) {
+            guard let profile = rawProfile as? [String: Any] else { continue }
+            if let key = profile["key"] as? String,
+               !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return true
+            }
+            if let token = profile["token"] as? String,
+               !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return true
+            }
+            if let type = profile["type"] as? String,
+               type.lowercased().contains("oauth") {
+                return true
+            }
         }
         return false
     }

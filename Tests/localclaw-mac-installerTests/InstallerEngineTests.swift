@@ -53,6 +53,24 @@ struct InstallerEngineTests {
         #expect(!InstallerEngine.isNodeVersionSupported("Not installed"))
     }
 
+    @Test func providerAuthDetectsNamedOAuthProfiles() {
+        let profiles: [String: Any] = [
+            "openai-codex:cdieumegard@gmail.com": [
+                "type": "oauth",
+                "provider": "openai-codex"
+            ],
+            "openrouter:default": [
+                "type": "api_key",
+                "provider": "openrouter",
+                "key": "sk-or-secret"
+            ]
+        ]
+
+        #expect(InstallerEngine.providerAuthConfigured(in: profiles, provider: "openai-codex"))
+        #expect(InstallerEngine.providerAuthConfigured(in: profiles, provider: "openrouter"))
+        #expect(!InstallerEngine.providerAuthConfigured(in: profiles, provider: "openai"))
+    }
+
     @Test func redactsSecretsFromConfigJSON() {
         let raw = """
         {
