@@ -889,6 +889,10 @@ final class InstallerViewModel: ObservableObject {
     @Published var cronCreateDeliveryTo = ""
     @Published var cronCreateIsRunning = false
     @Published var cronCreateError = ""
+    @Published var cronDeleteCandidate: CronJobInfo? = nil
+    @Published var cronDeleteConfirmText = ""
+    @Published var cronDeleteIsRunning = false
+    @Published var cronDeleteError = ""
     @Published var healthLogs: String = ""
     @Published var healthStatus: String = "Unknown"
     @Published var usageLogs: String = ""
@@ -1237,25 +1241,29 @@ final class InstallerViewModel: ObservableObject {
 
             let enabled = channelConfig["enabled"] as? Bool ?? false
             let hasToken = !(channelConfig["token"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let hasBotToken = !(channelConfig["botToken"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let hasTokenFile = !(channelConfig["tokenFile"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             let accountsDict = channelConfig["accounts"] as? [String: Any] ?? [:]
             let configuredAccounts = accountsDict.compactMap { accountPair -> String? in
                 guard let accountConfig = accountPair.value as? [String: Any] else { return nil }
                 let accountEnabled = accountConfig["enabled"] as? Bool ?? true
                 let accountHasToken = !(accountConfig["token"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                let accountHasBotToken = !(accountConfig["botToken"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                let accountHasTokenFile = !(accountConfig["tokenFile"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 let accountHasSession = !(accountConfig["session"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 let accountHasAuthPath = !(accountConfig["authPath"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                return (accountEnabled || accountHasToken || accountHasSession || accountHasAuthPath) ? accountPair.key : nil
+                return (accountEnabled || accountHasToken || accountHasBotToken || accountHasTokenFile || accountHasSession || accountHasAuthPath) ? accountPair.key : nil
             }
             .sorted()
 
-            let configured = enabled || hasToken || !configuredAccounts.isEmpty
+            let configured = enabled || hasToken || hasBotToken || hasTokenFile || !configuredAccounts.isEmpty
             guard configured else { return }
 
             let accounts = configuredAccounts.isEmpty ? ["default"] : configuredAccounts
             result[pair.key] = ChannelConfigSnapshot(
                 configured: true,
                 accounts: accounts,
-                tokenSource: hasToken ? "config" : nil
+                tokenSource: hasTokenFile ? "tokenFile" : ((hasToken || hasBotToken) ? "config" : nil)
             )
         }
     }
@@ -1270,6 +1278,43 @@ final class InstallerViewModel: ObservableObject {
 
     nonisolated static func persistentTelegramTokenFilePath() -> String {
         NSHomeDirectory() + "/.openclaw/secrets/telegram-default-token"
+    }
+
+    nonisolated static func ensureTelegramDefaultAccountToken(configPath: String = NSHomeDirectory() + "/.openclaw/openclaw.json") {
+        let configURL = URL(fileURLWithPath: configPath)
+        guard let data = try? Data(contentsOf: configURL),
+              var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var channels = root["channels"] as? [String: Any],
+              var telegram = channels["telegram"] as? [String: Any] else {
+            return
+        }
+
+        var accounts = telegram["accounts"] as? [String: Any] ?? [:]
+        var defaultAccount = accounts["default"] as? [String: Any] ?? [:]
+        let accountHasTokenFile = !(defaultAccount["tokenFile"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let accountHasBotToken = !(defaultAccount["botToken"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard !accountHasTokenFile, !accountHasBotToken else { return }
+
+        let tokenFile = (telegram["tokenFile"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let botToken = (telegram["botToken"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tokenFile.isEmpty || !botToken.isEmpty else { return }
+
+        defaultAccount["enabled"] = true
+        defaultAccount["name"] = defaultAccount["name"] as? String ?? (telegram["name"] as? String ?? "Telegram")
+        if !tokenFile.isEmpty {
+            defaultAccount["tokenFile"] = tokenFile
+        } else {
+            defaultAccount["botToken"] = botToken
+        }
+        accounts["default"] = defaultAccount
+        telegram["accounts"] = accounts
+        telegram["defaultAccount"] = telegram["defaultAccount"] as? String ?? "default"
+        telegram["enabled"] = telegram["enabled"] as? Bool ?? true
+        channels["telegram"] = telegram
+        root["channels"] = channels
+
+        guard let updated = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]) else { return }
+        try? updated.write(to: configURL, options: .atomic)
     }
 
     // Installation status tracking (using existing status variables)
@@ -3598,7 +3643,7 @@ final class InstallerViewModel: ObservableObject {
             let account = cronCreateDeliveryAccount.trimmingCharacters(in: .whitespacesAndNewlines)
             var parts = ["Delivery: \(label)"]
             if !account.isEmpty { parts.append("Account: \(account)") }
-            if !to.isEmpty { parts.append("To: \(to)") }
+            parts.append(to.isEmpty ? "Destination required" : "To: \(to)")
             return parts.joined(separator: " · ")
         default:
             return "Delivery: last active OpenClaw channel."
@@ -3617,6 +3662,10 @@ final class InstallerViewModel: ObservableObject {
         }
         if cronCreateDeliveryMode == "channel", cronCreateDeliveryChannel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             cronCreateError = "Pick a delivery channel, or choose Last channel / No delivery."
+            return
+        }
+        if cronCreateDeliveryMode == "channel", cronCreateDeliveryTo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            cronCreateError = "Enter a destination for this channel, or choose Last used channel."
             return
         }
 
@@ -3694,30 +3743,54 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func openTerminalCronRemove(_ jobID: String) {
-        let script = """
-        #!/bin/zsh
-        clear
-        export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
-        OPENCLAW_BIN="$(command -v openclaw 2>/dev/null || true)"
+        guard let job = cronJobs.first(where: { $0.id == jobID }) else { return }
+        requestDeleteCronJob(job)
+    }
 
-        echo "Remove cron job: \(jobID)"
-        echo ""
-        read -r "CONFIRM?Type DELETE to confirm: "
-        if [ "$CONFIRM" = "DELETE" ] && [ -n "$OPENCLAW_BIN" ]; then
-            "$OPENCLAW_BIN" cron rm "\(jobID)" --json
-        else
-            echo "Canceled."
-        fi
+    func requestDeleteCronJob(_ job: CronJobInfo) {
+        guard !cronDeleteIsRunning else { return }
+        cronDeleteCandidate = job
+        cronDeleteConfirmText = ""
+        cronDeleteError = ""
+    }
 
-        echo ""
-        read -r "REPLY?Press Enter to close..."
-        """
-        let safeID = jobID.replacingOccurrences(of: "/", with: "_")
-        let path = "/tmp/localclaw_cron_remove_\(safeID).sh"
-        try? script.write(toFile: path, atomically: true, encoding: .utf8)
-        _ = engine.shell("chmod +x \(path)")
-        _ = engine.shell("open -a Terminal \(path)")
-        cronJobLogs = cronJobLogs.isEmpty ? "Started remove flow for \(jobID)" : cronJobLogs + "\nStarted remove flow for \(jobID)"
+    func cancelCronDelete() {
+        guard !cronDeleteIsRunning else { return }
+        cronDeleteCandidate = nil
+        cronDeleteConfirmText = ""
+        cronDeleteError = ""
+    }
+
+    func deletePendingCronJob() {
+        guard !cronDeleteIsRunning,
+              cronDeleteConfirmText.trimmingCharacters(in: .whitespacesAndNewlines) == "DELETE",
+              let job = cronDeleteCandidate else {
+            return
+        }
+
+        cronDeleteIsRunning = true
+        cronDeleteError = ""
+        cronJobLogs = cronJobLogs.isEmpty ? "Deleting cron job \(job.name)..." : cronJobLogs + "\nDeleting cron job \(job.name)..."
+        let quotedID = Self.shellSingleQuote(job.id)
+
+        Task.detached {
+            let engine = InstallerEngine()
+            let result = engine.shell("openclaw --no-color cron rm \(quotedID) --json 2>&1")
+            await MainActor.run {
+                self.cronDeleteIsRunning = false
+                let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
+                if result.0 == 0 {
+                    self.cronJobLogs += "\nDeleted cron job \(job.name)."
+                    if !output.isEmpty { self.cronJobLogs += "\n\(output)" }
+                    self.cronDeleteCandidate = nil
+                    self.cronDeleteConfirmText = ""
+                    self.refreshCronJobs()
+                } else {
+                    self.cronDeleteError = output.isEmpty ? "Cron job deletion failed." : output
+                    self.cronJobLogs += "\nFailed to delete cron job \(job.name): \(self.cronDeleteError)"
+                }
+            }
+        }
     }
 
     func runCronJobNow(_ jobID: String) {
@@ -3879,6 +3952,7 @@ final class InstallerViewModel: ObservableObject {
 
         Task.detached {
             let engine = InstallerEngine()
+            Self.ensureTelegramDefaultAccountToken()
             let listResult = engine.shell("openclaw --no-color channels list --all --json 2>&1")
             let statusResult = engine.shell("openclaw --no-color channels status --json --probe --timeout 5000 2>&1")
             let configSnapshots = Self.configuredChannelSnapshots()
@@ -4241,9 +4315,10 @@ final class InstallerViewModel: ObservableObject {
             let tokenFile = Self.shellSingleQuote(tokenURL.path)
             let command = [
                 "openclaw --no-color plugins enable telegram >/dev/null 2>&1 || openclaw --no-color plugins enable @openclaw/telegram >/dev/null 2>&1 || true",
-                "openclaw --no-color channels add --channel telegram --token-file \(tokenFile) --name Telegram 2>&1"
+                "openclaw --no-color channels add --channel telegram --account default --token-file \(tokenFile) --name Telegram 2>&1"
             ].joined(separator: " && ")
             let result = engine.shell(command)
+            Self.ensureTelegramDefaultAccountToken()
 
             var messages: [String] = []
             let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -8431,6 +8506,9 @@ struct ContentView: View {
         .sheet(isPresented: $vm.showCronJobCreator) {
             cronJobCreatorSheet
         }
+        .sheet(item: $vm.cronDeleteCandidate) { job in
+            cronJobDeleteSheet(job)
+        }
         .sheet(isPresented: $vm.showOAuthSetupAssistant) {
             oauthSetupAssistantSheet
         }
@@ -12404,7 +12482,7 @@ struct ContentView: View {
                                 .frame(width: 170)
                         }
 
-                        TextField("Destination optional: Telegram chatId, Discord channel/user, phone number...", text: $vm.cronCreateDeliveryTo)
+                        TextField("Destination required: Telegram chatId, Discord channel/user, phone number...", text: $vm.cronCreateDeliveryTo)
                             .textFieldStyle(.plain)
                             .font(AppFont.body(13))
                             .foregroundStyle(UI.text)
@@ -12461,6 +12539,80 @@ struct ContentView: View {
         }
         .padding(22)
         .frame(width: 680)
+        .background(UI.bg)
+    }
+
+    private func cronJobDeleteSheet(_ job: InstallerViewModel.CronJobInfo) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Delete cron job", systemImage: "trash")
+                        .font(AppFont.heading(24))
+                        .foregroundStyle(UI.text)
+                    Text("This removes the scheduled job from OpenClaw. The agent and channels stay installed.")
+                        .font(AppFont.body(13))
+                        .foregroundStyle(UI.muted)
+                }
+                Spacer()
+                Button("Cancel") { vm.cancelCronDelete() }
+                    .buttonStyle(SheetActionButton(primary: false))
+                    .disabled(vm.cronDeleteIsRunning)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text(job.name)
+                    .font(AppFont.bodySemi(18))
+                    .foregroundStyle(UI.text)
+                Text(job.id)
+                    .font(AppFont.body(12))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(job.detailSummary)
+                    .font(AppFont.body(12))
+                    .foregroundStyle(UI.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 12).fill(UI.card))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(NSColor.systemRed).opacity(0.45), lineWidth: 1))
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Type DELETE to confirm")
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(UI.muted)
+                TextField("DELETE", text: $vm.cronDeleteConfirmText)
+                    .textFieldStyle(.plain)
+                    .font(AppFont.bodySemi(14))
+                    .foregroundStyle(UI.text)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+            }
+
+            if !vm.cronDeleteError.isEmpty {
+                Text(vm.cronDeleteError)
+                    .font(AppFont.body(12))
+                    .foregroundStyle(Color(NSColor.systemRed))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color(NSColor.systemRed).opacity(0.10)))
+            }
+
+            HStack {
+                Spacer()
+                Button(vm.cronDeleteIsRunning ? "Deleting..." : "Delete cron job") {
+                    vm.deletePendingCronJob()
+                }
+                .buttonStyle(SheetActionButton(primary: true))
+                .disabled(vm.cronDeleteIsRunning || vm.cronDeleteConfirmText.trimmingCharacters(in: .whitespacesAndNewlines) != "DELETE")
+            }
+        }
+        .padding(22)
+        .frame(width: 560)
         .background(UI.bg)
     }
 
@@ -12577,7 +12729,7 @@ struct ContentView: View {
 
                 Button("Run") { vm.runCronJobNow(job.id) }
                     .buttonStyle(CTAButton(primary: false))
-                Button("Delete") { vm.openTerminalCronRemove(job.id) }
+                Button("Delete") { vm.requestDeleteCronJob(job) }
                     .buttonStyle(CTAButton(primary: false))
             }
         }

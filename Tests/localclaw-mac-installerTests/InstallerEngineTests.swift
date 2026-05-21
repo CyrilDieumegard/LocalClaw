@@ -181,6 +181,37 @@ struct InstallerEngineTests {
         #expect(snapshots["slack"] == nil)
     }
 
+    @Test func telegramTokenMigrationCreatesDefaultAccount() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let configURL = directory.appendingPathComponent("openclaw.json")
+        let config: [String: Any] = [
+            "channels": [
+                "telegram": [
+                    "enabled": true,
+                    "name": "Telegram",
+                    "tokenFile": "/tmp/localclaw-telegram-token"
+                ]
+            ]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: config)
+        try data.write(to: configURL)
+
+        InstallerViewModel.ensureTelegramDefaultAccountToken(configPath: configURL.path)
+
+        let updatedData = try Data(contentsOf: configURL)
+        let root = try #require(JSONSerialization.jsonObject(with: updatedData) as? [String: Any])
+        let channels = try #require(root["channels"] as? [String: Any])
+        let telegram = try #require(channels["telegram"] as? [String: Any])
+        let accounts = try #require(telegram["accounts"] as? [String: Any])
+        let defaultAccount = try #require(accounts["default"] as? [String: Any])
+
+        #expect(telegram["defaultAccount"] as? String == "default")
+        #expect(defaultAccount["enabled"] as? Bool == true)
+        #expect(defaultAccount["tokenFile"] as? String == "/tmp/localclaw-telegram-token")
+    }
+
     @Test func telegramPairingErrorExplainsMissingPendingCode() {
         let message = InstallerViewModel.telegramPairingErrorMessage(
             code: "PR5HK9V5",
