@@ -478,6 +478,31 @@ struct InstallerEngineTests {
         #expect(vm.selectedChatModel == "openrouter/openai/gpt-5.4-mini")
     }
 
+    @MainActor
+    @Test func kanbanTaskCanPrepareCronForm() {
+        let vm = InstallerViewModel()
+        vm.kanbanNewTitle = "Daily roadmap check"
+        vm.kanbanNewDetail = "Summarize blockers and next actions."
+        vm.kanbanNewPriority = "High"
+        vm.kanbanNewAgentID = "main"
+        vm.kanbanNewSchedule = "1d"
+        vm.kanbanNewDeliveryChannel = "telegram"
+
+        vm.addKanbanCard()
+        let card = vm.kanbanColumns.first { $0.id == "backlog" }?.cards.first
+        #expect(card?.title == "Daily roadmap check")
+
+        vm.prepareCronFromKanbanCard(card!)
+
+        #expect(vm.showCronJobCreator)
+        #expect(vm.cronCreateName == "Daily roadmap check")
+        #expect(vm.cronCreateAgentID == "main")
+        #expect(vm.cronCreateScheduleValue == "1d")
+        #expect(vm.cronCreateDeliveryMode == "choose")
+        #expect(vm.cronCreateDeliveryChannel == "telegram")
+        #expect(vm.cronCreateMessage.contains("Summarize blockers"))
+    }
+
     @Test func createsRunnableDeveloperPreviewScaffold() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("localclaw-preview-test-\(UUID().uuidString)")

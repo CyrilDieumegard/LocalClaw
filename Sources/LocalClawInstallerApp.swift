@@ -7,7 +7,7 @@ import WebKit
 
 @MainActor
 final class InstallerViewModel: ObservableObject {
-    enum Screen { case license, onboarding, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, agents, cronJobs, healthCenter, usageCenter, chat, models, skills, developer }
+    enum Screen { case license, onboarding, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, agents, cronJobs, kanban, healthCenter, usageCenter, chat, models, skills, developer }
     enum InstallMode: String {
         case llmOnly = "Install Local LLM only"
         case openClawOnly = "Install OpenClaw only"
@@ -549,6 +549,47 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    struct KanbanCard: Identifiable, Codable, Equatable {
+        let id: String
+        var title: String
+        var detail: String
+        var priority: String
+        var agentID: String
+        var reviewSchedule: String
+        var deliveryChannel: String
+        var createdAt: Date
+        var updatedAt: Date
+
+        static func fresh(title: String, detail: String, priority: String, agentID: String, reviewSchedule: String, deliveryChannel: String) -> KanbanCard {
+            KanbanCard(
+                id: "kanban-card-\(UUID().uuidString)",
+                title: title,
+                detail: detail,
+                priority: priority,
+                agentID: agentID,
+                reviewSchedule: reviewSchedule,
+                deliveryChannel: deliveryChannel,
+                createdAt: Date(),
+                updatedAt: Date()
+            )
+        }
+    }
+
+    struct KanbanColumn: Identifiable, Codable, Equatable {
+        let id: String
+        var title: String
+        var icon: String
+        var colorName: String
+        var cards: [KanbanCard]
+
+        static let defaults: [KanbanColumn] = [
+            KanbanColumn(id: "backlog", title: "Backlog", icon: "tray.full", colorName: "gray", cards: []),
+            KanbanColumn(id: "ready", title: "Ready", icon: "checklist", colorName: "blue", cards: []),
+            KanbanColumn(id: "doing", title: "Doing", icon: "bolt.fill", colorName: "red", cards: []),
+            KanbanColumn(id: "done", title: "Done", icon: "checkmark.seal.fill", colorName: "green", cards: [])
+        ]
+    }
+
     enum CloudAuthMode: String, CaseIterable, Identifiable {
         case api = "API"
         case oauth = "OAuth"
@@ -974,6 +1015,16 @@ final class InstallerViewModel: ObservableObject {
     @Published var cronDeleteConfirmText = ""
     @Published var cronDeleteIsRunning = false
     @Published var cronDeleteError = ""
+    @Published var kanbanColumns: [KanbanColumn] = KanbanColumn.defaults {
+        didSet { persistKanbanBoard() }
+    }
+    @Published var kanbanNewTitle = ""
+    @Published var kanbanNewDetail = ""
+    @Published var kanbanNewPriority = "Normal"
+    @Published var kanbanNewAgentID = "main"
+    @Published var kanbanNewSchedule = "1d"
+    @Published var kanbanNewDeliveryChannel = "last"
+    @Published var kanbanStatus = "Ready"
     @Published var healthLogs: String = ""
     @Published var healthStatus: String = "Unknown"
     @Published var usageLogs: String = ""
@@ -1002,6 +1053,7 @@ final class InstallerViewModel: ObservableObject {
     private static let developerFreshContextDefaultsKey = "localclaw.developer.freshContext.v1"
     private static let modelUsageDefaultsKey = "localclaw.modelUsage.records.v1"
     private static let homeUsageWindowDefaultsKey = "localclaw.home.usageWindow.v1"
+    private static let kanbanDefaultsKey = "localclaw.kanban.board.v1"
     nonisolated static let simpleDeveloperEditTimeoutSeconds = 60
 
     init() {
@@ -1027,6 +1079,7 @@ final class InstallerViewModel: ObservableObject {
         restoreChatSessions()
         restoreChatSavedNotes()
         restoreModelUsageRecords()
+        restoreKanbanBoard()
         channels = Self.defaultChannelCatalog.map { entry in
             ChannelInfo(
                 id: entry.id,
@@ -5246,6 +5299,97 @@ final class InstallerViewModel: ObservableObject {
         UserDefaults.standard.set(data, forKey: Self.modelUsageDefaultsKey)
     }
 
+    func restoreKanbanBoard() {
+        guard let data = UserDefaults.standard.data(forKey: Self.kanbanDefaultsKey),
+              let decoded = try? JSONDecoder().decode([KanbanColumn].self, from: data),
+              !decoded.isEmpty else {
+            kanbanColumns = KanbanColumn.defaults
+            return
+        }
+        let decodedByID = Dictionary(uniqueKeysWithValues: decoded.map { ($0.id, $0) })
+        kanbanColumns = KanbanColumn.defaults.map { fallback in
+            decodedByID[fallback.id] ?? fallback
+        }
+    }
+
+    func persistKanbanBoard() {
+        guard let data = try? JSONEncoder().encode(kanbanColumns) else { return }
+        UserDefaults.standard.set(data, forKey: Self.kanbanDefaultsKey)
+    }
+
+    var kanbanCards: [KanbanCard] {
+        kanbanColumns.flatMap(\.cards)
+    }
+
+    var kanbanActiveCardsCount: Int {
+        kanbanColumns
+            .filter { $0.id != "done" }
+            .flatMap(\.cards)
+            .count
+    }
+
+    func addKanbanCard() {
+        let title = kanbanNewTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else {
+            kanbanStatus = "Add a task title first."
+            return
+        }
+        let detail = kanbanNewDetail.trimmingCharacters(in: .whitespacesAndNewlines)
+        let card = KanbanCard.fresh(
+            title: title,
+            detail: detail,
+            priority: kanbanNewPriority,
+            agentID: kanbanNewAgentID,
+            reviewSchedule: kanbanNewSchedule.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "1d" : kanbanNewSchedule.trimmingCharacters(in: .whitespacesAndNewlines),
+            deliveryChannel: kanbanNewDeliveryChannel
+        )
+        guard let index = kanbanColumns.firstIndex(where: { $0.id == "backlog" }) else { return }
+        kanbanColumns[index].cards.insert(card, at: 0)
+        kanbanNewTitle = ""
+        kanbanNewDetail = ""
+        kanbanStatus = "Task added to Backlog."
+    }
+
+    func moveKanbanCard(_ cardID: String, direction: Int) {
+        guard let location = kanbanCardLocation(cardID) else { return }
+        let nextColumnIndex = location.columnIndex + direction
+        guard kanbanColumns.indices.contains(nextColumnIndex) else { return }
+        var card = kanbanColumns[location.columnIndex].cards.remove(at: location.cardIndex)
+        card.updatedAt = Date()
+        kanbanColumns[nextColumnIndex].cards.insert(card, at: 0)
+        kanbanStatus = "Moved to \(kanbanColumns[nextColumnIndex].title)."
+    }
+
+    func deleteKanbanCard(_ cardID: String) {
+        guard let location = kanbanCardLocation(cardID) else { return }
+        kanbanColumns[location.columnIndex].cards.remove(at: location.cardIndex)
+        kanbanStatus = "Task removed."
+    }
+
+    func prepareCronFromKanbanCard(_ card: KanbanCard) {
+        cronCreateName = card.title
+        cronCreateAgentID = card.agentID.isEmpty ? "main" : card.agentID
+        cronCreateScheduleKind = "every"
+        cronCreateScheduleValue = card.reviewSchedule.isEmpty ? "1d" : card.reviewSchedule
+        cronCreateMessage = [card.title, card.detail].filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.joined(separator: "\n\n")
+        cronCreateDeliveryMode = card.deliveryChannel == "none" ? "none" : (card.deliveryChannel == "last" ? "last" : "choose")
+        if card.deliveryChannel != "last" && card.deliveryChannel != "none" {
+            cronCreateDeliveryChannel = card.deliveryChannel
+        }
+        cronCreateError = ""
+        showCronJobCreator = true
+        kanbanStatus = "Cron form prepared from Kanban task."
+    }
+
+    private func kanbanCardLocation(_ cardID: String) -> (columnIndex: Int, cardIndex: Int)? {
+        for columnIndex in kanbanColumns.indices {
+            if let cardIndex = kanbanColumns[columnIndex].cards.firstIndex(where: { $0.id == cardID }) {
+                return (columnIndex, cardIndex)
+            }
+        }
+        return nil
+    }
+
     func recordModelUsage(model: String, input: Int?, output: Int?, total: Int?) {
         guard tokenMonitoringEnabled else { return }
         let inputTokens = input ?? 0
@@ -8639,6 +8783,7 @@ struct ProgressSteps: View {
         case .channelSetup: return 0
         case .agents: return 0
         case .cronJobs: return 0
+        case .kanban: return 0
         case .healthCenter: return 0
         case .usageCenter: return 0
         case .chat: return 0
@@ -8758,6 +8903,7 @@ struct ContentView: View {
                             case .channelSetup: channelSetup
                             case .agents: agentsCenter
                             case .cronJobs: cronJobsCenter
+                            case .kanban: kanbanCenter
                             case .healthCenter: healthCenter
                             case .usageCenter: usageCenter
                             case .chat: openClawChat
@@ -9004,6 +9150,7 @@ struct ContentView: View {
             sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup, isBeta: true) { vm.screen = .channelSetup }
             sidebarButton("Agents", icon: "person.2.wave.2", isActive: vm.screen == .agents) { vm.screen = .agents }
             sidebarButton("Cron Jobs", icon: "calendar.badge.clock", isActive: vm.screen == .cronJobs, isBeta: true) { vm.screen = .cronJobs }
+            sidebarButton("Kanban", icon: "rectangle.3.group", isActive: vm.screen == .kanban, isBeta: true) { vm.screen = .kanban }
             sidebarButton("Help", icon: "cross.case", isActive: vm.screen == .healthCenter) { vm.screen = .healthCenter }
             sidebarButton("Uninstall", icon: "trash", isActive: vm.screen == .uninstallCenter) { vm.screen = .uninstallCenter }
 
@@ -9011,9 +9158,9 @@ struct ContentView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("VERSION")
+                    Text("OPENCLAW VERSION")
                         .font(AppFont.heading(10))
-                        .kerning(1.8)
+                        .kerning(1.0)
                         .foregroundStyle(UI.muted)
                     Spacer()
                     Circle()
@@ -13127,6 +13274,294 @@ struct ContentView: View {
             .padding(.vertical, 3)
             .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
             .overlay(RoundedRectangle(cornerRadius: 999).stroke(color.opacity(0.25), lineWidth: 1))
+    }
+
+    var kanbanCenter: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 10) {
+                        Text("KANBAN")
+                            .font(AppFont.heading(28))
+                            .foregroundStyle(UI.text)
+                        Text("BETA")
+                            .font(AppFont.bodySemi(10))
+                            .foregroundStyle(UI.accent)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(RoundedRectangle(cornerRadius: 999).fill(UI.accent.opacity(0.12)))
+                            .overlay(RoundedRectangle(cornerRadius: 999).stroke(UI.accent.opacity(0.35), lineWidth: 1))
+                    }
+                    Text("Plan work, assign agents, and turn repeatable tasks into Cron Jobs from one clear board.")
+                        .font(AppFont.body(13))
+                        .foregroundStyle(UI.muted)
+                }
+                Spacer()
+                Text(vm.kanbanStatus)
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(1)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
+                Button("Refresh Agents") { vm.refreshAgents() }
+                    .buttonStyle(CTAButton(primary: false))
+                    .disabled(vm.agentsIsLoading)
+            }
+
+            HStack(spacing: 10) {
+                kanbanMetricCard("Tasks", value: "\(vm.kanbanCards.count)", icon: "rectangle.stack.fill", tint: UI.accent)
+                kanbanMetricCard("Active", value: "\(vm.kanbanActiveCardsCount)", icon: "bolt.fill", tint: Color(NSColor.systemOrange))
+                kanbanMetricCard("Agents", value: "\(max(vm.agents.count, 1))", icon: "person.2.fill", tint: Color(NSColor.systemBlue))
+                kanbanMetricCard("Cron ready", value: "\(vm.kanbanCards.filter { !$0.reviewSchedule.isEmpty }.count)", icon: "calendar.badge.clock", tint: Color(NSColor.systemGreen))
+            }
+
+            kanbanCreatePanel
+
+            HStack(alignment: .top, spacing: 10) {
+                ForEach(vm.kanbanColumns) { column in
+                    kanbanColumn(column)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
+        .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
+        .onAppear {
+            if vm.agentsStatus == "Not loaded" || vm.agents.isEmpty {
+                vm.refreshAgents()
+            }
+        }
+    }
+
+    private var kanbanCreatePanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                kanbanFormField("Task", text: $vm.kanbanNewTitle, prompt: "Review support tickets")
+                    .frame(minWidth: 220)
+                Picker("Priority", selection: $vm.kanbanNewPriority) {
+                    ForEach(["Low", "Normal", "High", "Urgent"], id: \.self) { value in
+                        Text(value).tag(value)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 120)
+                Picker("Agent", selection: $vm.kanbanNewAgentID) {
+                    Text("Claw").tag("main")
+                    ForEach(vm.agents) { agent in
+                        Text(agent.displayName).tag(agent.id)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 150)
+                kanbanFormField("Review", text: $vm.kanbanNewSchedule, prompt: "1d")
+                    .frame(width: 90)
+                Picker("Delivery", selection: $vm.kanbanNewDeliveryChannel) {
+                    Text("Last channel").tag("last")
+                    Text("Telegram").tag("telegram")
+                    Text("Discord").tag("discord")
+                    Text("No delivery").tag("none")
+                }
+                .labelsHidden()
+                .frame(width: 145)
+                Button("Add Task") { vm.addKanbanCard() }
+                    .buttonStyle(CTAButton(primary: true))
+            }
+
+            TextField("Details, acceptance criteria, or the exact instruction for the assigned agent...", text: $vm.kanbanNewDetail, axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(AppFont.body(12))
+                .foregroundStyle(UI.text)
+                .lineLimit(1...3)
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 14).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private func kanbanColumn(_ column: InstallerViewModel.KanbanColumn) -> some View {
+        let tint = kanbanColor(column.colorName)
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: column.icon)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(tint)
+                Text(column.title)
+                    .font(AppFont.bodySemi(14))
+                    .foregroundStyle(UI.text)
+                Spacer()
+                Text("\(column.cards.count)")
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(UI.muted)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(RoundedRectangle(cornerRadius: 999).fill(UI.card))
+            }
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    if column.cards.isEmpty {
+                        Text("No tasks")
+                            .font(AppFont.body(12))
+                            .foregroundStyle(UI.muted)
+                            .frame(maxWidth: .infinity, minHeight: 72)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(UI.card.opacity(0.55)))
+                    } else {
+                        ForEach(column.cards) { card in
+                            kanbanCard(card, columnID: column.id)
+                        }
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 14).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(tint.opacity(0.28), lineWidth: 1))
+    }
+
+    private func kanbanCard(_ card: InstallerViewModel.KanbanCard, columnID: String) -> some View {
+        let priorityTint = kanbanPriorityColor(card.priority)
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(card.title)
+                        .font(AppFont.bodySemi(13))
+                        .foregroundStyle(UI.text)
+                        .lineLimit(2)
+                    if !card.detail.isEmpty {
+                        Text(card.detail)
+                            .font(AppFont.body(11))
+                            .foregroundStyle(UI.muted)
+                            .lineLimit(3)
+                    }
+                }
+                Spacer(minLength: 6)
+                Button { vm.deleteKanbanCard(card.id) } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(UI.muted)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .help("Remove task")
+            }
+
+            HStack(spacing: 6) {
+                kanbanMiniBadge(card.priority, icon: "flag.fill", tint: priorityTint)
+                kanbanMiniBadge(agentName(for: card.agentID), icon: "person.crop.circle", tint: UI.muted)
+            }
+            HStack(spacing: 6) {
+                kanbanMiniBadge(card.reviewSchedule, icon: "clock", tint: Color(NSColor.systemBlue))
+                kanbanMiniBadge(card.deliveryChannel == "none" ? "No delivery" : card.deliveryChannel.capitalized, icon: "paperplane.fill", tint: Color(NSColor.systemGreen))
+            }
+
+            HStack(spacing: 6) {
+                Button { vm.moveKanbanCard(card.id, direction: -1) } label: {
+                    Image(systemName: "chevron.left")
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .disabled(columnID == vm.kanbanColumns.first?.id)
+                .help("Move left")
+
+                Button { vm.prepareCronFromKanbanCard(card) } label: {
+                    Label("Cron", systemImage: "calendar.badge.plus")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(CompactGhostButton())
+
+                Button { vm.moveKanbanCard(card.id, direction: 1) } label: {
+                    Image(systemName: "chevron.right")
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .disabled(columnID == vm.kanbanColumns.last?.id)
+                .help("Move right")
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 11).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 11).stroke(priorityTint.opacity(0.24), lineWidth: 1))
+    }
+
+    private func kanbanMetricCard(_ title: String, value: String, icon: String, tint: Color) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(value)
+                    .font(AppFont.bodySemi(18))
+                    .foregroundStyle(UI.text)
+                Text(title)
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private func kanbanFormField(_ label: String, text: Binding<String>, prompt: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(label)
+                .font(AppFont.bodySemi(10))
+                .foregroundStyle(UI.muted)
+            TextField(prompt, text: text)
+                .textFieldStyle(.plain)
+                .font(AppFont.body(12))
+                .foregroundStyle(UI.text)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+        }
+    }
+
+    private func kanbanMiniBadge(_ label: String, icon: String, tint: Color) -> some View {
+        Label(label.isEmpty ? "None" : label, systemImage: icon)
+            .font(AppFont.bodySemi(9))
+            .foregroundStyle(tint)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
+    }
+
+    private func agentName(for agentID: String) -> String {
+        if agentID == "main" || agentID.isEmpty { return "Claw" }
+        return vm.agents.first { $0.id == agentID }?.displayName ?? agentID
+    }
+
+    private func kanbanColor(_ name: String) -> Color {
+        switch name {
+        case "blue": return Color(NSColor.systemBlue)
+        case "green": return Color(NSColor.systemGreen)
+        case "red": return UI.accent
+        default: return UI.muted
+        }
+    }
+
+    private func kanbanPriorityColor(_ priority: String) -> Color {
+        switch priority {
+        case "Urgent": return Color(NSColor.systemRed)
+        case "High": return Color(NSColor.systemOrange)
+        case "Low": return UI.muted
+        default: return UI.accent
+        }
     }
 
     @ViewBuilder
