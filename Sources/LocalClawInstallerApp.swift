@@ -666,7 +666,8 @@ final class InstallerViewModel: ObservableObject {
         static let defaults: [KanbanColumn] = [
             KanbanColumn(id: "backlog", title: "Backlog", icon: "tray.full", colorName: "gray", cards: []),
             KanbanColumn(id: "ready", title: "Ready", icon: "checklist", colorName: "blue", cards: []),
-            KanbanColumn(id: "doing", title: "Doing", icon: "bolt.fill", colorName: "red", cards: []),
+            KanbanColumn(id: "doing", title: "In Progress", icon: "bolt.fill", colorName: "red", cards: []),
+            KanbanColumn(id: "review", title: "Review", icon: "eye.fill", colorName: "purple", cards: []),
             KanbanColumn(id: "done", title: "Done", icon: "checkmark.seal.fill", colorName: "green", cards: [])
         ]
     }
@@ -5551,7 +5552,7 @@ final class InstallerViewModel: ObservableObject {
             let targetColumn = kanbanColumns.firstIndex(where: { $0.id == kanbanEditingColumnID }) ?? kanbanColumns.firstIndex(where: { $0.id == "backlog" })
             guard let index = targetColumn else { return }
             kanbanColumns[index].cards.insert(card, at: 0)
-            kanbanStatus = "Task added to \(kanbanColumns[index].title)."
+            kanbanStatus = "Task added to \(kanbanColumns[index].title). It has not started yet."
         }
 
         showKanbanTaskEditor = false
@@ -5579,7 +5580,20 @@ final class InstallerViewModel: ObservableObject {
         kanbanColumns[index].cards.insert(card, at: 0)
         kanbanNewTitle = ""
         kanbanNewDetail = ""
-        kanbanStatus = "Task added to Backlog."
+        kanbanStatus = "Task added to Backlog. It has not started yet."
+    }
+
+    func startKanbanCard(_ cardID: String) {
+        guard let location = kanbanCardLocation(cardID),
+              let targetColumnIndex = kanbanColumns.firstIndex(where: { $0.id == "doing" }) else { return }
+        if location.columnIndex == targetColumnIndex {
+            kanbanStatus = "Task is already in progress."
+            return
+        }
+        var card = kanbanColumns[location.columnIndex].cards.remove(at: location.cardIndex)
+        card.updatedAt = Date()
+        kanbanColumns[targetColumnIndex].cards.insert(card, at: 0)
+        kanbanStatus = "Task moved to In Progress. Work starts now."
     }
 
     func moveKanbanCard(_ cardID: String, direction: Int) {
@@ -5589,7 +5603,14 @@ final class InstallerViewModel: ObservableObject {
         var card = kanbanColumns[location.columnIndex].cards.remove(at: location.cardIndex)
         card.updatedAt = Date()
         kanbanColumns[nextColumnIndex].cards.insert(card, at: 0)
-        kanbanStatus = "Moved to \(kanbanColumns[nextColumnIndex].title)."
+        let targetID = kanbanColumns[nextColumnIndex].id
+        if targetID == "doing" {
+            kanbanStatus = "Moved to In Progress. Work starts now."
+        } else if targetID == "done" {
+            kanbanStatus = "Moved to Done. Task is complete."
+        } else {
+            kanbanStatus = "Moved to \(kanbanColumns[nextColumnIndex].title). It is not running."
+        }
     }
 
     func deleteKanbanCard(_ cardID: String) {
@@ -5615,7 +5636,7 @@ final class InstallerViewModel: ObservableObject {
         }
         cronCreateError = ""
         showCronJobCreator = true
-        kanbanStatus = "Cron form prepared from Kanban task."
+        kanbanStatus = "Cron form prepared. Click Create Job to schedule it."
     }
 
     private func kanbanCardLocation(_ cardID: String) -> (columnIndex: Int, cardIndex: Int)? {
@@ -13540,7 +13561,7 @@ struct ContentView: View {
                             .background(RoundedRectangle(cornerRadius: 999).fill(UI.accent.opacity(0.12)))
                             .overlay(RoundedRectangle(cornerRadius: 999).stroke(UI.accent.opacity(0.35), lineWidth: 1))
                     }
-                    Text("Plan work, assign agents, and turn repeatable tasks into Cron Jobs from one clear board.")
+                    Text("Plan work in classic Kanban stages. A card does not run until you start it or create a Cron Job.")
                         .font(AppFont.body(13))
                         .foregroundStyle(UI.muted)
                 }
@@ -13561,9 +13582,9 @@ struct ContentView: View {
 
             HStack(spacing: 10) {
                 kanbanMetricCard("Tasks", value: "\(vm.kanbanCards.count)", icon: "rectangle.stack.fill", tint: UI.accent)
-                kanbanMetricCard("Active", value: "\(vm.kanbanActiveCardsCount)", icon: "bolt.fill", tint: Color(NSColor.systemOrange))
+                kanbanMetricCard("In progress", value: "\(vm.kanbanColumns.first { $0.id == "doing" }?.cards.count ?? 0)", icon: "bolt.fill", tint: Color(NSColor.systemOrange))
                 kanbanMetricCard("Agents", value: "\(max(vm.agents.count, 1))", icon: "person.2.fill", tint: Color(NSColor.systemBlue))
-                kanbanMetricCard("Cron ready", value: "\(vm.kanbanCards.filter { !$0.reviewSchedule.isEmpty }.count)", icon: "calendar.badge.clock", tint: Color(NSColor.systemGreen))
+                kanbanMetricCard("Schedulable", value: "\(vm.kanbanCards.filter { $0.cronEnabled }.count)", icon: "calendar.badge.clock", tint: Color(NSColor.systemGreen))
             }
 
             HStack(alignment: .top, spacing: 10) {
@@ -13603,6 +13624,10 @@ struct ContentView: View {
                     .padding(.vertical, 3)
                     .background(RoundedRectangle(cornerRadius: 999).fill(UI.card))
             }
+            Text(kanbanColumnDescription(column.id))
+                .font(AppFont.body(10))
+                .foregroundStyle(UI.muted)
+                .lineLimit(2)
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
@@ -13672,6 +13697,7 @@ struct ContentView: View {
             }
 
             HStack(spacing: 6) {
+                kanbanMiniBadge(kanbanCardStateLabel(columnID), icon: kanbanCardStateIcon(columnID), tint: kanbanColumnTint(columnID))
                 kanbanMiniBadge(card.priority, icon: "flag.fill", tint: priorityTint)
                 kanbanMiniBadge(agentName(for: card.agentID), icon: "person.crop.circle", tint: UI.muted)
             }
@@ -13689,8 +13715,17 @@ struct ContentView: View {
                 .disabled(columnID == vm.kanbanColumns.first?.id)
                 .help("Move left")
 
+                if columnID != "doing" && columnID != "done" {
+                    Button { vm.startKanbanCard(card.id) } label: {
+                        Label("Start", systemImage: "play.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(CompactGhostButton())
+                    .help("Move to In Progress")
+                }
+
                 Button { vm.prepareCronFromKanbanCard(card) } label: {
-                    Label("Cron", systemImage: "calendar.badge.plus")
+                    Label("Schedule", systemImage: "calendar.badge.plus")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(CompactGhostButton())
@@ -13718,7 +13753,7 @@ struct ContentView: View {
                     Text(vm.kanbanEditorIsEditing ? "Edit Kanban Task" : "New Kanban Task")
                         .font(AppFont.heading(24))
                         .foregroundStyle(UI.text)
-                    Text("Define the task, assign an agent, and keep the Cron setup attached to the card.")
+                    Text("Creating a card only plans the work. Use Start to begin, or Schedule to create a Cron Job.")
                         .font(AppFont.body(13))
                         .foregroundStyle(UI.muted)
                 }
@@ -13779,12 +13814,17 @@ struct ContentView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 10) {
-                    Toggle("Cron setup", isOn: $vm.kanbanEditorCronEnabled)
+                    Toggle("Automation setup", isOn: $vm.kanbanEditorCronEnabled)
                         .toggleStyle(.switch)
                         .font(AppFont.bodySemi(13))
                         .foregroundStyle(UI.text)
 
                     if vm.kanbanEditorCronEnabled {
+                        Text("This only stores schedule settings on the card. The job is not scheduled until you click Schedule on the card and create the Cron Job.")
+                            .font(AppFont.body(11))
+                            .foregroundStyle(UI.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+
                         HStack(spacing: 8) {
                             Picker("", selection: $vm.kanbanEditorScheduleKind) {
                                 Text("Every").tag("every")
@@ -13970,6 +14010,44 @@ struct ContentView: View {
         return vm.agents.first { $0.id == agentID }?.displayName ?? agentID
     }
 
+    private func kanbanColumnDescription(_ columnID: String) -> String {
+        switch columnID {
+        case "backlog": return "Ideas and tasks. Not started."
+        case "ready": return "Prioritized and waiting."
+        case "doing": return "Work has started."
+        case "review": return "Waiting for validation."
+        case "done": return "Finished work."
+        default: return "Kanban stage."
+        }
+    }
+
+    private func kanbanCardStateLabel(_ columnID: String) -> String {
+        switch columnID {
+        case "backlog": return "Not started"
+        case "ready": return "Ready"
+        case "doing": return "Started"
+        case "review": return "Review"
+        case "done": return "Done"
+        default: return "Task"
+        }
+    }
+
+    private func kanbanCardStateIcon(_ columnID: String) -> String {
+        switch columnID {
+        case "backlog": return "tray.full"
+        case "ready": return "checklist"
+        case "doing": return "play.fill"
+        case "review": return "eye.fill"
+        case "done": return "checkmark.seal.fill"
+        default: return "rectangle.stack.fill"
+        }
+    }
+
+    private func kanbanColumnTint(_ columnID: String) -> Color {
+        let colorName = vm.kanbanColumns.first { $0.id == columnID }?.colorName ?? "gray"
+        return kanbanColor(colorName)
+    }
+
     private func kanbanDeliveryLabel(for card: InstallerViewModel.KanbanCard) -> String {
         if !card.cronEnabled || card.deliveryMode == "none" || card.deliveryChannel == "none" {
             return "No delivery"
@@ -13994,6 +14072,7 @@ struct ContentView: View {
         case "blue": return Color(NSColor.systemBlue)
         case "green": return Color(NSColor.systemGreen)
         case "red": return UI.accent
+        case "purple": return Color(NSColor.systemPurple)
         default: return UI.muted
         }
     }

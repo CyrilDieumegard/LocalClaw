@@ -562,6 +562,22 @@ struct InstallerEngineTests {
         #expect(updatedCard.priority == "Urgent")
     }
 
+    @MainActor
+    @Test func kanbanTaskStartsOnlyWhenMovedToProgress() {
+        let vm = InstallerViewModel()
+        vm.beginCreateKanbanCard()
+        vm.kanbanEditorTitle = "Prepare weekly report"
+        vm.saveKanbanTaskEditor()
+
+        let card = vm.kanbanColumns.first { $0.id == "backlog" }!.cards.first!
+
+        vm.startKanbanCard(card.id)
+
+        #expect(vm.kanbanColumns.first { $0.id == "backlog" }?.cards.contains { $0.id == card.id } == false)
+        #expect(vm.kanbanColumns.first { $0.id == "doing" }?.cards.contains { $0.id == card.id } == true)
+        #expect(vm.kanbanStatus.contains("Work starts now"))
+    }
+
     @Test func createsRunnableDeveloperPreviewScaffold() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("localclaw-preview-test-\(UUID().uuidString)")
