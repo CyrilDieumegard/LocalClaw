@@ -578,6 +578,23 @@ struct InstallerEngineTests {
         #expect(vm.kanbanStatus.contains("Work starts now"))
     }
 
+    @Test func kanbanRunCommandUsesAgentAndDeliveryDestination() {
+        let command = InstallerViewModel.kanbanRunCommand(
+            agentID: "localagent",
+            message: "Envoyez un résumé",
+            deliveryMode: "channel",
+            deliveryChannel: "telegram",
+            deliveryAccount: "",
+            deliveryTo: "1636626469"
+        )
+
+        #expect(command.contains("openclaw --no-color agent"))
+        #expect(command.contains("--agent 'localagent'"))
+        #expect(command.contains("--deliver"))
+        #expect(command.contains("--reply-channel 'telegram'"))
+        #expect(command.contains("--reply-to '1636626469'"))
+    }
+
     @Test func createsRunnableDeveloperPreviewScaffold() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("localclaw-preview-test-\(UUID().uuidString)")

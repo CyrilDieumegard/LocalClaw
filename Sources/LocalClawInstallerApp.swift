@@ -1121,6 +1121,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var kanbanEditorDeliveryAccount = ""
     @Published var kanbanEditorDeliveryTo = ""
     @Published var kanbanEditorError = ""
+    @Published var kanbanRunningCardIDs: Set<String> = []
     @Published var kanbanStatus = "Ready"
     @Published var healthLogs: String = ""
     @Published var healthStatus: String = "Unknown"
@@ -5594,6 +5595,94 @@ final class InstallerViewModel: ObservableObject {
         card.updatedAt = Date()
         kanbanColumns[targetColumnIndex].cards.insert(card, at: 0)
         kanbanStatus = "Task moved to In Progress. Work starts now."
+    }
+
+    func runKanbanCardNow(_ cardID: String) {
+        guard let location = kanbanCardLocation(cardID) else { return }
+        let card = kanbanColumns[location.columnIndex].cards[location.cardIndex]
+        let message = [card.title, card.detail]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+        guard !message.isEmpty else {
+            kanbanStatus = "Add task details before running this card."
+            return
+        }
+
+        if !kanbanRunningCardIDs.contains(cardID) {
+            startKanbanCard(cardID)
+        }
+        kanbanRunningCardIDs.insert(cardID)
+        kanbanStatus = "Running \(card.title) with \(card.agentID.isEmpty ? "main" : card.agentID)..."
+
+        let command = Self.kanbanRunCommand(
+            agentID: card.agentID.isEmpty ? "main" : card.agentID,
+            message: message,
+            deliveryMode: card.deliveryMode,
+            deliveryChannel: card.deliveryChannel,
+            deliveryAccount: card.deliveryAccount,
+            deliveryTo: card.deliveryTo
+        )
+
+        Task.detached {
+            let engine = InstallerEngine()
+            let result = engine.shell(command)
+            let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
+            await MainActor.run {
+                self.kanbanRunningCardIDs.remove(cardID)
+                if result.0 == 0 {
+                    self.moveKanbanCardToReviewIfPossible(cardID)
+                    self.kanbanStatus = "Run finished. Review the result."
+                } else {
+                    self.kanbanStatus = output.isEmpty ? "Run failed." : "Run failed: \(output)"
+                }
+            }
+        }
+    }
+
+    nonisolated static func kanbanRunCommand(
+        agentID: String,
+        message: String,
+        deliveryMode: String,
+        deliveryChannel: String,
+        deliveryAccount: String,
+        deliveryTo: String
+    ) -> String {
+        var args = [
+            "openclaw --no-color agent",
+            "--agent \(shellSingleQuote(agentID))",
+            "--message \(shellSingleQuote(message))",
+            "--timeout 600"
+        ]
+
+        if deliveryMode != "none" && deliveryChannel != "none" {
+            args.append("--deliver")
+            if deliveryMode == "last" || deliveryChannel == "last" {
+                args.append("--reply-channel last")
+            } else {
+                args.append("--reply-channel \(shellSingleQuote(deliveryChannel))")
+                let account = deliveryAccount.trimmingCharacters(in: .whitespacesAndNewlines)
+                let to = deliveryTo.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !account.isEmpty {
+                    args.append("--reply-account \(shellSingleQuote(account))")
+                }
+                if !to.isEmpty {
+                    args.append("--reply-to \(shellSingleQuote(to))")
+                }
+            }
+        }
+
+        args.append("2>&1")
+        return args.joined(separator: " ")
+    }
+
+    private func moveKanbanCardToReviewIfPossible(_ cardID: String) {
+        guard let location = kanbanCardLocation(cardID),
+              let reviewIndex = kanbanColumns.firstIndex(where: { $0.id == "review" }),
+              location.columnIndex != reviewIndex else { return }
+        var card = kanbanColumns[location.columnIndex].cards.remove(at: location.cardIndex)
+        card.updatedAt = Date()
+        kanbanColumns[reviewIndex].cards.insert(card, at: 0)
     }
 
     func moveKanbanCard(_ cardID: String, direction: Int) {
@@ -13723,6 +13812,14 @@ struct ContentView: View {
                     .buttonStyle(CompactGhostButton())
                     .help("Move to In Progress")
                 }
+
+                Button { vm.runKanbanCardNow(card.id) } label: {
+                    Label(vm.kanbanRunningCardIDs.contains(card.id) ? "Running" : "Run now", systemImage: "paperplane.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(CompactGhostButton())
+                .disabled(vm.kanbanRunningCardIDs.contains(card.id))
+                .help("Run this task with the selected agent now")
 
                 Button { vm.prepareCronFromKanbanCard(card) } label: {
                     Label("Schedule", systemImage: "calendar.badge.plus")
