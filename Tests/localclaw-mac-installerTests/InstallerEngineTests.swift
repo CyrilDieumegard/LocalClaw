@@ -607,11 +607,28 @@ struct InstallerEngineTests {
         components.second = 0
         let date = components.date!
 
-        let value = InstallerViewModel.cronAtDateString(date)
+        let value = InstallerViewModel.cronAtDateString(date, timeZoneID: "Europe/Zurich")
         let parsed = InstallerViewModel.cronAtDate(from: value)
 
         #expect(value.contains("2026-05-22T"))
+        #expect(value.hasSuffix("+02:00"))
         #expect(parsed != nil)
+    }
+
+    @Test func timezoneLabelShowsLocationAndOffset() {
+        var components = DateComponents()
+        components.calendar = Calendar(identifier: .gregorian)
+        components.timeZone = TimeZone(secondsFromGMT: 0)
+        components.year = 2026
+        components.month = 5
+        components.day = 22
+        components.hour = 12
+        let date = components.date!
+
+        let label = InstallerViewModel.timeZoneDisplayLabel("Europe/Zurich", date: date)
+
+        #expect(label.contains("Europe/Zurich"))
+        #expect(label.contains("GMT+02:00"))
     }
 
     @Test func createsRunnableDeveloperPreviewScaffold() throws {

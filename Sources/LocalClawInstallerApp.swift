@@ -556,6 +556,7 @@ final class InstallerViewModel: ObservableObject {
         var priority: String
         var agentID: String
         var reviewSchedule: String
+        var scheduleTimeZoneID: String
         var scheduleKind: String
         var cronEnabled: Bool
         var deliveryMode: String
@@ -572,6 +573,7 @@ final class InstallerViewModel: ObservableObject {
             priority: String,
             agentID: String,
             reviewSchedule: String,
+            scheduleTimeZoneID: String = TimeZone.current.identifier,
             scheduleKind: String = "every",
             cronEnabled: Bool = true,
             deliveryMode: String = "last",
@@ -587,6 +589,7 @@ final class InstallerViewModel: ObservableObject {
             self.priority = priority
             self.agentID = agentID
             self.reviewSchedule = reviewSchedule
+            self.scheduleTimeZoneID = scheduleTimeZoneID
             self.scheduleKind = scheduleKind
             self.cronEnabled = cronEnabled
             self.deliveryMode = deliveryMode
@@ -603,6 +606,7 @@ final class InstallerViewModel: ObservableObject {
             priority: String,
             agentID: String,
             reviewSchedule: String,
+            scheduleTimeZoneID: String = TimeZone.current.identifier,
             scheduleKind: String = "every",
             cronEnabled: Bool = true,
             deliveryMode: String = "last",
@@ -617,6 +621,7 @@ final class InstallerViewModel: ObservableObject {
                 priority: priority,
                 agentID: agentID,
                 reviewSchedule: reviewSchedule,
+                scheduleTimeZoneID: scheduleTimeZoneID,
                 scheduleKind: scheduleKind,
                 cronEnabled: cronEnabled,
                 deliveryMode: deliveryMode,
@@ -629,7 +634,7 @@ final class InstallerViewModel: ObservableObject {
         }
 
         private enum CodingKeys: String, CodingKey {
-            case id, title, detail, priority, agentID, reviewSchedule, scheduleKind, cronEnabled, deliveryMode, deliveryChannel, deliveryAccount, deliveryTo, createdAt, updatedAt
+            case id, title, detail, priority, agentID, reviewSchedule, scheduleTimeZoneID, scheduleKind, cronEnabled, deliveryMode, deliveryChannel, deliveryAccount, deliveryTo, createdAt, updatedAt
         }
 
         init(from decoder: Decoder) throws {
@@ -640,6 +645,7 @@ final class InstallerViewModel: ObservableObject {
             priority = try container.decodeIfPresent(String.self, forKey: .priority) ?? "Normal"
             agentID = try container.decodeIfPresent(String.self, forKey: .agentID) ?? "main"
             reviewSchedule = try container.decodeIfPresent(String.self, forKey: .reviewSchedule) ?? "1d"
+            scheduleTimeZoneID = try container.decodeIfPresent(String.self, forKey: .scheduleTimeZoneID) ?? TimeZone.current.identifier
             scheduleKind = try container.decodeIfPresent(String.self, forKey: .scheduleKind) ?? "every"
             cronEnabled = try container.decodeIfPresent(Bool.self, forKey: .cronEnabled) ?? true
             let decodedDeliveryChannel = try container.decodeIfPresent(String.self, forKey: .deliveryChannel) ?? "last"
@@ -1087,7 +1093,7 @@ final class InstallerViewModel: ObservableObject {
         didSet {
             if cronCreateScheduleKind == "at" && oldValue != "at" {
                 cronCreateAtDate = Self.defaultAtDate()
-                cronCreateScheduleValue = Self.cronAtDateString(cronCreateAtDate)
+                cronCreateScheduleValue = Self.cronAtDateString(cronCreateAtDate, timeZoneID: cronCreateTimeZoneID)
             }
         }
     }
@@ -1095,7 +1101,14 @@ final class InstallerViewModel: ObservableObject {
     @Published var cronCreateAtDate = InstallerViewModel.defaultAtDate() {
         didSet {
             if cronCreateScheduleKind == "at" {
-                cronCreateScheduleValue = Self.cronAtDateString(cronCreateAtDate)
+                cronCreateScheduleValue = Self.cronAtDateString(cronCreateAtDate, timeZoneID: cronCreateTimeZoneID)
+            }
+        }
+    }
+    @Published var cronCreateTimeZoneID = TimeZone.current.identifier {
+        didSet {
+            if cronCreateScheduleKind == "at" {
+                cronCreateScheduleValue = Self.cronAtDateString(cronCreateAtDate, timeZoneID: cronCreateTimeZoneID)
             }
         }
     }
@@ -1132,7 +1145,7 @@ final class InstallerViewModel: ObservableObject {
         didSet {
             if kanbanEditorScheduleKind == "at" && oldValue != "at" {
                 kanbanEditorAtDate = Self.defaultAtDate()
-                kanbanEditorScheduleValue = Self.cronAtDateString(kanbanEditorAtDate)
+                kanbanEditorScheduleValue = Self.cronAtDateString(kanbanEditorAtDate, timeZoneID: kanbanEditorTimeZoneID)
             }
         }
     }
@@ -1140,7 +1153,14 @@ final class InstallerViewModel: ObservableObject {
     @Published var kanbanEditorAtDate = InstallerViewModel.defaultAtDate() {
         didSet {
             if kanbanEditorScheduleKind == "at" {
-                kanbanEditorScheduleValue = Self.cronAtDateString(kanbanEditorAtDate)
+                kanbanEditorScheduleValue = Self.cronAtDateString(kanbanEditorAtDate, timeZoneID: kanbanEditorTimeZoneID)
+            }
+        }
+    }
+    @Published var kanbanEditorTimeZoneID = TimeZone.current.identifier {
+        didSet {
+            if kanbanEditorScheduleKind == "at" {
+                kanbanEditorScheduleValue = Self.cronAtDateString(kanbanEditorAtDate, timeZoneID: kanbanEditorTimeZoneID)
             }
         }
     }
@@ -3982,12 +4002,41 @@ final class InstallerViewModel: ObservableObject {
         Date().addingTimeInterval(3600)
     }
 
-    nonisolated static func cronAtDateString(_ date: Date) -> String {
+    nonisolated static func cronAtDateString(_ date: Date, timeZoneID: String = TimeZone.current.identifier) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(identifier: timeZoneID) ?? .current
         formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssXXXXX"
         return formatter.string(from: date)
+    }
+
+    nonisolated static func timeZoneDisplayLabel(_ id: String, date: Date = Date()) -> String {
+        let timeZone = TimeZone(identifier: id) ?? .current
+        let seconds = timeZone.secondsFromGMT(for: date)
+        let sign = seconds >= 0 ? "+" : "-"
+        let absolute = abs(seconds)
+        let hours = absolute / 3600
+        let minutes = (absolute % 3600) / 60
+        return "\(id) (GMT\(sign)\(String(format: "%02d", hours)):\(String(format: "%02d", minutes)))"
+    }
+
+    nonisolated static var scheduleTimeZoneOptions: [String] {
+        let preferred = [
+            TimeZone.current.identifier,
+            "Europe/Zurich",
+            "Europe/Paris",
+            "Europe/London",
+            "UTC",
+            "America/New_York",
+            "America/Los_Angeles",
+            "Asia/Dubai",
+            "Asia/Singapore",
+            "Asia/Shanghai",
+            "Asia/Tokyo"
+        ]
+        var seen: Set<String> = []
+        return preferred.filter { TimeZone(identifier: $0) != nil && seen.insert($0).inserted }
     }
 
     nonisolated static func cronAtDate(from value: String) -> Date? {
@@ -4014,6 +4063,7 @@ final class InstallerViewModel: ObservableObject {
         cronCreateScheduleKind = "every"
         cronCreateScheduleValue = "30m"
         cronCreateAtDate = Self.defaultAtDate()
+        cronCreateTimeZoneID = TimeZone.current.identifier
         cronCreateMessage = ""
         cronCreateDeliveryMode = "last"
         cronCreateDeliveryChannel = activeCronDeliveryChannels.first?.id ?? "telegram"
@@ -5524,6 +5574,7 @@ final class InstallerViewModel: ObservableObject {
         kanbanEditorScheduleKind = "every"
         kanbanEditorScheduleValue = "1d"
         kanbanEditorAtDate = Self.defaultAtDate()
+        kanbanEditorTimeZoneID = TimeZone.current.identifier
         kanbanEditorDeliveryMode = "last"
         kanbanEditorDeliveryChannel = activeCronDeliveryChannels.first?.id ?? "telegram"
         kanbanEditorDeliveryAccount = ""
@@ -5548,9 +5599,10 @@ final class InstallerViewModel: ObservableObject {
         kanbanEditorCronEnabled = card.cronEnabled
         kanbanEditorScheduleKind = card.scheduleKind.isEmpty ? "every" : card.scheduleKind
         kanbanEditorScheduleValue = card.reviewSchedule.isEmpty ? "1d" : card.reviewSchedule
+        kanbanEditorTimeZoneID = card.scheduleTimeZoneID.isEmpty ? TimeZone.current.identifier : card.scheduleTimeZoneID
         kanbanEditorAtDate = Self.cronAtDate(from: kanbanEditorScheduleValue) ?? Self.defaultAtDate()
         if kanbanEditorScheduleKind == "at", Self.cronAtDate(from: kanbanEditorScheduleValue) == nil {
-            kanbanEditorScheduleValue = Self.cronAtDateString(kanbanEditorAtDate)
+            kanbanEditorScheduleValue = Self.cronAtDateString(kanbanEditorAtDate, timeZoneID: kanbanEditorTimeZoneID)
         }
         kanbanEditorDeliveryMode = card.deliveryMode.isEmpty ? (card.deliveryChannel == "none" ? "none" : (card.deliveryChannel == "last" ? "last" : "channel")) : card.deliveryMode
         kanbanEditorDeliveryChannel = card.deliveryChannel == "last" || card.deliveryChannel == "none" ? (activeCronDeliveryChannels.first?.id ?? "telegram") : card.deliveryChannel
@@ -5592,6 +5644,7 @@ final class InstallerViewModel: ObservableObject {
             kanbanColumns[location.columnIndex].cards[location.cardIndex].priority = kanbanEditorPriority
             kanbanColumns[location.columnIndex].cards[location.cardIndex].agentID = kanbanEditorAgentID
             kanbanColumns[location.columnIndex].cards[location.cardIndex].reviewSchedule = scheduleValue.isEmpty ? "1d" : scheduleValue
+            kanbanColumns[location.columnIndex].cards[location.cardIndex].scheduleTimeZoneID = kanbanEditorTimeZoneID
             kanbanColumns[location.columnIndex].cards[location.cardIndex].scheduleKind = kanbanEditorScheduleKind
             kanbanColumns[location.columnIndex].cards[location.cardIndex].cronEnabled = kanbanEditorCronEnabled
             kanbanColumns[location.columnIndex].cards[location.cardIndex].deliveryMode = kanbanEditorDeliveryMode
@@ -5607,6 +5660,7 @@ final class InstallerViewModel: ObservableObject {
                 priority: kanbanEditorPriority,
                 agentID: kanbanEditorAgentID,
                 reviewSchedule: scheduleValue.isEmpty ? "1d" : scheduleValue,
+                scheduleTimeZoneID: kanbanEditorTimeZoneID,
                 scheduleKind: kanbanEditorScheduleKind,
                 cronEnabled: kanbanEditorCronEnabled,
                 deliveryMode: kanbanEditorDeliveryMode,
@@ -5777,9 +5831,10 @@ final class InstallerViewModel: ObservableObject {
         cronCreateAgentID = card.agentID.isEmpty ? "main" : card.agentID
         cronCreateScheduleKind = card.scheduleKind.isEmpty ? "every" : card.scheduleKind
         cronCreateScheduleValue = card.reviewSchedule.isEmpty ? "1d" : card.reviewSchedule
+        cronCreateTimeZoneID = card.scheduleTimeZoneID.isEmpty ? TimeZone.current.identifier : card.scheduleTimeZoneID
         cronCreateAtDate = Self.cronAtDate(from: cronCreateScheduleValue) ?? Self.defaultAtDate()
         if cronCreateScheduleKind == "at", Self.cronAtDate(from: cronCreateScheduleValue) == nil {
-            cronCreateScheduleValue = Self.cronAtDateString(cronCreateAtDate)
+            cronCreateScheduleValue = Self.cronAtDateString(cronCreateAtDate, timeZoneID: cronCreateTimeZoneID)
         }
         cronCreateMessage = [card.title, card.detail].filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.joined(separator: "\n\n")
         cronCreateDeliveryMode = card.cronEnabled ? (card.deliveryMode.isEmpty ? (card.deliveryChannel == "none" ? "none" : (card.deliveryChannel == "last" ? "last" : "channel")) : card.deliveryMode) : "none"
@@ -13352,9 +13407,17 @@ struct ContentView: View {
                     }
 
                     if vm.cronCreateScheduleKind == "at" {
-                        Text("Runs once at \(vm.cronCreateScheduleValue)")
+                        Picker("Location", selection: $vm.cronCreateTimeZoneID) {
+                            ForEach(InstallerViewModel.scheduleTimeZoneOptions, id: \.self) { zone in
+                                Text(InstallerViewModel.timeZoneDisplayLabel(zone, date: vm.cronCreateAtDate)).tag(zone)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .font(AppFont.body(12))
+                        Text("Runs once at \(vm.cronCreateScheduleValue) in \(InstallerViewModel.timeZoneDisplayLabel(vm.cronCreateTimeZoneID, date: vm.cronCreateAtDate))")
                             .font(AppFont.body(11))
                             .foregroundStyle(UI.muted)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
 
                     if vm.cronCreateScheduleKind != "at" {
@@ -13878,7 +13941,7 @@ struct ContentView: View {
                 kanbanMiniBadge(agentName(for: card.agentID), icon: "person.crop.circle", tint: UI.muted)
             }
             HStack(spacing: 6) {
-                kanbanMiniBadge(card.cronEnabled ? card.reviewSchedule : "No cron", icon: "clock", tint: Color(NSColor.systemBlue))
+                kanbanMiniBadge(card.cronEnabled ? kanbanScheduleLabel(for: card) : "No cron", icon: "clock", tint: Color(NSColor.systemBlue))
                 kanbanMiniBadge(kanbanDeliveryLabel(for: card), icon: "paperplane.fill", tint: Color(NSColor.systemGreen))
             }
 
@@ -14027,9 +14090,17 @@ struct ContentView: View {
                         }
 
                         if vm.kanbanEditorScheduleKind == "at" {
-                            Text("Runs once at \(vm.kanbanEditorScheduleValue)")
+                            Picker("Location", selection: $vm.kanbanEditorTimeZoneID) {
+                                ForEach(InstallerViewModel.scheduleTimeZoneOptions, id: \.self) { zone in
+                                    Text(InstallerViewModel.timeZoneDisplayLabel(zone, date: vm.kanbanEditorAtDate)).tag(zone)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .font(AppFont.body(12))
+                            Text("Runs once at \(vm.kanbanEditorScheduleValue) in \(InstallerViewModel.timeZoneDisplayLabel(vm.kanbanEditorTimeZoneID, date: vm.kanbanEditorAtDate))")
                                 .font(AppFont.body(11))
                                 .foregroundStyle(UI.muted)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
 
                         if vm.kanbanEditorScheduleKind != "at" {
@@ -14250,6 +14321,13 @@ struct ContentView: View {
     private func kanbanColumnTint(_ columnID: String) -> Color {
         let colorName = vm.kanbanColumns.first { $0.id == columnID }?.colorName ?? "gray"
         return kanbanColor(colorName)
+    }
+
+    private func kanbanScheduleLabel(for card: InstallerViewModel.KanbanCard) -> String {
+        guard card.scheduleKind == "at" else { return card.reviewSchedule }
+        let zone = card.scheduleTimeZoneID.isEmpty ? TimeZone.current.identifier : card.scheduleTimeZoneID
+        let shortZone = zone.split(separator: "/").last.map(String.init) ?? zone
+        return "\(card.reviewSchedule) · \(shortZone)"
     }
 
     private func kanbanDeliveryLabel(for card: InstallerViewModel.KanbanCard) -> String {
