@@ -1114,14 +1114,23 @@ final class InstallerViewModel: ObservableObject {
         ChannelCatalogEntry(id: "googlechat", label: "Google Chat", detailLabel: "Google Chat bot credentials", systemImage: "message.badge.fill", origin: "OpenClaw channel"),
         ChannelCatalogEntry(id: "msteams", label: "Microsoft Teams", detailLabel: "Microsoft Teams bot credentials", systemImage: "person.3.fill", origin: "OpenClaw channel"),
         ChannelCatalogEntry(id: "feishu", label: "Feishu", detailLabel: "Feishu bot app credentials", systemImage: "paperplane.circle.fill", origin: "OpenClaw channel"),
-        ChannelCatalogEntry(id: "wecom", label: "WeCom", detailLabel: "WeCom app credentials", systemImage: "building.2.fill", origin: "OpenClaw channel"),
         ChannelCatalogEntry(id: "line", label: "LINE", detailLabel: "LINE channel token", systemImage: "bubble.left.fill", origin: "OpenClaw channel"),
         ChannelCatalogEntry(id: "zalo", label: "Zalo", detailLabel: "Zalo app credentials", systemImage: "bubble.right.fill", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "zalouser", label: "Zalo User", detailLabel: "Zalo user credentials", systemImage: "person.text.rectangle.fill", origin: "OpenClaw channel"),
         ChannelCatalogEntry(id: "nextcloud-talk", label: "Nextcloud Talk", detailLabel: "Nextcloud Talk bot config", systemImage: "cloud.fill", origin: "OpenClaw channel"),
         ChannelCatalogEntry(id: "twitch", label: "Twitch", detailLabel: "Twitch chat token", systemImage: "play.tv.fill", origin: "OpenClaw channel"),
         ChannelCatalogEntry(id: "nostr", label: "Nostr", detailLabel: "Nostr relay credentials", systemImage: "network", origin: "OpenClaw channel"),
         ChannelCatalogEntry(id: "irc", label: "IRC", detailLabel: "Server, nick, and channel config", systemImage: "terminal.fill", origin: "OpenClaw channel"),
-        ChannelCatalogEntry(id: "qqbot", label: "QQ Bot", detailLabel: "QQ bot credentials", systemImage: "q.circle.fill", origin: "OpenClaw channel")
+        ChannelCatalogEntry(id: "qqbot", label: "QQ Bot", detailLabel: "QQ bot credentials", systemImage: "q.circle.fill", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "clickclack", label: "ClickClack", detailLabel: "ClickClack token or endpoint", systemImage: "cursorarrow.click.2", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "synology-chat", label: "Synology Chat", detailLabel: "Synology Chat token or webhook", systemImage: "server.rack", origin: "OpenClaw channel"),
+        ChannelCatalogEntry(id: "tlon", label: "Tlon", detailLabel: "Tlon token or endpoint", systemImage: "network.badge.shield.half.filled", origin: "OpenClaw channel")
+    ]
+
+    nonisolated static let openClawAddSupportedChannelIDs: Set<String> = [
+        "telegram", "whatsapp", "discord", "irc", "googlechat", "slack", "signal", "imessage",
+        "feishu", "nostr", "msteams", "mattermost", "nextcloud-talk", "matrix", "line", "zalo",
+        "clickclack", "zalouser", "synology-chat", "tlon", "qqbot", "twitch"
     ]
 
     private static func channelSortRank(_ id: String) -> Int {
@@ -4331,11 +4340,18 @@ final class InstallerViewModel: ObservableObject {
                 let accountStatus = statusRoot["channelAccounts"] as? [String: Any] ?? [:]
 
                 let catalog = Dictionary(uniqueKeysWithValues: Self.defaultChannelCatalog.map { ($0.id, $0) })
+                let configuredChannelIDs = Set(configSnapshots.keys)
+                    .union(accountStatus.keys)
+                    .union(channelsStatus.keys.filter { key in
+                        let status = channelsStatus[key] as? [String: Any] ?? [:]
+                        return status["configured"] as? Bool == true
+                    })
                 let allChannelIDs = Set(Self.defaultChannelCatalog.map(\.id))
                     .union(chat.keys)
                     .union(channelsStatus.keys)
                     .union(accountStatus.keys)
                     .union(configSnapshots.keys)
+                    .filter { Self.openClawAddSupportedChannelIDs.contains($0) || configuredChannelIDs.contains($0) }
 
                 self.channels = allChannelIDs.compactMap { key in
                     let item = chat[key] as? [String: Any] ?? [:]

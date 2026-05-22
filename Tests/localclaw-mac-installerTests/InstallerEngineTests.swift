@@ -265,6 +265,27 @@ struct InstallerEngineTests {
         #expect(profile.fields.first?.cliOption == "--bot-token")
     }
 
+    @Test func knownChannelCredentialOptionsAreSupportedByOpenClawAdd() {
+        let supportedOptions: Set<String> = [
+            "--account", "--app-token", "--auth-dir", "--base-url", "--bot-token", "--channel",
+            "--cli-path", "--db-path", "--http-host", "--http-port", "--http-url", "--name",
+            "--password", "--region", "--secret", "--secret-file", "--service", "--signal-number",
+            "--token", "--token-file", "--url", "--use-env"
+        ]
+        let channels = InstallerViewModel.openClawAddSupportedChannelIDs
+
+        #expect(!channels.contains("wecom"))
+        #expect(!channels.contains("yuanbao"))
+        #expect(!channels.contains("openclaw-weixin"))
+
+        for channel in channels {
+            let profile = InstallerViewModel.channelCredentialProfile(for: channel)
+            for field in profile.fields {
+                #expect(supportedOptions.contains(field.cliOption), "Unsupported option \(field.cliOption) for \(channel)")
+            }
+        }
+    }
+
     @Test func canonicalChatRuntimeModelMapsOpenAIGPTModels() {
         #expect(InstallerViewModel.canonicalChatRuntimeModelID("openrouter/openai/gpt-5.5") == "openrouter/openai/gpt-5.5")
         #expect(InstallerViewModel.canonicalChatRuntimeModelID("openrouter/openai/gpt-5.4") == "openrouter/openai/gpt-5.4")
