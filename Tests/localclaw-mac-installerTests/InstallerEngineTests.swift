@@ -502,6 +502,7 @@ struct InstallerEngineTests {
     @MainActor
     @Test func kanbanTaskCanPrepareCronForm() {
         let vm = InstallerViewModel()
+        vm.kanbanAutomationSyncEnabled = false
         vm.beginCreateKanbanCard()
         vm.kanbanEditorTitle = "Daily roadmap check"
         vm.kanbanEditorDetail = "Summarize blockers and next actions."
@@ -531,6 +532,7 @@ struct InstallerEngineTests {
     @MainActor
     @Test func kanbanTaskEditorLoadsExistingCardValues() {
         let vm = InstallerViewModel()
+        vm.kanbanAutomationSyncEnabled = false
         vm.beginCreateKanbanCard()
         vm.kanbanEditorTitle = "Draft launch checklist"
         vm.kanbanEditorDetail = "Confirm the release notes and support plan."
@@ -565,6 +567,7 @@ struct InstallerEngineTests {
     @MainActor
     @Test func kanbanTaskStartsOnlyWhenMovedToProgress() {
         let vm = InstallerViewModel()
+        vm.kanbanAutomationSyncEnabled = false
         vm.beginCreateKanbanCard()
         vm.kanbanEditorTitle = "Prepare weekly report"
         vm.saveKanbanTaskEditor()
@@ -593,6 +596,40 @@ struct InstallerEngineTests {
         #expect(command.contains("--deliver"))
         #expect(command.contains("--reply-channel 'telegram'"))
         #expect(command.contains("--reply-to '1636626469'"))
+    }
+
+    @Test func kanbanCronCommandCreatesRealScheduledJob() {
+        let card = InstallerViewModel.KanbanCard.fresh(
+            title: "Tortue",
+            detail: "Parle moi d'une tortue",
+            priority: "Urgent",
+            agentID: "localagent",
+            reviewSchedule: "2026-05-22T11:55:29+02:00",
+            scheduleTimeZoneID: "Europe/Zurich",
+            scheduleKind: "at",
+            cronEnabled: true,
+            deliveryMode: "channel",
+            deliveryChannel: "telegram",
+            deliveryTo: "1636626469"
+        )
+
+        let command = InstallerViewModel.kanbanCronAddCommand(card: card)
+
+        #expect(command.contains("openclaw --no-color cron add"))
+        #expect(command.contains("--at '2026-05-22T11:55:29+02:00'"))
+        #expect(command.contains("--delete-after-run"))
+        #expect(command.contains("--agent 'localagent'"))
+        #expect(command.contains("--channel 'telegram'"))
+        #expect(command.contains("--to '1636626469'"))
+    }
+
+    @Test func extractsCronJobIDFromJSONOutput() {
+        #expect(InstallerViewModel.extractCronJobID(from: #"{"id":"job-123"}"#) == "job-123")
+        #expect(InstallerViewModel.extractCronJobID(from: #"{"job":{"id":"job-456"}}"#) == "job-456")
+        #expect(InstallerViewModel.extractCronJobID(from: #"""
+Created job
+{"id":"job-789","name":"Tortue"}
+"""#) == "job-789")
     }
 
     @Test func atScheduleDateFormatsForOpenClawCron() {

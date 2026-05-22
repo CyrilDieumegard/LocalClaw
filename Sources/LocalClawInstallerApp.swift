@@ -563,6 +563,7 @@ final class InstallerViewModel: ObservableObject {
         var deliveryChannel: String
         var deliveryAccount: String
         var deliveryTo: String
+        var cronJobID: String
         var createdAt: Date
         var updatedAt: Date
 
@@ -580,6 +581,7 @@ final class InstallerViewModel: ObservableObject {
             deliveryChannel: String,
             deliveryAccount: String = "",
             deliveryTo: String = "",
+            cronJobID: String = "",
             createdAt: Date,
             updatedAt: Date
         ) {
@@ -596,6 +598,7 @@ final class InstallerViewModel: ObservableObject {
             self.deliveryChannel = deliveryChannel
             self.deliveryAccount = deliveryAccount
             self.deliveryTo = deliveryTo
+            self.cronJobID = cronJobID
             self.createdAt = createdAt
             self.updatedAt = updatedAt
         }
@@ -612,7 +615,8 @@ final class InstallerViewModel: ObservableObject {
             deliveryMode: String = "last",
             deliveryChannel: String,
             deliveryAccount: String = "",
-            deliveryTo: String = ""
+            deliveryTo: String = "",
+            cronJobID: String = ""
         ) -> KanbanCard {
             KanbanCard(
                 id: "kanban-card-\(UUID().uuidString)",
@@ -628,13 +632,14 @@ final class InstallerViewModel: ObservableObject {
                 deliveryChannel: deliveryChannel,
                 deliveryAccount: deliveryAccount,
                 deliveryTo: deliveryTo,
+                cronJobID: cronJobID,
                 createdAt: Date(),
                 updatedAt: Date()
             )
         }
 
         private enum CodingKeys: String, CodingKey {
-            case id, title, detail, priority, agentID, reviewSchedule, scheduleTimeZoneID, scheduleKind, cronEnabled, deliveryMode, deliveryChannel, deliveryAccount, deliveryTo, createdAt, updatedAt
+            case id, title, detail, priority, agentID, reviewSchedule, scheduleTimeZoneID, scheduleKind, cronEnabled, deliveryMode, deliveryChannel, deliveryAccount, deliveryTo, cronJobID, createdAt, updatedAt
         }
 
         init(from decoder: Decoder) throws {
@@ -657,6 +662,7 @@ final class InstallerViewModel: ObservableObject {
             }()
             deliveryAccount = try container.decodeIfPresent(String.self, forKey: .deliveryAccount) ?? ""
             deliveryTo = try container.decodeIfPresent(String.self, forKey: .deliveryTo) ?? ""
+            cronJobID = try container.decodeIfPresent(String.self, forKey: .cronJobID) ?? ""
             createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
             updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
         }
@@ -1170,6 +1176,8 @@ final class InstallerViewModel: ObservableObject {
     @Published var kanbanEditorDeliveryTo = ""
     @Published var kanbanEditorError = ""
     @Published var kanbanRunningCardIDs: Set<String> = []
+    @Published var kanbanSchedulingCardIDs: Set<String> = []
+    var kanbanAutomationSyncEnabled = true
     @Published var kanbanStatus = "Ready"
     @Published var healthLogs: String = ""
     @Published var healthStatus: String = "Unknown"
@@ -5633,6 +5641,7 @@ final class InstallerViewModel: ObservableObject {
         let scheduleValue = kanbanEditorScheduleValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let deliveryChannel = kanbanEditorDeliveryMode == "channel" ? kanbanEditorDeliveryChannel : kanbanEditorDeliveryMode
         let now = Date()
+        var savedCardID = ""
 
         if kanbanEditorIsEditing {
             guard let location = kanbanCardLocation(kanbanEditingCardID) else {
@@ -5652,6 +5661,7 @@ final class InstallerViewModel: ObservableObject {
             kanbanColumns[location.columnIndex].cards[location.cardIndex].deliveryAccount = kanbanEditorDeliveryAccount.trimmingCharacters(in: .whitespacesAndNewlines)
             kanbanColumns[location.columnIndex].cards[location.cardIndex].deliveryTo = kanbanEditorDeliveryTo.trimmingCharacters(in: .whitespacesAndNewlines)
             kanbanColumns[location.columnIndex].cards[location.cardIndex].updatedAt = now
+            savedCardID = kanbanColumns[location.columnIndex].cards[location.cardIndex].id
             kanbanStatus = "Task updated."
         } else {
             let card = KanbanCard.fresh(
@@ -5671,12 +5681,14 @@ final class InstallerViewModel: ObservableObject {
             let targetColumn = kanbanColumns.firstIndex(where: { $0.id == kanbanEditingColumnID }) ?? kanbanColumns.firstIndex(where: { $0.id == "backlog" })
             guard let index = targetColumn else { return }
             kanbanColumns[index].cards.insert(card, at: 0)
+            savedCardID = card.id
             kanbanStatus = "Task added to \(kanbanColumns[index].title). It has not started yet."
         }
 
         showKanbanTaskEditor = false
         kanbanEditingCardID = ""
         kanbanEditorError = ""
+        syncKanbanAutomation(cardID: savedCardID)
     }
 
     func addKanbanCard() {
@@ -5822,7 +5834,14 @@ final class InstallerViewModel: ObservableObject {
 
     func deleteKanbanCard(_ cardID: String) {
         guard let location = kanbanCardLocation(cardID) else { return }
+        let cronJobID = kanbanColumns[location.columnIndex].cards[location.cardIndex].cronJobID
         kanbanColumns[location.columnIndex].cards.remove(at: location.cardIndex)
+        if !cronJobID.isEmpty {
+            Task.detached {
+                let engine = InstallerEngine()
+                _ = engine.shell("openclaw --no-color cron rm \(Self.shellSingleQuote(cronJobID)) --json 2>&1")
+            }
+        }
         kanbanStatus = "Task removed."
     }
 
@@ -5849,6 +5868,170 @@ final class InstallerViewModel: ObservableObject {
         cronCreateError = ""
         showCronJobCreator = true
         kanbanStatus = "Cron form prepared. Click Create Job to schedule it."
+    }
+
+    func syncKanbanAutomation(cardID: String) {
+        guard kanbanAutomationSyncEnabled else { return }
+        guard let location = kanbanCardLocation(cardID) else { return }
+        let card = kanbanColumns[location.columnIndex].cards[location.cardIndex]
+        guard card.cronEnabled else {
+            if !card.cronJobID.isEmpty {
+                deleteKanbanAutomationJob(cardID: cardID, jobID: card.cronJobID)
+            }
+            return
+        }
+        guard !card.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard !card.reviewSchedule.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            kanbanStatus = "Automation needs a schedule."
+            return
+        }
+        if card.deliveryMode == "channel", card.deliveryTo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            kanbanStatus = "Automation needs a destination for the selected channel."
+            return
+        }
+
+        kanbanSchedulingCardIDs.insert(cardID)
+        kanbanStatus = card.cronJobID.isEmpty ? "Scheduling automation..." : "Updating automation..."
+        let command = Self.kanbanCronAddCommand(card: card)
+        let previousJobID = card.cronJobID
+
+        Task.detached {
+            let engine = InstallerEngine()
+            if !previousJobID.isEmpty {
+                _ = engine.shell("openclaw --no-color cron rm \(Self.shellSingleQuote(previousJobID)) --json 2>&1")
+            }
+            let result = engine.shell(command)
+            let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
+            let jobID = Self.extractCronJobID(from: output)
+            await MainActor.run {
+                self.kanbanSchedulingCardIDs.remove(cardID)
+                if result.0 == 0, let jobID {
+                    self.updateKanbanCard(cardID) { card in
+                        card.cronJobID = jobID
+                        card.updatedAt = Date()
+                    }
+                    self.kanbanStatus = "Automation scheduled. It will run at the configured time."
+                    self.refreshCronJobs()
+                } else if result.0 == 0 {
+                    self.kanbanStatus = "Automation scheduled, but LocalClaw could not read the job id."
+                    self.refreshCronJobs()
+                } else {
+                    self.kanbanStatus = output.isEmpty ? "Automation scheduling failed." : "Automation scheduling failed: \(output)"
+                }
+            }
+        }
+    }
+
+    private func deleteKanbanAutomationJob(cardID: String, jobID: String) {
+        kanbanSchedulingCardIDs.insert(cardID)
+        Task.detached {
+            let engine = InstallerEngine()
+            _ = engine.shell("openclaw --no-color cron rm \(Self.shellSingleQuote(jobID)) --json 2>&1")
+            await MainActor.run {
+                self.kanbanSchedulingCardIDs.remove(cardID)
+                self.updateKanbanCard(cardID) { card in
+                    card.cronJobID = ""
+                    card.updatedAt = Date()
+                }
+                self.kanbanStatus = "Automation disabled."
+                self.refreshCronJobs()
+            }
+        }
+    }
+
+    nonisolated static func kanbanCronAddCommand(card: KanbanCard) -> String {
+        let scheduleFlag: String
+        switch card.scheduleKind {
+        case "cron": scheduleFlag = "--cron"
+        case "at": scheduleFlag = "--at"
+        default: scheduleFlag = "--every"
+        }
+        let message = [card.title, card.detail]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+        let scheduleValue = normalizedCronScheduleValue(card.reviewSchedule, kind: card.scheduleKind)
+        return [
+            "openclaw --no-color cron add",
+            "--name \(shellSingleQuote(card.title))",
+            "--agent \(shellSingleQuote(card.agentID.isEmpty ? "main" : card.agentID))",
+            "--message \(shellSingleQuote(message))",
+            "--session isolated",
+            "\(scheduleFlag) \(shellSingleQuote(scheduleValue))",
+            card.scheduleKind == "cron" ? "--tz \(shellSingleQuote(card.scheduleTimeZoneID.isEmpty ? TimeZone.current.identifier : card.scheduleTimeZoneID))" : "",
+            card.scheduleKind == "at" ? "--delete-after-run" : "",
+            kanbanCronDeliveryArguments(card: card),
+            "--json",
+            "2>&1"
+        ]
+        .filter { !$0.isEmpty }
+        .joined(separator: " ")
+    }
+
+    nonisolated private static func kanbanCronDeliveryArguments(card: KanbanCard) -> String {
+        switch card.deliveryMode {
+        case "none":
+            return "--no-deliver"
+        case "channel":
+            var args = [
+                "--announce",
+                "--channel \(shellSingleQuote(card.deliveryChannel))"
+            ]
+            let account = card.deliveryAccount.trimmingCharacters(in: .whitespacesAndNewlines)
+            let to = card.deliveryTo.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !account.isEmpty {
+                args.append("--account \(shellSingleQuote(account))")
+            }
+            if !to.isEmpty {
+                args.append("--to \(shellSingleQuote(to))")
+            }
+            return args.joined(separator: " ")
+        default:
+            return "--announce --channel last"
+        }
+    }
+
+    nonisolated static func extractCronJobID(from output: String) -> String? {
+        for candidate in jsonObjectCandidates(from: output) {
+            if let id = extractCronJobIDFromJSONObject(candidate) {
+                return id
+            }
+        }
+        return nil
+    }
+
+    nonisolated private static func jsonObjectCandidates(from output: String) -> [String] {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        var candidates = [trimmed]
+        candidates.append(contentsOf: output
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.hasPrefix("{") && $0.hasSuffix("}") })
+        if let start = trimmed.firstIndex(of: "{"), let end = trimmed.lastIndex(of: "}"), start <= end {
+            candidates.append(String(trimmed[start...end]))
+        }
+        return Array(Set(candidates))
+    }
+
+    nonisolated private static func extractCronJobIDFromJSONObject(_ json: String) -> String? {
+        guard let data = json.data(using: .utf8) else { return nil }
+        if let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            for key in ["id", "jobID", "jobId"] {
+                if let value = root[key] as? String, !value.isEmpty { return value }
+            }
+            if let job = root["job"] as? [String: Any] {
+                for key in ["id", "jobID", "jobId"] {
+                    if let value = job[key] as? String, !value.isEmpty { return value }
+                }
+            }
+        }
+        return nil
+    }
+
+    private func updateKanbanCard(_ cardID: String, mutate: (inout KanbanCard) -> Void) {
+        guard let location = kanbanCardLocation(cardID) else { return }
+        mutate(&kanbanColumns[location.columnIndex].cards[location.cardIndex])
     }
 
     private func kanbanCardLocation(_ cardID: String) -> (columnIndex: Int, cardIndex: Int)? {
@@ -13944,6 +14127,14 @@ struct ContentView: View {
                 kanbanMiniBadge(card.cronEnabled ? kanbanScheduleLabel(for: card) : "No cron", icon: "clock", tint: Color(NSColor.systemBlue))
                 kanbanMiniBadge(kanbanDeliveryLabel(for: card), icon: "paperplane.fill", tint: Color(NSColor.systemGreen))
             }
+            if card.cronEnabled {
+                HStack(spacing: 6) {
+                    kanbanMiniBadge(card.cronJobID.isEmpty ? "Not scheduled" : "Scheduled", icon: card.cronJobID.isEmpty ? "calendar.badge.exclamationmark" : "calendar.badge.checkmark", tint: card.cronJobID.isEmpty ? Color(NSColor.systemOrange) : Color(NSColor.systemGreen))
+                    if vm.kanbanSchedulingCardIDs.contains(card.id) {
+                        kanbanMiniBadge("Scheduling", icon: "hourglass", tint: Color(NSColor.systemBlue))
+                    }
+                }
+            }
 
             HStack(spacing: 6) {
                 kanbanIconAction("chevron.left", help: "Move left", disabled: columnID == vm.kanbanColumns.first?.id) {
@@ -13968,7 +14159,7 @@ struct ContentView: View {
                     }
                 }
                 kanbanIconAction("calendar.badge.plus", help: card.cronEnabled ? "Schedule as Cron Job" : "Automation is disabled", disabled: !card.cronEnabled) {
-                    vm.prepareCronFromKanbanCard(card)
+                    vm.syncKanbanAutomation(cardID: card.id)
                 }
                 kanbanIconAction("chevron.right", help: "Move right", disabled: columnID == vm.kanbanColumns.last?.id) {
                     vm.moveKanbanCard(card.id, direction: 1)
@@ -13987,7 +14178,7 @@ struct ContentView: View {
                     Text(vm.kanbanEditorIsEditing ? "Edit Kanban Task" : "New Kanban Task")
                         .font(AppFont.heading(24))
                         .foregroundStyle(UI.text)
-                    Text("Creating a card only plans the work. Use Start to begin, or Schedule to create a Cron Job.")
+                    Text("Creating a card only plans the work. Automation creates a real Cron Job when you save.")
                         .font(AppFont.body(13))
                         .foregroundStyle(UI.muted)
                 }
@@ -14054,7 +14245,7 @@ struct ContentView: View {
                         .foregroundStyle(UI.text)
 
                     if vm.kanbanEditorCronEnabled {
-                        Text("This only stores schedule settings on the card. The job is not scheduled until you click Schedule on the card and create the Cron Job.")
+                        Text("Saving this task creates or updates a real Cron Job. It runs at the configured time, no matter where the card is on the board.")
                             .font(AppFont.body(11))
                             .foregroundStyle(UI.muted)
                             .fixedSize(horizontal: false, vertical: true)
