@@ -502,14 +502,17 @@ struct InstallerEngineTests {
     @MainActor
     @Test func kanbanTaskCanPrepareCronForm() {
         let vm = InstallerViewModel()
-        vm.kanbanNewTitle = "Daily roadmap check"
-        vm.kanbanNewDetail = "Summarize blockers and next actions."
-        vm.kanbanNewPriority = "High"
-        vm.kanbanNewAgentID = "main"
-        vm.kanbanNewSchedule = "1d"
-        vm.kanbanNewDeliveryChannel = "telegram"
+        vm.beginCreateKanbanCard()
+        vm.kanbanEditorTitle = "Daily roadmap check"
+        vm.kanbanEditorDetail = "Summarize blockers and next actions."
+        vm.kanbanEditorPriority = "High"
+        vm.kanbanEditorAgentID = "main"
+        vm.kanbanEditorScheduleValue = "1d"
+        vm.kanbanEditorDeliveryMode = "channel"
+        vm.kanbanEditorDeliveryChannel = "telegram"
+        vm.kanbanEditorDeliveryTo = "12345"
 
-        vm.addKanbanCard()
+        vm.saveKanbanTaskEditor()
         let card = vm.kanbanColumns.first { $0.id == "backlog" }?.cards.first
         #expect(card?.title == "Daily roadmap check")
 
@@ -519,9 +522,44 @@ struct InstallerEngineTests {
         #expect(vm.cronCreateName == "Daily roadmap check")
         #expect(vm.cronCreateAgentID == "main")
         #expect(vm.cronCreateScheduleValue == "1d")
-        #expect(vm.cronCreateDeliveryMode == "choose")
+        #expect(vm.cronCreateDeliveryMode == "channel")
         #expect(vm.cronCreateDeliveryChannel == "telegram")
+        #expect(vm.cronCreateDeliveryTo == "12345")
         #expect(vm.cronCreateMessage.contains("Summarize blockers"))
+    }
+
+    @MainActor
+    @Test func kanbanTaskEditorLoadsExistingCardValues() {
+        let vm = InstallerViewModel()
+        vm.beginCreateKanbanCard()
+        vm.kanbanEditorTitle = "Draft launch checklist"
+        vm.kanbanEditorDetail = "Confirm the release notes and support plan."
+        vm.kanbanEditorPriority = "Urgent"
+        vm.kanbanEditorScheduleKind = "cron"
+        vm.kanbanEditorScheduleValue = "0 9 * * *"
+        vm.kanbanEditorDeliveryMode = "channel"
+        vm.kanbanEditorDeliveryChannel = "telegram"
+        vm.kanbanEditorDeliveryTo = "67890"
+        vm.saveKanbanTaskEditor()
+
+        let card = vm.kanbanColumns.first { $0.id == "backlog" }!.cards.first!
+        vm.beginEditKanbanCard(card, columnID: "backlog")
+
+        #expect(vm.kanbanEditorTitle == "Draft launch checklist")
+        #expect(vm.kanbanEditorPriority == "Urgent")
+        #expect(vm.kanbanEditorScheduleKind == "cron")
+        #expect(vm.kanbanEditorScheduleValue == "0 9 * * *")
+        #expect(vm.kanbanEditorDeliveryMode == "channel")
+        #expect(vm.kanbanEditorDeliveryTo == "67890")
+
+        vm.kanbanEditorTitle = "Updated launch checklist"
+        vm.kanbanEditorDeliveryTo = "99999"
+        vm.saveKanbanTaskEditor()
+
+        let updatedCard = vm.kanbanColumns.first { $0.id == "backlog" }!.cards.first!
+        #expect(updatedCard.title == "Updated launch checklist")
+        #expect(updatedCard.deliveryTo == "99999")
+        #expect(updatedCard.priority == "Urgent")
     }
 
     @Test func createsRunnableDeveloperPreviewScaffold() throws {

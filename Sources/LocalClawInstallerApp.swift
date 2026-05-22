@@ -556,11 +556,60 @@ final class InstallerViewModel: ObservableObject {
         var priority: String
         var agentID: String
         var reviewSchedule: String
+        var scheduleKind: String
+        var cronEnabled: Bool
+        var deliveryMode: String
         var deliveryChannel: String
+        var deliveryAccount: String
+        var deliveryTo: String
         var createdAt: Date
         var updatedAt: Date
 
-        static func fresh(title: String, detail: String, priority: String, agentID: String, reviewSchedule: String, deliveryChannel: String) -> KanbanCard {
+        init(
+            id: String,
+            title: String,
+            detail: String,
+            priority: String,
+            agentID: String,
+            reviewSchedule: String,
+            scheduleKind: String = "every",
+            cronEnabled: Bool = true,
+            deliveryMode: String = "last",
+            deliveryChannel: String,
+            deliveryAccount: String = "",
+            deliveryTo: String = "",
+            createdAt: Date,
+            updatedAt: Date
+        ) {
+            self.id = id
+            self.title = title
+            self.detail = detail
+            self.priority = priority
+            self.agentID = agentID
+            self.reviewSchedule = reviewSchedule
+            self.scheduleKind = scheduleKind
+            self.cronEnabled = cronEnabled
+            self.deliveryMode = deliveryMode
+            self.deliveryChannel = deliveryChannel
+            self.deliveryAccount = deliveryAccount
+            self.deliveryTo = deliveryTo
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+        }
+
+        static func fresh(
+            title: String,
+            detail: String,
+            priority: String,
+            agentID: String,
+            reviewSchedule: String,
+            scheduleKind: String = "every",
+            cronEnabled: Bool = true,
+            deliveryMode: String = "last",
+            deliveryChannel: String,
+            deliveryAccount: String = "",
+            deliveryTo: String = ""
+        ) -> KanbanCard {
             KanbanCard(
                 id: "kanban-card-\(UUID().uuidString)",
                 title: title,
@@ -568,10 +617,42 @@ final class InstallerViewModel: ObservableObject {
                 priority: priority,
                 agentID: agentID,
                 reviewSchedule: reviewSchedule,
+                scheduleKind: scheduleKind,
+                cronEnabled: cronEnabled,
+                deliveryMode: deliveryMode,
                 deliveryChannel: deliveryChannel,
+                deliveryAccount: deliveryAccount,
+                deliveryTo: deliveryTo,
                 createdAt: Date(),
                 updatedAt: Date()
             )
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id, title, detail, priority, agentID, reviewSchedule, scheduleKind, cronEnabled, deliveryMode, deliveryChannel, deliveryAccount, deliveryTo, createdAt, updatedAt
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            title = try container.decode(String.self, forKey: .title)
+            detail = try container.decodeIfPresent(String.self, forKey: .detail) ?? ""
+            priority = try container.decodeIfPresent(String.self, forKey: .priority) ?? "Normal"
+            agentID = try container.decodeIfPresent(String.self, forKey: .agentID) ?? "main"
+            reviewSchedule = try container.decodeIfPresent(String.self, forKey: .reviewSchedule) ?? "1d"
+            scheduleKind = try container.decodeIfPresent(String.self, forKey: .scheduleKind) ?? "every"
+            cronEnabled = try container.decodeIfPresent(Bool.self, forKey: .cronEnabled) ?? true
+            let decodedDeliveryChannel = try container.decodeIfPresent(String.self, forKey: .deliveryChannel) ?? "last"
+            deliveryChannel = decodedDeliveryChannel
+            deliveryMode = try container.decodeIfPresent(String.self, forKey: .deliveryMode) ?? {
+                if decodedDeliveryChannel == "none" { return "none" }
+                if decodedDeliveryChannel == "last" { return "last" }
+                return "channel"
+            }()
+            deliveryAccount = try container.decodeIfPresent(String.self, forKey: .deliveryAccount) ?? ""
+            deliveryTo = try container.decodeIfPresent(String.self, forKey: .deliveryTo) ?? ""
+            createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+            updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
         }
     }
 
@@ -1024,6 +1105,21 @@ final class InstallerViewModel: ObservableObject {
     @Published var kanbanNewAgentID = "main"
     @Published var kanbanNewSchedule = "1d"
     @Published var kanbanNewDeliveryChannel = "last"
+    @Published var showKanbanTaskEditor = false
+    @Published var kanbanEditingCardID = ""
+    @Published var kanbanEditingColumnID = "backlog"
+    @Published var kanbanEditorTitle = ""
+    @Published var kanbanEditorDetail = ""
+    @Published var kanbanEditorPriority = "Normal"
+    @Published var kanbanEditorAgentID = "main"
+    @Published var kanbanEditorCronEnabled = true
+    @Published var kanbanEditorScheduleKind = "every"
+    @Published var kanbanEditorScheduleValue = "1d"
+    @Published var kanbanEditorDeliveryMode = "last"
+    @Published var kanbanEditorDeliveryChannel = "telegram"
+    @Published var kanbanEditorDeliveryAccount = ""
+    @Published var kanbanEditorDeliveryTo = ""
+    @Published var kanbanEditorError = ""
     @Published var kanbanStatus = "Ready"
     @Published var healthLogs: String = ""
     @Published var healthStatus: String = "Unknown"
@@ -5344,6 +5440,125 @@ final class InstallerViewModel: ObservableObject {
             .count
     }
 
+    var kanbanEditorCanSave: Bool {
+        !kanbanEditorTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var kanbanEditorIsEditing: Bool {
+        !kanbanEditingCardID.isEmpty
+    }
+
+    var activeKanbanDeliveryDestinations: [CronDeliveryDestination] {
+        cronDeliveryDestinations.filter { $0.channel == kanbanEditorDeliveryChannel }
+    }
+
+    func beginCreateKanbanCard(columnID: String = "backlog") {
+        kanbanEditingCardID = ""
+        kanbanEditingColumnID = kanbanColumns.contains(where: { $0.id == columnID }) ? columnID : "backlog"
+        kanbanEditorTitle = ""
+        kanbanEditorDetail = ""
+        kanbanEditorPriority = "Normal"
+        kanbanEditorAgentID = agents.first(where: { $0.isDefault })?.id ?? "main"
+        kanbanEditorCronEnabled = true
+        kanbanEditorScheduleKind = "every"
+        kanbanEditorScheduleValue = "1d"
+        kanbanEditorDeliveryMode = "last"
+        kanbanEditorDeliveryChannel = activeCronDeliveryChannels.first?.id ?? "telegram"
+        kanbanEditorDeliveryAccount = ""
+        kanbanEditorDeliveryTo = ""
+        kanbanEditorError = ""
+        showKanbanTaskEditor = true
+        if agents.isEmpty || agentsStatus == "Not loaded" {
+            refreshAgents()
+        }
+        if channels.isEmpty || channelsStatus == "Not loaded" {
+            refreshChannels()
+        }
+    }
+
+    func beginEditKanbanCard(_ card: KanbanCard, columnID: String) {
+        kanbanEditingCardID = card.id
+        kanbanEditingColumnID = columnID
+        kanbanEditorTitle = card.title
+        kanbanEditorDetail = card.detail
+        kanbanEditorPriority = card.priority
+        kanbanEditorAgentID = card.agentID.isEmpty ? "main" : card.agentID
+        kanbanEditorCronEnabled = card.cronEnabled
+        kanbanEditorScheduleKind = card.scheduleKind.isEmpty ? "every" : card.scheduleKind
+        kanbanEditorScheduleValue = card.reviewSchedule.isEmpty ? "1d" : card.reviewSchedule
+        kanbanEditorDeliveryMode = card.deliveryMode.isEmpty ? (card.deliveryChannel == "none" ? "none" : (card.deliveryChannel == "last" ? "last" : "channel")) : card.deliveryMode
+        kanbanEditorDeliveryChannel = card.deliveryChannel == "last" || card.deliveryChannel == "none" ? (activeCronDeliveryChannels.first?.id ?? "telegram") : card.deliveryChannel
+        kanbanEditorDeliveryAccount = card.deliveryAccount
+        kanbanEditorDeliveryTo = card.deliveryTo
+        kanbanEditorError = ""
+        showKanbanTaskEditor = true
+        if agents.isEmpty || agentsStatus == "Not loaded" {
+            refreshAgents()
+        }
+        if channels.isEmpty || channelsStatus == "Not loaded" {
+            refreshChannels()
+        }
+    }
+
+    func cancelKanbanTaskEditor() {
+        showKanbanTaskEditor = false
+        kanbanEditingCardID = ""
+        kanbanEditorError = ""
+    }
+
+    func saveKanbanTaskEditor() {
+        let title = kanbanEditorTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else {
+            kanbanEditorError = "Task title is required."
+            return
+        }
+        let scheduleValue = kanbanEditorScheduleValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let deliveryChannel = kanbanEditorDeliveryMode == "channel" ? kanbanEditorDeliveryChannel : kanbanEditorDeliveryMode
+        let now = Date()
+
+        if kanbanEditorIsEditing {
+            guard let location = kanbanCardLocation(kanbanEditingCardID) else {
+                kanbanEditorError = "This task could not be found anymore."
+                return
+            }
+            kanbanColumns[location.columnIndex].cards[location.cardIndex].title = title
+            kanbanColumns[location.columnIndex].cards[location.cardIndex].detail = kanbanEditorDetail.trimmingCharacters(in: .whitespacesAndNewlines)
+            kanbanColumns[location.columnIndex].cards[location.cardIndex].priority = kanbanEditorPriority
+            kanbanColumns[location.columnIndex].cards[location.cardIndex].agentID = kanbanEditorAgentID
+            kanbanColumns[location.columnIndex].cards[location.cardIndex].reviewSchedule = scheduleValue.isEmpty ? "1d" : scheduleValue
+            kanbanColumns[location.columnIndex].cards[location.cardIndex].scheduleKind = kanbanEditorScheduleKind
+            kanbanColumns[location.columnIndex].cards[location.cardIndex].cronEnabled = kanbanEditorCronEnabled
+            kanbanColumns[location.columnIndex].cards[location.cardIndex].deliveryMode = kanbanEditorDeliveryMode
+            kanbanColumns[location.columnIndex].cards[location.cardIndex].deliveryChannel = deliveryChannel
+            kanbanColumns[location.columnIndex].cards[location.cardIndex].deliveryAccount = kanbanEditorDeliveryAccount.trimmingCharacters(in: .whitespacesAndNewlines)
+            kanbanColumns[location.columnIndex].cards[location.cardIndex].deliveryTo = kanbanEditorDeliveryTo.trimmingCharacters(in: .whitespacesAndNewlines)
+            kanbanColumns[location.columnIndex].cards[location.cardIndex].updatedAt = now
+            kanbanStatus = "Task updated."
+        } else {
+            let card = KanbanCard.fresh(
+                title: title,
+                detail: kanbanEditorDetail.trimmingCharacters(in: .whitespacesAndNewlines),
+                priority: kanbanEditorPriority,
+                agentID: kanbanEditorAgentID,
+                reviewSchedule: scheduleValue.isEmpty ? "1d" : scheduleValue,
+                scheduleKind: kanbanEditorScheduleKind,
+                cronEnabled: kanbanEditorCronEnabled,
+                deliveryMode: kanbanEditorDeliveryMode,
+                deliveryChannel: deliveryChannel,
+                deliveryAccount: kanbanEditorDeliveryAccount.trimmingCharacters(in: .whitespacesAndNewlines),
+                deliveryTo: kanbanEditorDeliveryTo.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+            let targetColumn = kanbanColumns.firstIndex(where: { $0.id == kanbanEditingColumnID }) ?? kanbanColumns.firstIndex(where: { $0.id == "backlog" })
+            guard let index = targetColumn else { return }
+            kanbanColumns[index].cards.insert(card, at: 0)
+            kanbanStatus = "Task added to \(kanbanColumns[index].title)."
+        }
+
+        showKanbanTaskEditor = false
+        kanbanEditingCardID = ""
+        kanbanEditorError = ""
+    }
+
     func addKanbanCard() {
         let title = kanbanNewTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else {
@@ -5357,6 +5572,7 @@ final class InstallerViewModel: ObservableObject {
             priority: kanbanNewPriority,
             agentID: kanbanNewAgentID,
             reviewSchedule: kanbanNewSchedule.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "1d" : kanbanNewSchedule.trimmingCharacters(in: .whitespacesAndNewlines),
+            deliveryMode: kanbanNewDeliveryChannel == "none" ? "none" : (kanbanNewDeliveryChannel == "last" ? "last" : "channel"),
             deliveryChannel: kanbanNewDeliveryChannel
         )
         guard let index = kanbanColumns.firstIndex(where: { $0.id == "backlog" }) else { return }
@@ -5385,12 +5601,17 @@ final class InstallerViewModel: ObservableObject {
     func prepareCronFromKanbanCard(_ card: KanbanCard) {
         cronCreateName = card.title
         cronCreateAgentID = card.agentID.isEmpty ? "main" : card.agentID
-        cronCreateScheduleKind = "every"
+        cronCreateScheduleKind = card.scheduleKind.isEmpty ? "every" : card.scheduleKind
         cronCreateScheduleValue = card.reviewSchedule.isEmpty ? "1d" : card.reviewSchedule
         cronCreateMessage = [card.title, card.detail].filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.joined(separator: "\n\n")
-        cronCreateDeliveryMode = card.deliveryChannel == "none" ? "none" : (card.deliveryChannel == "last" ? "last" : "choose")
-        if card.deliveryChannel != "last" && card.deliveryChannel != "none" {
+        cronCreateDeliveryMode = card.cronEnabled ? (card.deliveryMode.isEmpty ? (card.deliveryChannel == "none" ? "none" : (card.deliveryChannel == "last" ? "last" : "channel")) : card.deliveryMode) : "none"
+        if cronCreateDeliveryMode == "channel" {
             cronCreateDeliveryChannel = card.deliveryChannel
+            cronCreateDeliveryAccount = card.deliveryAccount
+            cronCreateDeliveryTo = card.deliveryTo
+        } else {
+            cronCreateDeliveryAccount = ""
+            cronCreateDeliveryTo = ""
         }
         cronCreateError = ""
         showCronJobCreator = true
@@ -8957,6 +9178,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $vm.showCronJobCreator) {
             cronJobCreatorSheet
+        }
+        .sheet(isPresented: $vm.showKanbanTaskEditor) {
+            kanbanTaskEditorSheet
         }
         .sheet(item: $vm.cronDeleteCandidate) { job in
             cronJobDeleteSheet(job)
@@ -13163,6 +13387,14 @@ struct ContentView: View {
         }
     }
 
+    private var kanbanSchedulePrompt: String {
+        switch vm.kanbanEditorScheduleKind {
+        case "cron": return "0 9 * * *"
+        case "at": return "15m, 1h, or 2026-05-17T12:00:00+02:00"
+        default: return "30m, 2h, 1d"
+        }
+    }
+
     private var scheduleHelp: String {
         switch vm.cronCreateScheduleKind {
         case "cron": return "Cron format: minute hour day month weekday. Example: 0 9 * * * means every day at 09:00."
@@ -13323,6 +13555,8 @@ struct ContentView: View {
                 Button("Refresh Agents") { vm.refreshAgents() }
                     .buttonStyle(CTAButton(primary: false))
                     .disabled(vm.agentsIsLoading)
+                Button("New Task") { vm.beginCreateKanbanCard() }
+                    .buttonStyle(CTAButton(primary: true))
             }
 
             HStack(spacing: 10) {
@@ -13331,8 +13565,6 @@ struct ContentView: View {
                 kanbanMetricCard("Agents", value: "\(max(vm.agents.count, 1))", icon: "person.2.fill", tint: Color(NSColor.systemBlue))
                 kanbanMetricCard("Cron ready", value: "\(vm.kanbanCards.filter { !$0.reviewSchedule.isEmpty }.count)", icon: "calendar.badge.clock", tint: Color(NSColor.systemGreen))
             }
-
-            kanbanCreatePanel
 
             HStack(alignment: .top, spacing: 10) {
                 ForEach(vm.kanbanColumns) { column in
@@ -13351,54 +13583,6 @@ struct ContentView: View {
                 vm.refreshAgents()
             }
         }
-    }
-
-    private var kanbanCreatePanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                kanbanFormField("Task", text: $vm.kanbanNewTitle, prompt: "Review support tickets")
-                    .frame(minWidth: 220)
-                Picker("Priority", selection: $vm.kanbanNewPriority) {
-                    ForEach(["Low", "Normal", "High", "Urgent"], id: \.self) { value in
-                        Text(value).tag(value)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 120)
-                Picker("Agent", selection: $vm.kanbanNewAgentID) {
-                    Text("Claw").tag("main")
-                    ForEach(vm.agents) { agent in
-                        Text(agent.displayName).tag(agent.id)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 150)
-                kanbanFormField("Review", text: $vm.kanbanNewSchedule, prompt: "1d")
-                    .frame(width: 90)
-                Picker("Delivery", selection: $vm.kanbanNewDeliveryChannel) {
-                    Text("Last channel").tag("last")
-                    Text("Telegram").tag("telegram")
-                    Text("Discord").tag("discord")
-                    Text("No delivery").tag("none")
-                }
-                .labelsHidden()
-                .frame(width: 145)
-                Button("Add Task") { vm.addKanbanCard() }
-                    .buttonStyle(CTAButton(primary: true))
-            }
-
-            TextField("Details, acceptance criteria, or the exact instruction for the assigned agent...", text: $vm.kanbanNewDetail, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(AppFont.body(12))
-                .foregroundStyle(UI.text)
-                .lineLimit(1...3)
-                .padding(10)
-                .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
-        }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 14).fill(UI.cardSoft))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     private func kanbanColumn(_ column: InstallerViewModel.KanbanColumn) -> some View {
@@ -13423,11 +13607,20 @@ struct ContentView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     if column.cards.isEmpty {
-                        Text("No tasks")
-                            .font(AppFont.body(12))
+                        Button {
+                            vm.beginCreateKanbanCard(columnID: column.id)
+                        } label: {
+                            VStack(spacing: 6) {
+                                Image(systemName: "plus.circle")
+                                    .font(.system(size: 18, weight: .semibold))
+                                Text("Add task")
+                                    .font(AppFont.bodySemi(12))
+                            }
                             .foregroundStyle(UI.muted)
                             .frame(maxWidth: .infinity, minHeight: 72)
                             .background(RoundedRectangle(cornerRadius: 10).fill(UI.card.opacity(0.55)))
+                        }
+                        .buttonStyle(.plain)
                     } else {
                         ForEach(column.cards) { card in
                             kanbanCard(card, columnID: column.id)
@@ -13460,6 +13653,14 @@ struct ContentView: View {
                     }
                 }
                 Spacer(minLength: 6)
+                Button { vm.beginEditKanbanCard(card, columnID: columnID) } label: {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(UI.muted)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .help("Edit task")
                 Button { vm.deleteKanbanCard(card.id) } label: {
                     Image(systemName: "trash")
                         .font(.system(size: 11, weight: .semibold))
@@ -13475,8 +13676,8 @@ struct ContentView: View {
                 kanbanMiniBadge(agentName(for: card.agentID), icon: "person.crop.circle", tint: UI.muted)
             }
             HStack(spacing: 6) {
-                kanbanMiniBadge(card.reviewSchedule, icon: "clock", tint: Color(NSColor.systemBlue))
-                kanbanMiniBadge(card.deliveryChannel == "none" ? "No delivery" : card.deliveryChannel.capitalized, icon: "paperplane.fill", tint: Color(NSColor.systemGreen))
+                kanbanMiniBadge(card.cronEnabled ? card.reviewSchedule : "No cron", icon: "clock", tint: Color(NSColor.systemBlue))
+                kanbanMiniBadge(kanbanDeliveryLabel(for: card), icon: "paperplane.fill", tint: Color(NSColor.systemGreen))
             }
 
             HStack(spacing: 6) {
@@ -13493,6 +13694,8 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(CompactGhostButton())
+                .disabled(!card.cronEnabled)
+                .help(card.cronEnabled ? "Prepare Cron Job" : "Cron is disabled for this task")
 
                 Button { vm.moveKanbanCard(card.id, direction: 1) } label: {
                     Image(systemName: "chevron.right")
@@ -13506,6 +13709,211 @@ struct ContentView: View {
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 11).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 11).stroke(priorityTint.opacity(0.24), lineWidth: 1))
+    }
+
+    private var kanbanTaskEditorSheet: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(vm.kanbanEditorIsEditing ? "Edit Kanban Task" : "New Kanban Task")
+                        .font(AppFont.heading(24))
+                        .foregroundStyle(UI.text)
+                    Text("Define the task, assign an agent, and keep the Cron setup attached to the card.")
+                        .font(AppFont.body(13))
+                        .foregroundStyle(UI.muted)
+                }
+                Spacer()
+                Button("Cancel") { vm.cancelKanbanTaskEditor() }
+                    .buttonStyle(SheetActionButton(primary: false))
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                kanbanFormField("Task", text: $vm.kanbanEditorTitle, prompt: "Review support tickets")
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Details")
+                        .font(AppFont.bodySemi(12))
+                        .foregroundStyle(UI.muted)
+                    TextEditor(text: $vm.kanbanEditorDetail)
+                        .font(AppFont.body(13))
+                        .foregroundStyle(UI.text)
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                        .frame(height: 100)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+                }
+
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Priority")
+                            .font(AppFont.bodySemi(12))
+                            .foregroundStyle(UI.muted)
+                        Picker("", selection: $vm.kanbanEditorPriority) {
+                            ForEach(["Low", "Normal", "High", "Urgent"], id: \.self) { value in
+                                Text(value).tag(value)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Agent")
+                            .font(AppFont.bodySemi(12))
+                            .foregroundStyle(UI.muted)
+                        Picker("", selection: $vm.kanbanEditorAgentID) {
+                            if vm.agents.isEmpty {
+                                Text("Main assistant").tag("main")
+                            } else {
+                                ForEach(vm.agents) { agent in
+                                    Text(agent.isDefault ? "\(agent.displayName) · main" : agent.displayName).tag(agent.id)
+                                }
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 9)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Cron setup", isOn: $vm.kanbanEditorCronEnabled)
+                        .toggleStyle(.switch)
+                        .font(AppFont.bodySemi(13))
+                        .foregroundStyle(UI.text)
+
+                    if vm.kanbanEditorCronEnabled {
+                        HStack(spacing: 8) {
+                            Picker("", selection: $vm.kanbanEditorScheduleKind) {
+                                Text("Every").tag("every")
+                                Text("Cron").tag("cron")
+                                Text("At").tag("at")
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 230)
+
+                            TextField(kanbanSchedulePrompt, text: $vm.kanbanEditorScheduleValue)
+                                .textFieldStyle(.plain)
+                                .font(AppFont.body(13))
+                                .foregroundStyle(UI.text)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 9)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+                        }
+
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], spacing: 8) {
+                            ForEach(schedulePresets, id: \.label) { preset in
+                                Button(preset.label) {
+                                    vm.kanbanEditorScheduleKind = preset.kind
+                                    vm.kanbanEditorScheduleValue = preset.value
+                                }
+                                .buttonStyle(PresetPillButton(selected: vm.kanbanEditorScheduleKind == preset.kind && vm.kanbanEditorScheduleValue == preset.value))
+                            }
+                        }
+
+                        HStack {
+                            Text("Destination")
+                                .font(AppFont.bodySemi(12))
+                                .foregroundStyle(UI.muted)
+                            Spacer()
+                            Button("Refresh channels") { vm.refreshChannels() }
+                                .buttonStyle(.plain)
+                                .font(AppFont.bodySemi(11))
+                                .foregroundStyle(UI.accent)
+                                .disabled(vm.channelsIsLoading)
+                        }
+
+                        Picker("", selection: $vm.kanbanEditorDeliveryMode) {
+                            Text("Last used channel").tag("last")
+                            Text("Choose channel").tag("channel")
+                            Text("No delivery").tag("none")
+                        }
+                        .pickerStyle(.segmented)
+
+                        if vm.kanbanEditorDeliveryMode == "channel" {
+                            HStack(spacing: 8) {
+                                Picker("", selection: $vm.kanbanEditorDeliveryChannel) {
+                                    if vm.activeCronDeliveryChannels.isEmpty {
+                                        Text("No configured channel").tag("")
+                                    } else {
+                                        ForEach(vm.activeCronDeliveryChannels) { channel in
+                                            Text("\(channel.label) · \(channel.connectionLabel)").tag(channel.id)
+                                        }
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 9)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+
+                                TextField("Account ID optional", text: $vm.kanbanEditorDeliveryAccount)
+                                    .textFieldStyle(.plain)
+                                    .font(AppFont.body(13))
+                                    .foregroundStyle(UI.text)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 9)
+                                    .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+                                    .frame(width: 170)
+                            }
+
+                            TextField("Destination optional until Cron creation", text: $vm.kanbanEditorDeliveryTo)
+                                .textFieldStyle(.plain)
+                                .font(AppFont.body(13))
+                                .foregroundStyle(UI.text)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 9)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+
+                            if !vm.activeKanbanDeliveryDestinations.isEmpty {
+                                LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 8)], spacing: 8) {
+                                    ForEach(vm.activeKanbanDeliveryDestinations) { destination in
+                                        Button(destination.displayLabel) {
+                                            vm.kanbanEditorDeliveryTo = destination.destination
+                                        }
+                                        .buttonStyle(PresetPillButton(selected: vm.kanbanEditorDeliveryTo == destination.destination))
+                                        .lineLimit(1)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 12).fill(UI.card))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
+
+                if !vm.kanbanEditorError.isEmpty {
+                    Text(vm.kanbanEditorError)
+                        .font(AppFont.body(12))
+                        .foregroundStyle(Color(NSColor.systemRed))
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color(NSColor.systemRed).opacity(0.10)))
+                }
+            }
+
+            HStack {
+                Text(vm.kanbanEditorIsEditing ? "Changes update the selected card immediately." : "The card stays editable after it is added.")
+                    .font(AppFont.body(12))
+                    .foregroundStyle(UI.muted)
+                Spacer()
+                Button(vm.kanbanEditorIsEditing ? "Save Task" : "Add Task") {
+                    vm.saveKanbanTaskEditor()
+                }
+                .buttonStyle(SheetActionButton(primary: true))
+                .disabled(!vm.kanbanEditorCanSave)
+            }
+        }
+        .padding(22)
+        .frame(width: 720)
+        .background(UI.bg)
     }
 
     private func kanbanMetricCard(_ title: String, value: String, icon: String, tint: Color) -> some View {
@@ -13560,6 +13968,25 @@ struct ContentView: View {
     private func agentName(for agentID: String) -> String {
         if agentID == "main" || agentID.isEmpty { return "Claw" }
         return vm.agents.first { $0.id == agentID }?.displayName ?? agentID
+    }
+
+    private func kanbanDeliveryLabel(for card: InstallerViewModel.KanbanCard) -> String {
+        if !card.cronEnabled || card.deliveryMode == "none" || card.deliveryChannel == "none" {
+            return "No delivery"
+        }
+        if card.deliveryMode == "last" || card.deliveryChannel == "last" {
+            return "Last channel"
+        }
+        let channel = vm.channels.first { $0.id == card.deliveryChannel }
+        let label = channel?.label ?? card.deliveryChannel
+            .replacingOccurrences(of: "-", with: " ")
+            .split(separator: " ")
+            .map { $0.capitalized }
+            .joined(separator: " ")
+        if !card.deliveryTo.isEmpty {
+            return "\(label) · set"
+        }
+        return label
     }
 
     private func kanbanColor(_ name: String) -> Color {
