@@ -13796,46 +13796,33 @@ struct ContentView: View {
             }
 
             HStack(spacing: 6) {
-                Button { vm.moveKanbanCard(card.id, direction: -1) } label: {
-                    Image(systemName: "chevron.left")
-                        .frame(width: 28, height: 28)
+                kanbanIconAction("chevron.left", help: "Move left", disabled: columnID == vm.kanbanColumns.first?.id) {
+                    vm.moveKanbanCard(card.id, direction: -1)
                 }
-                .buttonStyle(.plain)
-                .disabled(columnID == vm.kanbanColumns.first?.id)
-                .help("Move left")
-
-                if columnID != "doing" && columnID != "done" {
-                    Button { vm.startKanbanCard(card.id) } label: {
-                        Label("Start", systemImage: "play.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(CompactGhostButton())
-                    .help("Move to In Progress")
-                }
-
                 Button { vm.runKanbanCardNow(card.id) } label: {
-                    Label(vm.kanbanRunningCardIDs.contains(card.id) ? "Running" : "Run now", systemImage: "paperplane.fill")
-                        .frame(maxWidth: .infinity)
+                    HStack(spacing: 7) {
+                        Image(systemName: vm.kanbanRunningCardIDs.contains(card.id) ? "hourglass" : "paperplane.fill")
+                            .font(.system(size: 12, weight: .bold))
+                        Text(vm.kanbanRunningCardIDs.contains(card.id) ? "Running" : "Run now")
+                            .font(AppFont.bodySemi(12))
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 32)
                 }
                 .buttonStyle(CompactGhostButton())
                 .disabled(vm.kanbanRunningCardIDs.contains(card.id))
                 .help("Run this task with the selected agent now")
-
-                Button { vm.prepareCronFromKanbanCard(card) } label: {
-                    Label("Schedule", systemImage: "calendar.badge.plus")
-                        .frame(maxWidth: .infinity)
+                if columnID != "doing" && columnID != "done" {
+                    kanbanIconAction("play.fill", help: "Move to In Progress") {
+                        vm.startKanbanCard(card.id)
+                    }
                 }
-                .buttonStyle(CompactGhostButton())
-                .disabled(!card.cronEnabled)
-                .help(card.cronEnabled ? "Prepare Cron Job" : "Cron is disabled for this task")
-
-                Button { vm.moveKanbanCard(card.id, direction: 1) } label: {
-                    Image(systemName: "chevron.right")
-                        .frame(width: 28, height: 28)
+                kanbanIconAction("calendar.badge.plus", help: card.cronEnabled ? "Schedule as Cron Job" : "Automation is disabled", disabled: !card.cronEnabled) {
+                    vm.prepareCronFromKanbanCard(card)
                 }
-                .buttonStyle(.plain)
-                .disabled(columnID == vm.kanbanColumns.last?.id)
-                .help("Move right")
+                kanbanIconAction("chevron.right", help: "Move right", disabled: columnID == vm.kanbanColumns.last?.id) {
+                    vm.moveKanbanCard(card.id, direction: 1)
+                }
             }
         }
         .padding(10)
@@ -14100,6 +14087,20 @@ struct ContentView: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 3)
             .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
+    }
+
+    private func kanbanIconAction(_ icon: String, help: String, disabled: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(disabled ? UI.muted.opacity(0.45) : UI.text)
+                .frame(width: 32, height: 32)
+                .background(RoundedRectangle(cornerRadius: 9).fill(UI.cardSoft))
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(UI.lineSoft, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .help(help)
     }
 
     private func agentName(for agentID: String) -> String {
