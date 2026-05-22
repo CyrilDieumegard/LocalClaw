@@ -632,6 +632,39 @@ Created job
 """#) == "job-789")
     }
 
+    @MainActor
+    @Test func completedKanbanOneShotCronMovesCardToDone() {
+        let vm = InstallerViewModel()
+        vm.kanbanAutomationSyncEnabled = false
+        let runAt = Date(timeIntervalSince1970: 1_770_000_000)
+        let card = InstallerViewModel.KanbanCard.fresh(
+            title: "Tortue",
+            detail: "Parle moi d'une tortue",
+            priority: "Urgent",
+            agentID: "localagent",
+            reviewSchedule: InstallerViewModel.cronAtDateString(runAt, timeZoneID: "Europe/Zurich"),
+            scheduleTimeZoneID: "Europe/Zurich",
+            scheduleKind: "at",
+            cronEnabled: true,
+            deliveryMode: "channel",
+            deliveryChannel: "telegram",
+            deliveryTo: "1636626469",
+            cronJobID: "job-finished"
+        )
+        vm.kanbanColumns = InstallerViewModel.KanbanColumn.defaults.map { column in
+            column.id == "review"
+                ? InstallerViewModel.KanbanColumn(id: column.id, title: column.title, icon: column.icon, colorName: column.colorName, cards: [card])
+                : column
+        }
+
+        vm.reconcileKanbanCompletedAutomations(knownCronJobIDs: [], now: runAt.addingTimeInterval(60))
+
+        #expect(vm.kanbanColumns.first { $0.id == "review" }?.cards.isEmpty == true)
+        let doneCard = vm.kanbanColumns.first { $0.id == "done" }?.cards.first
+        #expect(doneCard?.title == "Tortue")
+        #expect(doneCard?.cronJobID == "")
+    }
+
     @Test func atScheduleDateFormatsForOpenClawCron() {
         var components = DateComponents()
         components.calendar = Calendar(identifier: .gregorian)

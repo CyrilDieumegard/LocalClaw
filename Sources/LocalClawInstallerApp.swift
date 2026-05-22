@@ -3885,11 +3885,17 @@ final class InstallerViewModel: ObservableObject {
         _ = engine.shell("open 'https://docs.openclaw.ai/cli/cron' || true")
     }
 
-    func refreshCronJobs() {
+    var hasScheduledKanbanAutomation: Bool {
+        kanbanCards.contains { !$0.cronJobID.isEmpty }
+    }
+
+    func refreshCronJobs(silent: Bool = false) {
         guard !cronJobsIsLoading else { return }
         cronJobsIsLoading = true
         cronJobsStatus = "Checking cron jobs..."
-        cronJobLogs = cronJobLogs.isEmpty ? "Running cron inventory..." : cronJobLogs + "\nRunning cron inventory..."
+        if !silent {
+            cronJobLogs = cronJobLogs.isEmpty ? "Running cron inventory..." : cronJobLogs + "\nRunning cron inventory..."
+        }
 
         Task.detached {
             let engine = InstallerEngine()
@@ -3914,13 +3920,16 @@ final class InstallerViewModel: ObservableObject {
                         if $0.enabled != $1.enabled { return $0.enabled && !$1.enabled }
                         return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
                     }
+                self.reconcileKanbanCompletedAutomations(knownCronJobIDs: Set(self.cronJobs.map(\.id)))
 
                 let activeCount = self.cronJobs.filter(\.enabled).count
                 self.cronJobsStatus = "\(activeCount) active · \(self.cronJobs.count) jobs"
-                if hasMore || total > self.cronJobs.count {
-                    self.cronJobLogs += "\nCron inventory refreshed, but OpenClaw returned \(self.cronJobs.count) of \(total) jobs."
-                } else {
-                    self.cronJobLogs += "\nCron inventory refreshed."
+                if !silent {
+                    if hasMore || total > self.cronJobs.count {
+                        self.cronJobLogs += "\nCron inventory refreshed, but OpenClaw returned \(self.cronJobs.count) of \(total) jobs."
+                    } else {
+                        self.cronJobLogs += "\nCron inventory refreshed."
+                    }
                 }
             }
         }
@@ -5813,6 +5822,38 @@ final class InstallerViewModel: ObservableObject {
         var card = kanbanColumns[location.columnIndex].cards.remove(at: location.cardIndex)
         card.updatedAt = Date()
         kanbanColumns[reviewIndex].cards.insert(card, at: 0)
+    }
+
+    func reconcileKanbanCompletedAutomations(knownCronJobIDs: Set<String>, now: Date = Date()) {
+        guard let doneIndex = kanbanColumns.firstIndex(where: { $0.id == "done" }) else { return }
+        var completedCards: [KanbanCard] = []
+
+        for columnIndex in kanbanColumns.indices.reversed() {
+            for cardIndex in kanbanColumns[columnIndex].cards.indices.reversed() {
+                let card = kanbanColumns[columnIndex].cards[cardIndex]
+                guard card.cronEnabled,
+                      card.scheduleKind == "at",
+                      !card.cronJobID.isEmpty,
+                      !knownCronJobIDs.contains(card.cronJobID),
+                      let runAt = Self.cronAtDate(from: card.reviewSchedule),
+                      runAt <= now else {
+                    continue
+                }
+
+                var completed = kanbanColumns[columnIndex].cards.remove(at: cardIndex)
+                completed.cronJobID = ""
+                completed.updatedAt = now
+                completedCards.append(completed)
+            }
+        }
+
+        guard !completedCards.isEmpty else { return }
+        for card in completedCards.reversed() {
+            kanbanColumns[doneIndex].cards.insert(card, at: 0)
+        }
+        kanbanStatus = completedCards.count == 1
+            ? "\(completedCards[0].title) completed and moved to Done."
+            : "\(completedCards.count) scheduled tasks completed and moved to Done."
     }
 
     func moveKanbanCard(_ cardID: String, direction: Int) {
@@ -9578,6 +9619,11 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("OpenModelsCenter"))) { _ in
             vm.screen = .models
+        }
+        .onReceive(Timer.publish(every: 20, on: .main, in: .common).autoconnect()) { _ in
+            if vm.screen == .kanban, vm.hasScheduledKanbanAutomation, !vm.cronJobsIsLoading {
+                vm.refreshCronJobs(silent: true)
+            }
         }
         .frame(minWidth: 1100, idealWidth: 1440, maxWidth: .infinity,
                minHeight: 760, idealHeight: 920, maxHeight: .infinity)
@@ -14024,6 +14070,9 @@ struct ContentView: View {
         .onAppear {
             if vm.agentsStatus == "Not loaded" || vm.agents.isEmpty {
                 vm.refreshAgents()
+            }
+            if vm.hasScheduledKanbanAutomation {
+                vm.refreshCronJobs(silent: true)
             }
         }
     }
