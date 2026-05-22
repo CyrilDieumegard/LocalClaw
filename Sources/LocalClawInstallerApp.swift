@@ -1083,8 +1083,22 @@ final class InstallerViewModel: ObservableObject {
     @Published var showCronJobCreator = false
     @Published var cronCreateName = ""
     @Published var cronCreateAgentID = "main"
-    @Published var cronCreateScheduleKind = "every"
+    @Published var cronCreateScheduleKind = "every" {
+        didSet {
+            if cronCreateScheduleKind == "at" && oldValue != "at" {
+                cronCreateAtDate = Self.defaultAtDate()
+                cronCreateScheduleValue = Self.cronAtDateString(cronCreateAtDate)
+            }
+        }
+    }
     @Published var cronCreateScheduleValue = "30m"
+    @Published var cronCreateAtDate = InstallerViewModel.defaultAtDate() {
+        didSet {
+            if cronCreateScheduleKind == "at" {
+                cronCreateScheduleValue = Self.cronAtDateString(cronCreateAtDate)
+            }
+        }
+    }
     @Published var cronCreateMessage = ""
     @Published var cronCreateDeliveryMode = "last"
     @Published var cronCreateDeliveryChannel = "telegram"
@@ -1114,8 +1128,22 @@ final class InstallerViewModel: ObservableObject {
     @Published var kanbanEditorPriority = "Normal"
     @Published var kanbanEditorAgentID = "main"
     @Published var kanbanEditorCronEnabled = true
-    @Published var kanbanEditorScheduleKind = "every"
+    @Published var kanbanEditorScheduleKind = "every" {
+        didSet {
+            if kanbanEditorScheduleKind == "at" && oldValue != "at" {
+                kanbanEditorAtDate = Self.defaultAtDate()
+                kanbanEditorScheduleValue = Self.cronAtDateString(kanbanEditorAtDate)
+            }
+        }
+    }
     @Published var kanbanEditorScheduleValue = "1d"
+    @Published var kanbanEditorAtDate = InstallerViewModel.defaultAtDate() {
+        didSet {
+            if kanbanEditorScheduleKind == "at" {
+                kanbanEditorScheduleValue = Self.cronAtDateString(kanbanEditorAtDate)
+            }
+        }
+    }
     @Published var kanbanEditorDeliveryMode = "last"
     @Published var kanbanEditorDeliveryChannel = "telegram"
     @Published var kanbanEditorDeliveryAccount = ""
@@ -3950,11 +3978,42 @@ final class InstallerViewModel: ObservableObject {
         return "\(seconds)s"
     }
 
+    nonisolated static func defaultAtDate() -> Date {
+        Date().addingTimeInterval(3600)
+    }
+
+    nonisolated static func cronAtDateString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssXXXXX"
+        return formatter.string(from: date)
+    }
+
+    nonisolated static func cronAtDate(from value: String) -> Date? {
+        let raw = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard raw.contains("-") || raw.contains("T") else { return nil }
+        if let date = ISO8601DateFormatter().date(from: raw) {
+            return date
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        for format in ["yyyy-MM-dd'T'HH:mm:ssXXXXX", "yyyy-MM-dd'T'HH:mmXXXXX", "yyyy-MM-dd HH:mm"] {
+            formatter.dateFormat = format
+            if let date = formatter.date(from: raw) {
+                return date
+            }
+        }
+        return nil
+    }
+
     func resetCronJobCreator() {
         cronCreateName = ""
         cronCreateAgentID = agents.first(where: { $0.isDefault })?.id ?? "main"
         cronCreateScheduleKind = "every"
         cronCreateScheduleValue = "30m"
+        cronCreateAtDate = Self.defaultAtDate()
         cronCreateMessage = ""
         cronCreateDeliveryMode = "last"
         cronCreateDeliveryChannel = activeCronDeliveryChannels.first?.id ?? "telegram"
@@ -5464,6 +5523,7 @@ final class InstallerViewModel: ObservableObject {
         kanbanEditorCronEnabled = true
         kanbanEditorScheduleKind = "every"
         kanbanEditorScheduleValue = "1d"
+        kanbanEditorAtDate = Self.defaultAtDate()
         kanbanEditorDeliveryMode = "last"
         kanbanEditorDeliveryChannel = activeCronDeliveryChannels.first?.id ?? "telegram"
         kanbanEditorDeliveryAccount = ""
@@ -5488,6 +5548,10 @@ final class InstallerViewModel: ObservableObject {
         kanbanEditorCronEnabled = card.cronEnabled
         kanbanEditorScheduleKind = card.scheduleKind.isEmpty ? "every" : card.scheduleKind
         kanbanEditorScheduleValue = card.reviewSchedule.isEmpty ? "1d" : card.reviewSchedule
+        kanbanEditorAtDate = Self.cronAtDate(from: kanbanEditorScheduleValue) ?? Self.defaultAtDate()
+        if kanbanEditorScheduleKind == "at", Self.cronAtDate(from: kanbanEditorScheduleValue) == nil {
+            kanbanEditorScheduleValue = Self.cronAtDateString(kanbanEditorAtDate)
+        }
         kanbanEditorDeliveryMode = card.deliveryMode.isEmpty ? (card.deliveryChannel == "none" ? "none" : (card.deliveryChannel == "last" ? "last" : "channel")) : card.deliveryMode
         kanbanEditorDeliveryChannel = card.deliveryChannel == "last" || card.deliveryChannel == "none" ? (activeCronDeliveryChannels.first?.id ?? "telegram") : card.deliveryChannel
         kanbanEditorDeliveryAccount = card.deliveryAccount
@@ -5713,6 +5777,10 @@ final class InstallerViewModel: ObservableObject {
         cronCreateAgentID = card.agentID.isEmpty ? "main" : card.agentID
         cronCreateScheduleKind = card.scheduleKind.isEmpty ? "every" : card.scheduleKind
         cronCreateScheduleValue = card.reviewSchedule.isEmpty ? "1d" : card.reviewSchedule
+        cronCreateAtDate = Self.cronAtDate(from: cronCreateScheduleValue) ?? Self.defaultAtDate()
+        if cronCreateScheduleKind == "at", Self.cronAtDate(from: cronCreateScheduleValue) == nil {
+            cronCreateScheduleValue = Self.cronAtDateString(cronCreateAtDate)
+        }
         cronCreateMessage = [card.title, card.detail].filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.joined(separator: "\n\n")
         cronCreateDeliveryMode = card.cronEnabled ? (card.deliveryMode.isEmpty ? (card.deliveryChannel == "none" ? "none" : (card.deliveryChannel == "last" ? "last" : "channel")) : card.deliveryMode) : "none"
         if cronCreateDeliveryMode == "channel" {
@@ -13262,23 +13330,42 @@ struct ContentView: View {
                         .pickerStyle(.segmented)
                         .frame(width: 230)
 
-                        TextField(schedulePrompt, text: $vm.cronCreateScheduleValue)
-                            .textFieldStyle(.plain)
-                            .font(AppFont.body(13))
-                            .foregroundStyle(UI.text)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 9)
-                            .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+                        if vm.cronCreateScheduleKind == "at" {
+                            DatePicker("", selection: $vm.cronCreateAtDate, displayedComponents: [.date, .hourAndMinute])
+                                .labelsHidden()
+                                .datePickerStyle(.compact)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 7)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+                        } else {
+                            TextField(schedulePrompt, text: $vm.cronCreateScheduleValue)
+                                .textFieldStyle(.plain)
+                                .font(AppFont.body(13))
+                                .foregroundStyle(UI.text)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 9)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+                        }
                     }
 
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], spacing: 8) {
-                        ForEach(schedulePresets, id: \.label) { preset in
-                            Button(preset.label) {
-                                vm.cronCreateScheduleKind = preset.kind
-                                vm.cronCreateScheduleValue = preset.value
+                    if vm.cronCreateScheduleKind == "at" {
+                        Text("Runs once at \(vm.cronCreateScheduleValue)")
+                            .font(AppFont.body(11))
+                            .foregroundStyle(UI.muted)
+                    }
+
+                    if vm.cronCreateScheduleKind != "at" {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], spacing: 8) {
+                            ForEach(schedulePresets(for: vm.cronCreateScheduleKind), id: \.label) { preset in
+                                Button(preset.label) {
+                                    vm.cronCreateScheduleKind = preset.kind
+                                    vm.cronCreateScheduleValue = preset.value
+                                }
+                                .buttonStyle(PresetPillButton(selected: vm.cronCreateScheduleKind == preset.kind && vm.cronCreateScheduleValue == preset.value))
                             }
-                            .buttonStyle(PresetPillButton(selected: vm.cronCreateScheduleKind == preset.kind && vm.cronCreateScheduleValue == preset.value))
                         }
                     }
                 }
@@ -13513,8 +13600,8 @@ struct ContentView: View {
         }
     }
 
-    private var schedulePresets: [(label: String, kind: String, value: String)] {
-        switch vm.cronCreateScheduleKind {
+    private func schedulePresets(for kind: String) -> [(label: String, kind: String, value: String)] {
+        switch kind {
         case "cron":
             return [
                 ("Every morning", "cron", "0 9 * * *"),
@@ -13918,23 +14005,42 @@ struct ContentView: View {
                             .pickerStyle(.segmented)
                             .frame(width: 230)
 
-                            TextField(kanbanSchedulePrompt, text: $vm.kanbanEditorScheduleValue)
-                                .textFieldStyle(.plain)
-                                .font(AppFont.body(13))
-                                .foregroundStyle(UI.text)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 9)
-                                .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
-                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+                            if vm.kanbanEditorScheduleKind == "at" {
+                                DatePicker("", selection: $vm.kanbanEditorAtDate, displayedComponents: [.date, .hourAndMinute])
+                                    .labelsHidden()
+                                    .datePickerStyle(.compact)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 7)
+                                    .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+                            } else {
+                                TextField(kanbanSchedulePrompt, text: $vm.kanbanEditorScheduleValue)
+                                    .textFieldStyle(.plain)
+                                    .font(AppFont.body(13))
+                                    .foregroundStyle(UI.text)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 9)
+                                    .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+                            }
                         }
 
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], spacing: 8) {
-                            ForEach(schedulePresets, id: \.label) { preset in
-                                Button(preset.label) {
-                                    vm.kanbanEditorScheduleKind = preset.kind
-                                    vm.kanbanEditorScheduleValue = preset.value
+                        if vm.kanbanEditorScheduleKind == "at" {
+                            Text("Runs once at \(vm.kanbanEditorScheduleValue)")
+                                .font(AppFont.body(11))
+                                .foregroundStyle(UI.muted)
+                        }
+
+                        if vm.kanbanEditorScheduleKind != "at" {
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], spacing: 8) {
+                                ForEach(schedulePresets(for: vm.kanbanEditorScheduleKind), id: \.label) { preset in
+                                    Button(preset.label) {
+                                        vm.kanbanEditorScheduleKind = preset.kind
+                                        vm.kanbanEditorScheduleValue = preset.value
+                                    }
+                                    .buttonStyle(PresetPillButton(selected: vm.kanbanEditorScheduleKind == preset.kind && vm.kanbanEditorScheduleValue == preset.value))
                                 }
-                                .buttonStyle(PresetPillButton(selected: vm.kanbanEditorScheduleKind == preset.kind && vm.kanbanEditorScheduleValue == preset.value))
                             }
                         }
 

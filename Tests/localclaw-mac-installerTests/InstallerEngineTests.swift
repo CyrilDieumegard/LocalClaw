@@ -595,6 +595,25 @@ struct InstallerEngineTests {
         #expect(command.contains("--reply-to '1636626469'"))
     }
 
+    @Test func atScheduleDateFormatsForOpenClawCron() {
+        var components = DateComponents()
+        components.calendar = Calendar(identifier: .gregorian)
+        components.timeZone = TimeZone(secondsFromGMT: 3600)
+        components.year = 2026
+        components.month = 5
+        components.day = 22
+        components.hour = 14
+        components.minute = 30
+        components.second = 0
+        let date = components.date!
+
+        let value = InstallerViewModel.cronAtDateString(date)
+        let parsed = InstallerViewModel.cronAtDate(from: value)
+
+        #expect(value.contains("2026-05-22T"))
+        #expect(parsed != nil)
+    }
+
     @Test func createsRunnableDeveloperPreviewScaffold() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("localclaw-preview-test-\(UUID().uuidString)")
