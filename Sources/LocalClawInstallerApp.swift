@@ -3489,6 +3489,11 @@ final class InstallerViewModel: ObservableObject {
 
     func updateAll() {
         if isRunning { return }
+        if installerUpdateStatus == "Update available" {
+            append("LocalClaw app update available. Updating the app first; it will restart automatically.")
+            updateLocalClawFromDMG()
+            return
+        }
         isRunning = true
         append("Running update all")
         let engine = self.engine
