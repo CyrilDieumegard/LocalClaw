@@ -12788,61 +12788,65 @@ struct ContentView: View {
     }
 
     var updates: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text("UPDATE CENTER")
-                    .font(AppFont.heading(28))
-                    .foregroundStyle(UI.text)
-                Spacer()
-                Text(vm.isRunning ? "Updating..." : vm.openclawUpdateStatus)
-                    .font(AppFont.bodySemi(13))
-                    .foregroundStyle(vm.openclawUpdateStatus == "Up to date" ? UI.accent : UI.muted)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(RoundedRectangle(cornerRadius: 7).fill(UI.cardSoft))
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text("UPDATE CENTER")
+                        .font(AppFont.heading(28))
+                        .foregroundStyle(UI.text)
+                    Spacer()
+                    Text(vm.isRunning ? "Updating..." : vm.openclawUpdateStatus)
+                        .font(AppFont.bodySemi(13))
+                        .foregroundStyle(vm.openclawUpdateStatus == "Up to date" ? UI.accent : UI.muted)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 7).fill(UI.cardSoft))
+                }
+
+                updateSafetyPanel
+
+                updateGroupsPanel
+
+                VStack(spacing: 8) {
+                    versionRow("OpenClaw", vm.openclawInstalledVersion, vm.openclawLatestVersion, isUpToDate: vm.openclawUpdateStatus == "Up to date")
+                    versionRow("Homebrew", vm.brewVersion, "latest via brew update", isUpToDate: vm.brewUpToDate)
+                    versionRow("Node", vm.nodeVersion, "22.19+ required for OpenClaw", isUpToDate: vm.nodeUpToDate)
+                    versionRow("LM Studio", vm.lmStudioVersion, "latest via brew cask", isUpToDate: vm.lmStudioUpToDate)
+                    versionRow("LocalClaw", "\(vm.installerCurrentVersion) (build \(vm.installerBuildNumber))", vm.installerLatestVersion, isUpToDate: vm.installerUpdateStatus == "Up to date")
+                }
+
+                updateChangePlanPanel
+
+                HStack(spacing: 10) {
+                    Button(vm.isRunning ? "UPDATING..." : "UPDATE ALL") { vm.updateAll() }
+                        .buttonStyle(CTAButton(primary: true))
+                        .disabled(vm.isRunning)
+                    Button("CHECK") { vm.refreshVersions() }.buttonStyle(CTAButton(primary: false))
+                    Button("BACK") { vm.screen = .home }.buttonStyle(CTAButton(primary: false))
+                }
+
+                Divider().overlay(UI.lineSoft)
+
+                Text("Live log")
+                    .font(AppFont.bodySemi(14))
+                    .foregroundStyle(UI.muted)
+
+                ScrollView {
+                    Text(vm.logs.isEmpty ? "No update run yet. Click CHECK or UPDATE ALL." : vm.logs)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(UI.text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                }
+                .scrollIndicators(.hidden)
+                .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+                .frame(minHeight: 110, maxHeight: 160)
             }
-
-            updateSafetyPanel
-
-            updateGroupsPanel
-
-            VStack(spacing: 8) {
-                versionRow("OpenClaw", vm.openclawInstalledVersion, vm.openclawLatestVersion, isUpToDate: vm.openclawUpdateStatus == "Up to date")
-                versionRow("Homebrew", vm.brewVersion, "latest via brew update", isUpToDate: vm.brewUpToDate)
-                versionRow("Node", vm.nodeVersion, "22.19+ required for OpenClaw", isUpToDate: vm.nodeUpToDate)
-                versionRow("LM Studio", vm.lmStudioVersion, "latest via brew cask", isUpToDate: vm.lmStudioUpToDate)
-                versionRow("LocalClaw", "\(vm.installerCurrentVersion) (build \(vm.installerBuildNumber))", vm.installerLatestVersion, isUpToDate: vm.installerUpdateStatus == "Up to date")
-            }
-
-            updateChangePlanPanel
-
-            HStack(spacing: 10) {
-                Button(vm.isRunning ? "UPDATING..." : "UPDATE ALL") { vm.updateAll() }
-                    .buttonStyle(CTAButton(primary: true))
-                    .disabled(vm.isRunning)
-                Button("CHECK") { vm.refreshVersions() }.buttonStyle(CTAButton(primary: false))
-                Button("BACK") { vm.screen = .home }.buttonStyle(CTAButton(primary: false))
-            }
-
-            Divider().overlay(UI.lineSoft)
-
-            Text("Live log")
-                .font(AppFont.bodySemi(14))
-                .foregroundStyle(UI.muted)
-
-            ScrollView {
-                Text(vm.logs.isEmpty ? "No update run yet. Click CHECK or UPDATE ALL." : vm.logs)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(UI.text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-            }
-            .scrollIndicators(.hidden)
-            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
-            .frame(maxHeight: .infinity)
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .padding(18)
+        .scrollIndicators(.visible)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
