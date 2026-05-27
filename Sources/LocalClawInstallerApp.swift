@@ -1686,6 +1686,7 @@ final class InstallerViewModel: ObservableObject {
 
     private struct InstallerUpdateManifest: Codable {
         let latestVersion: String
+        let latestBuild: String?
         let dmgUrl: String
         let notesUrl: String?
         let sha256: String?
@@ -3214,8 +3215,12 @@ final class InstallerViewModel: ObservableObject {
                     self.installerDownloadURL = normalizedURL
                     self.installerExpectedSHA256 = manifest.sha256?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
 
-                    let cmp = self.compareVersion(manifest.latestVersion, self.installerCurrentVersion)
-                    if cmp > 0 {
+                    let versionCmp = self.compareVersion(manifest.latestVersion, self.installerCurrentVersion)
+                    let latestBuild = manifest.latestBuild?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let currentBuild = self.installerBuildNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let buildCmp = (latestBuild?.isEmpty == false) ? self.compareVersion(latestBuild!, currentBuild) : 0
+
+                    if versionCmp > 0 || (versionCmp == 0 && buildCmp > 0) {
                         self.installerUpdateStatus = "Update available"
                     } else {
                         self.installerUpdateStatus = "Up to date"
