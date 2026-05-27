@@ -1937,6 +1937,28 @@ final class InstallerViewModel: ObservableObject {
         modeSwitchStatus = "Machine info copied"
     }
 
+    func copyHomeUsageSummary() {
+        let payload = Self.homeUsageSummaryShareText(summary: selectedHomeUsageSummary, window: selectedHomeUsageWindow, records: modelUsageRecords)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(payload, forType: .string)
+        usageLogs = "Copied token summary to clipboard"
+    }
+
+    nonisolated static func homeUsageSummaryShareText(summary: UsageSummary, window: UsageWindow, records: [ModelUsageRecord]) -> String {
+        let models = Array(Set(records.map { $0.model.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })).sorted()
+        let modelLine = models.isEmpty ? "Models: none recorded" : "Models: " + models.prefix(5).joined(separator: ", ")
+        let requestLine = summary.requestCount == 1 ? "1 request" : "\(summary.requestCount) requests"
+        return [
+            "LocalClaw token summary",
+            "Window: \(window.rawValue.capitalized)",
+            "Total tokens: \(formatTokenCount(summary.totalTokens))",
+            "Input: \(formatTokenCount(summary.inputTokens))",
+            "Output: \(formatTokenCount(summary.outputTokens))",
+            "Usage: \(requestLine)",
+            modelLine
+        ].joined(separator: "\n")
+    }
+
     func markOnboardingCompleted() {
         UserDefaults.standard.set(true, forKey: onboardingCompletedKey)
     }
@@ -10091,8 +10113,8 @@ struct ContentView: View {
                     )
                     dashboardKpiCard(
                         title: "Health",
-                        value: vm.healthStatus,
-                        detail: vm.hasMachineUsageSnapshot ? String(format: "CPU %.0f%% · RAM %.1f/%.1f GB", vm.machineCPUPercent, vm.machineMemoryUsedGB, vm.machineMemoryTotalGB) : "Performance check off",
+                        value: dashboardHealthValue,
+                        detail: dashboardHealthDetail,
                         icon: "heart.text.square.fill",
                         tint: dashboardHealthTint
                     )
@@ -10155,16 +10177,27 @@ struct ContentView: View {
 
                         dashboardPanel(title: "Recent activity", icon: "clock.arrow.circlepath") {
                             VStack(alignment: .leading, spacing: 8) {
-                                ForEach(dashboardActivityItems, id: \.self) { item in
+                                ForEach(dashboardActivityFeedItems) { item in
                                     HStack(alignment: .top, spacing: 8) {
-                                        Circle()
-                                            .fill(UI.accent)
-                                            .frame(width: 6, height: 6)
-                                            .padding(.top, 6)
-                                        Text(item)
-                                            .font(AppFont.body(12))
-                                            .foregroundStyle(UI.text)
-                                            .lineLimit(2)
+                                        Image(systemName: item.icon)
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundStyle(item.tint)
+                                            .frame(width: 14)
+                                            .padding(.top, 2)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            HStack(spacing: 6) {
+                                                Text(item.source)
+                                                    .font(AppFont.bodySemi(10))
+                                                    .foregroundStyle(item.tint)
+                                                Text(item.detail)
+                                                    .font(AppFont.body(10))
+                                                    .foregroundStyle(UI.muted)
+                                            }
+                                            Text(item.text)
+                                                .font(AppFont.body(12))
+                                                .foregroundStyle(UI.text)
+                                                .lineLimit(2)
+                                        }
                                         Spacer(minLength: 0)
                                     }
                                 }
@@ -10245,10 +10278,19 @@ struct ContentView: View {
     }
 
     private var dashboardHealthTint: Color {
+        if !vm.hasMachineUsageSnapshot { return UI.muted }
         if vm.healthStatus == "Healthy" { return Color(NSColor.systemGreen) }
         if vm.healthStatus == "Critical" { return Color(NSColor.systemRed) }
         if vm.healthStatus == "Warning" { return Color(NSColor.systemOrange) }
         return UI.muted
+    }
+
+    private var dashboardHealthValue: String {
+        vm.hasMachineUsageSnapshot ? vm.healthStatus : "Disabled"
+    }
+
+    private var dashboardHealthDetail: String {
+        vm.hasMachineUsageSnapshot ? String(format: "CPU %.0f%% · RAM %.1f/%.1f GB", vm.machineCPUPercent, vm.machineMemoryUsedGB, vm.machineMemoryTotalGB) : "Performance check off"
     }
 
     private var dashboardConnectedChannels: Int {
@@ -10475,6 +10517,54 @@ struct ContentView: View {
         return Array(items.suffix(8).reversed())
     }
 
+    private struct DashboardFeedItem: Identifiable {
+        let id = UUID()
+        let source: String
+        let text: String
+        let detail: String
+        let icon: String
+        let tint: Color
+    }
+
+    private var dashboardActivityFeedItems: [DashboardFeedItem] {
+        let sources: [(String, String, String, Color)] = [
+            ("Channels", vm.channelSetupLogs, "bubble.left.and.bubble.right.fill", Color(NSColor.systemBlue)),
+            ("Skills", vm.skillsLog, "wand.and.stars", UI.accent),
+            ("Health", vm.healthLogs, "cross.case.fill", Color(NSColor.systemOrange)),
+            ("Usage", vm.usageLogs, "chart.bar.xaxis", Color(NSColor.systemGreen)),
+            ("Models", vm.modelsApplyStatus, "cpu.fill", Color(NSColor.systemPurple))
+        ]
+
+        let grouped: [DashboardFeedItem] = sources.flatMap { source, rawLog, icon, tint -> [DashboardFeedItem] in
+            let lines = rawLog
+                .split(separator: "\n")
+                .map(String.init)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            guard !lines.isEmpty else { return [] }
+            let tail = Array(lines.suffix(2))
+            return tail.enumerated().map { index, line in
+                DashboardFeedItem(
+                    source: source,
+                    text: line,
+                    detail: index == 0 ? "Latest" : "Follow-up",
+                    icon: icon,
+                    tint: tint
+                )
+            }
+        }
+
+        if !grouped.isEmpty {
+            return Array(grouped.prefix(5))
+        }
+
+        return [
+            DashboardFeedItem(source: "Home", text: "No activity yet", detail: "Run Refresh to load OpenClaw status.", icon: "sparkles", tint: UI.accent),
+            DashboardFeedItem(source: "Channels", text: "Connect channels to start receiving messages", detail: "Telegram, Discord, WhatsApp and more.", icon: "bubble.left.and.bubble.right.fill", tint: Color(NSColor.systemBlue)),
+            DashboardFeedItem(source: "Models", text: "Open Models to verify inference setup", detail: "Check cloud or local model readiness.", icon: "cpu.fill", tint: Color(NSColor.systemPurple))
+        ]
+    }
+
     private func dashboardKpiCard(title: String, value: String, detail: String, icon: String, tint: Color) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -10524,6 +10614,16 @@ struct ContentView: View {
                 }
                 .labelsHidden()
                 .frame(width: 96)
+                Button {
+                    vm.copyHomeUsageSummary()
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(UI.muted)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .help("Copy token summary")
             }
             Text(InstallerViewModel.formatTokenCount(summary.totalTokens))
                 .font(AppFont.bodySemi(19))

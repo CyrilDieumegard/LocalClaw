@@ -88,6 +88,24 @@ struct InstallerEngineTests {
         #expect(InstallerViewModel.formatTokenCount(12_300) == "12.3K")
     }
 
+    @Test func homeUsageSummaryShareTextIncludesModelsAndTotals() {
+        let summary = InstallerViewModel.UsageSummary(inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500, requestCount: 2)
+        let records = [
+            InstallerViewModel.ModelUsageRecord(createdAt: Date(), model: "openrouter/openai/gpt-5.4-mini", inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500, estimatedCostUSD: 0),
+            InstallerViewModel.ModelUsageRecord(createdAt: Date(), model: "lmstudio/nvidia/nemotron-3-nano-4b", inputTokens: 10, outputTokens: 20, totalTokens: 30, estimatedCostUSD: 0)
+        ]
+
+        let shareText = InstallerViewModel.homeUsageSummaryShareText(summary: summary, window: .today, records: records)
+
+        #expect(shareText.contains("LocalClaw token summary"))
+        #expect(shareText.contains("Total tokens: 1.5K"))
+        #expect(shareText.contains("Input: 1.0K"))
+        #expect(shareText.contains("Output: 500"))
+        #expect(shareText.contains("2 requests"))
+        #expect(shareText.contains("gpt-5.4-mini"))
+        #expect(shareText.contains("nemotron-3-nano-4b"))
+    }
+
     @Test func oauthUsageParserToleratesWarningsBeforeJSON() throws {
         let raw = """
         [tasks/registry] Failed to restore task registry
