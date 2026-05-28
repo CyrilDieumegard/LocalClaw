@@ -19,16 +19,30 @@ struct InstallerEngineTests {
 
         let reco = engine.recommend(for: profile)
 
-        #expect(reco.model == "Nemotron 3 Nano 4B")
+        #expect(reco.tier == "Balanced")
+        #expect(reco.model == "Qwen 3.5 4B")
         #expect(reco.quant == "Q4_K_M")
     }
 
-    @Test func recommendationForHighMemory() {
+    @Test func recommendationForMacStudioHighMemory() {
         let engine = InstallerEngine()
         let profile = HardwareProfile(chip: "Apple M4", memoryGB: 36, isAppleSilicon: true)
 
         let reco = engine.recommend(for: profile)
 
+        #expect(reco.tier == "Power")
+        #expect(reco.model == "Qwen 3.5 9B")
+        #expect(reco.rationale.contains("24-47 GB"))
+        #expect(reco.quant == "Q4_K_M")
+    }
+
+    @Test func recommendationForUltraMemory() {
+        let engine = InstallerEngine()
+        let profile = HardwareProfile(chip: "Apple M3", memoryGB: 64, isAppleSilicon: true)
+
+        let reco = engine.recommend(for: profile)
+
+        #expect(reco.tier == "Ultra")
         #expect(reco.model == "Qwen 3.5 35B-A3B")
         #expect(reco.quant == "Q4_K_M")
     }

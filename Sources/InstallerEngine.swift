@@ -141,13 +141,28 @@ final class InstallerEngine: @unchecked Sendable {
     }
 
     func recommend(for profile: HardwareProfile) -> Recommendation {
+        // Match the local picker to a simple fast/balanced/power ladder.
+        // Keep Intel on the safer end because swap pressure hurts the install flow.
+        if !profile.isAppleSilicon {
+            switch profile.memoryGB {
+            case ..<24:
+                return Recommendation(tier: "Starter", model: "Nemotron 3 Nano 4B", quant: "Q4_K_M", rationale: "Safer pick for Intel Macs and low-RAM machines")
+            case 24..<48:
+                return Recommendation(tier: "Balanced", model: "Qwen 3.5 4B", quant: "Q4_K_M", rationale: "Good balance when memory is tighter")
+            default:
+                return Recommendation(tier: "Power", model: "Qwen 3.5 9B", quant: "Q4_K_M", rationale: "Best quality/speed tradeoff on Intel with enough RAM")
+            }
+        }
+
         switch profile.memoryGB {
-        case ..<16:
-            return Recommendation(tier: "Starter", model: "Nemotron 3 Nano 4B", quant: "Q4_K_M", rationale: "Most responsive on 8-16 GB")
-        case 16..<24:
-            return Recommendation(tier: "Balanced", model: "Nemotron 3 Nano 4B", quant: "Q4_K_M", rationale: "Best responsiveness on 16-24 GB Macs")
+        case ..<12:
+            return Recommendation(tier: "Starter", model: "Nemotron 3 Nano 4B", quant: "Q4_K_M", rationale: "Fastest start on 8-11 GB")
+        case 12..<24:
+            return Recommendation(tier: "Balanced", model: "Qwen 3.5 4B", quant: "Q4_K_M", rationale: "AtomicBot-style sweet spot for 12-23 GB Macs")
+        case 24..<48:
+            return Recommendation(tier: "Power", model: "Qwen 3.5 9B", quant: "Q4_K_M", rationale: "Best default on 24-47 GB Macs")
         default:
-            return Recommendation(tier: "Power", model: "Qwen 3.5 35B-A3B", quant: "Q4_K_M", rationale: "Best quality/speed on 24 GB+ with MoE")
+            return Recommendation(tier: "Ultra", model: "Qwen 3.5 35B-A3B", quant: "Q4_K_M", rationale: "High-quality pick for Mac Studio-class memory")
         }
     }
 
