@@ -16740,20 +16740,26 @@ struct ContentView: View {
                 .buttonStyle(CTAButton(primary: false))
                 .disabled(!vm.installingSkillName.isEmpty)
             } else {
-                VStack(spacing: 7) {
-                    Button(vm.testingSkillName == skill.name ? "Testing..." : "Test") {
+                HStack(spacing: 7) {
+                    Button {
                         vm.testSkill(skill)
+                    } label: {
+                        Label(vm.testingSkillName == skill.name ? "Testing" : "Test", systemImage: "checkmark.seal")
+                            .lineLimit(1)
                     }
-                    .buttonStyle(CTAButton(primary: false))
+                    .buttonStyle(CompactChatButton(primary: false))
                     .disabled(!vm.testingSkillName.isEmpty)
 
-                    Button("Repair") {
+                    Button {
                         vm.repairSkill(skill)
+                    } label: {
+                        Label("Repair", systemImage: "wrench.and.screwdriver")
+                            .lineLimit(1)
                     }
-                    .buttonStyle(CTAButton(primary: false))
+                    .buttonStyle(CompactChatButton(primary: false))
                     .disabled(vm.skillsIsLoading)
                 }
-                .frame(width: 92)
+                .frame(minWidth: 160, alignment: .trailing)
             }
         }
         .padding(10)
