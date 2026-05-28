@@ -4949,6 +4949,7 @@ final class InstallerViewModel: ObservableObject {
         guard let millis, millis > 0 else { return nil }
         let date = Date(timeIntervalSince1970: millis / 1000)
         let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.unitsStyle = .short
         return formatter.localizedString(for: date, relativeTo: Date())
     }
@@ -10786,7 +10787,7 @@ struct ContentView: View {
             sidebarButton("Developer", icon: "curlybraces.square", isActive: vm.screen == .developer, isBeta: true) { vm.screen = .developer }
             sidebarButton("Models", icon: "cpu", isActive: vm.screen == .models) { vm.screen = .models }
             sidebarButton("Skills", icon: "wand.and.stars", isActive: vm.screen == .skills) { vm.screen = .skills }
-            sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup, isBeta: true) { vm.screen = .channelSetup }
+            sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup) { vm.screen = .channelSetup }
             sidebarButton("Agents", icon: "person.2.wave.2", isActive: vm.screen == .agents) { vm.screen = .agents }
             sidebarButton("Cron Jobs", icon: "calendar.badge.clock", isActive: vm.screen == .cronJobs, isBeta: true) { vm.screen = .cronJobs }
             sidebarButton("Kanban", icon: "rectangle.3.group", isActive: vm.screen == .kanban, isBeta: true) { vm.screen = .kanban }
