@@ -5193,7 +5193,18 @@ final class InstallerViewModel: ObservableObject {
         Task.detached {
             let engine = InstallerEngine()
             let message = "LocalClaw channel test: \(channel.label) is able to send outbound messages."
-            let command = "openclaw --no-color message send --channel \(Self.shellSingleQuote(channelID)) --message \(Self.shellSingleQuote(message)) 2>&1"
+            let destination = Self.knownCronDeliveryDestinations().first { $0.channel == channelID }
+            if channelID == "telegram", destination == nil {
+                await MainActor.run {
+                    self.channelActionInProgress = ""
+                    self.channelsStatus = "\(channel.label) test needs a target"
+                    self.channelSetupLogs += "\nTelegram outbound test needs a known chat target. Send a message to the bot first, approve pairing if needed, refresh Channels, then retry."
+                    self.refreshChannels()
+                }
+                return
+            }
+            let targetPart = destination.map { " --target \(Self.shellSingleQuote($0.destination))" } ?? ""
+            let command = "openclaw --no-color message send --channel \(Self.shellSingleQuote(channelID))\(targetPart) --message \(Self.shellSingleQuote(message)) 2>&1"
             let result = engine.shell(command)
             let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
             let status = engine.shell("openclaw --no-color channels status --channel \(Self.shellSingleQuote(channelID)) --probe --timeout 5000 2>&1 || true")
@@ -5203,7 +5214,7 @@ final class InstallerViewModel: ObservableObject {
                 self.channelActionInProgress = ""
                 self.channelsStatus = result.0 == 0 ? "\(channel.label) test sent" : "\(channel.label) test failed"
                 self.channelSetupLogs += result.0 == 0
-                    ? "\n\(channel.label) outbound test sent."
+                    ? "\n\(channel.label) outbound test sent\(destination.map { " to \($0.displayLabel)" } ?? "")."
                     : "\n\(channel.label) outbound test failed."
                 if !output.isEmpty { self.channelSetupLogs += "\n\(output)" }
                 if !statusOutput.isEmpty { self.channelSetupLogs += "\n\(statusOutput)" }
