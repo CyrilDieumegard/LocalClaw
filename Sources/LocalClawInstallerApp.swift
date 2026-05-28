@@ -6422,6 +6422,40 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    func moveKanbanCardToColumn(_ cardID: String, columnID: String, status: String) {
+        guard let location = kanbanCardLocation(cardID),
+              let targetIndex = kanbanColumns.firstIndex(where: { $0.id == columnID }) else { return }
+        if location.columnIndex == targetIndex {
+            kanbanStatus = status
+            return
+        }
+        var card = kanbanColumns[location.columnIndex].cards.remove(at: location.cardIndex)
+        card.updatedAt = Date()
+        kanbanColumns[targetIndex].cards.insert(card, at: 0)
+        kanbanStatus = status
+    }
+
+    func approveKanbanCard(_ cardID: String) {
+        moveKanbanCardToColumn(cardID, columnID: "done", status: "Task approved and moved to Done.")
+    }
+
+    func sendKanbanCardBackToDoing(_ cardID: String) {
+        moveKanbanCardToColumn(cardID, columnID: "doing", status: "Task sent back to In Progress.")
+    }
+
+    func openCronJobForKanbanCard(_ card: KanbanCard) {
+        guard !card.cronJobID.isEmpty else {
+            prepareCronFromKanbanCard(card)
+            return
+        }
+        if let job = cronJobs.first(where: { $0.id == card.cronJobID }) {
+            prepareCronJobEditor(job)
+        } else {
+            kanbanStatus = "Refreshing Cron Jobs. Click Edit Cron again when the job appears."
+            refreshCronJobs()
+        }
+    }
+
     func deleteKanbanCard(_ cardID: String) {
         guard let location = kanbanCardLocation(cardID) else { return }
         let cronJobID = kanbanColumns[location.columnIndex].cards[location.cardIndex].cronJobID
@@ -16173,9 +16207,28 @@ struct ContentView: View {
                 }
             }
 
+            kanbanTimeline(card, columnID: columnID)
+
             HStack(spacing: 6) {
                 kanbanIconAction("chevron.left", help: "Move left", disabled: columnID == vm.kanbanColumns.first?.id) {
                     vm.moveKanbanCard(card.id, direction: -1)
+                }
+                if columnID == "review" {
+                    Button { vm.approveKanbanCard(card.id) } label: {
+                        Label("Approve", systemImage: "checkmark.seal.fill")
+                            .font(AppFont.bodySemi(11))
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, minHeight: 32)
+                    }
+                    .buttonStyle(CompactGhostButton())
+                    .help("Approve and move to Done")
+                    Button { vm.sendKanbanCardBackToDoing(card.id) } label: {
+                        Image(systemName: "arrow.uturn.left")
+                            .font(.system(size: 12, weight: .bold))
+                            .frame(width: 32, height: 32)
+                    }
+                    .buttonStyle(CompactGhostButton())
+                    .help("Send back to In Progress")
                 }
                 Button { vm.runKanbanCardNow(card.id) } label: {
                     HStack(spacing: 7) {
@@ -16195,8 +16248,12 @@ struct ContentView: View {
                         vm.startKanbanCard(card.id)
                     }
                 }
-                kanbanIconAction("calendar.badge.plus", help: card.cronEnabled ? "Schedule as Cron Job" : "Automation is disabled", disabled: !card.cronEnabled) {
-                    vm.syncKanbanAutomation(cardID: card.id)
+                kanbanIconAction(card.cronJobID.isEmpty ? "calendar.badge.plus" : "calendar.badge.clock", help: card.cronJobID.isEmpty ? "Schedule as Cron Job" : "Edit linked Cron Job", disabled: !card.cronEnabled) {
+                    if card.cronJobID.isEmpty {
+                        vm.syncKanbanAutomation(cardID: card.id)
+                    } else {
+                        vm.openCronJobForKanbanCard(card)
+                    }
                 }
                 kanbanIconAction("chevron.right", help: "Move right", disabled: columnID == vm.kanbanColumns.last?.id) {
                     vm.moveKanbanCard(card.id, direction: 1)
@@ -16506,6 +16563,67 @@ struct ContentView: View {
         .buttonStyle(.plain)
         .disabled(disabled)
         .help(help)
+    }
+
+    private func kanbanTimeline(_ card: InstallerViewModel.KanbanCard, columnID: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 5) {
+                Image(systemName: "timeline.selection")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(UI.muted)
+                Text("Timeline")
+                    .font(AppFont.bodySemi(9))
+                    .foregroundStyle(UI.muted)
+                Spacer(minLength: 0)
+            }
+            ForEach(kanbanTimelineItems(card, columnID: columnID), id: \.title) { item in
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(item.tint)
+                        .frame(width: 5, height: 5)
+                    Text(item.title)
+                        .font(AppFont.body(9))
+                        .foregroundStyle(UI.muted)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Text(item.value)
+                        .font(AppFont.bodySemi(9))
+                        .foregroundStyle(UI.text.opacity(0.82))
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 9).fill(UI.cardSoft.opacity(0.72)))
+    }
+
+    private func kanbanTimelineItems(_ card: InstallerViewModel.KanbanCard, columnID: String) -> [(title: String, value: String, tint: Color)] {
+        var items: [(String, String, Color)] = [
+            ("Created", kanbanShortDate(card.createdAt), UI.muted)
+        ]
+        if card.cronEnabled {
+            let schedule = card.cronJobID.isEmpty ? "planned" : "linked"
+            items.append(("Cron", "\(kanbanScheduleLabel(for: card)) · \(schedule)", card.cronJobID.isEmpty ? Color(NSColor.systemOrange) : Color(NSColor.systemGreen)))
+        }
+        if vm.kanbanRunningCardIDs.contains(card.id) {
+            items.append(("Run", "running now", Color(NSColor.systemBlue)))
+        } else if columnID == "doing" {
+            items.append(("Work", "in progress", UI.accent))
+        } else if columnID == "review" {
+            items.append(("Result", "waiting approval", Color(NSColor.systemPurple)))
+        } else if columnID == "done" {
+            items.append(("Result", "approved", Color(NSColor.systemGreen)))
+        }
+        items.append(("Updated", kanbanShortDate(card.updatedAt), UI.muted))
+        return items
+    }
+
+    private func kanbanShortDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
     }
 
     private func agentName(for agentID: String) -> String {
