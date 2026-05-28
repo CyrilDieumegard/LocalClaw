@@ -1319,6 +1319,7 @@ final class InstallerViewModel: ObservableObject {
     }
     @Published var modelsApplyStatus: String = ""
     @Published var modelsApplyInProgress: Bool = false
+    @Published var modelsRecommendationFilter: String = "Balanced"
     @Published var modeSwitchInProgress: Bool = false
     @Published var modeSwitchStatus: String = ""
 
@@ -2533,6 +2534,78 @@ final class InstallerViewModel: ObservableObject {
                 self.modelsApplyInProgress = false
             }
         }
+    }
+
+    func useSelectedModelEverywhere() {
+        applyModelsTabSelection()
+        if inferenceMode == .local, !selectedLocalLMStudioModel.isEmpty {
+            selectedChatResponseMode = .local
+            selectedChatModel = "lmstudio/\(selectedLocalLMStudioModel)"
+            currentModel = selectedChatModel
+            modelsApplyStatus = "Applying local model everywhere: \(selectedLocalLMStudioModel)"
+        } else {
+            let targetModel = inferenceMode == .oauth ? effectiveModelIdentifier() : selectedOpenRouterModel
+            if !targetModel.isEmpty {
+                selectedChatResponseMode = .cloud
+                selectedChatModel = targetModel
+                currentModel = targetModel
+                modelsApplyStatus = "Applying model everywhere: \(targetModel)"
+            }
+        }
+    }
+
+    func recommendedLocalModels(filter: String) -> [LocalModelCandidate] {
+        switch filter {
+        case "Fast":
+            return localModelCatalog.filter { $0.size.contains("0.8") || $0.size.contains("1.7") || $0.size.contains("2.7") || $0.size.contains("4.2") || $0.summary.lowercased().contains("fast") }
+        case "Low RAM":
+            return localModelCatalog.filter { $0.size.contains("0.8") || $0.size.contains("1.7") || $0.size.contains("2.7") || $0.size.contains("4.2") || $0.size.contains("5 GB") }
+        case "Long context":
+            return localModelCatalog.filter { $0.context.contains("256") || $0.context.contains("1M") }
+        case "Coding":
+            return localModelCatalog.filter { $0.name.lowercased().contains("qwen") || $0.summary.lowercased().contains("coder") || $0.name.lowercased().contains("deepseek") }
+        case "Best quality":
+            return localModelCatalog.filter { $0.badges.contains("High Performance") || $0.summary.lowercased().contains("quality") || $0.summary.lowercased().contains("top-tier") }
+        default:
+            return localModelCatalog.filter { $0.name.contains("Qwen 3.5 9B") || $0.name.contains("Gemma 4 E4B") || $0.name.contains("Nemotron 3 Nano 4B") || $0.name.contains("Llama 3.3 8B") }
+        }
+    }
+
+    func modelHealthRows() -> [(title: String, detail: String, status: String, icon: String, healthy: Bool)] {
+        let localConfigured = currentModel.hasPrefix("lmstudio/")
+        let configuredLocal = localConfigured ? String(currentModel.dropFirst("lmstudio/".count)) : ""
+        let selectedDownloaded = !selectedLocalLMStudioModel.isEmpty && localLMStudioModels.contains(selectedLocalLMStudioModel)
+        let loadedMatchesSelection = !activeLocalLMStudioModel.isEmpty && localModelMatch(activeLocalLMStudioModel, in: [selectedLocalLMStudioModel]) == selectedLocalLMStudioModel
+        return [
+            (
+                "Downloaded",
+                selectedLocalLMStudioModel.isEmpty ? "No local model selected" : selectedLocalLMStudioModel,
+                selectedDownloaded ? "OK" : "Missing",
+                "internaldrive.fill",
+                selectedDownloaded
+            ),
+            (
+                "Loaded in LM Studio",
+                activeLocalLMStudioModel.isEmpty ? "No model currently loaded" : activeLocalLMStudioModel,
+                activeLocalLMStudioModel.isEmpty ? "Not loaded" : (loadedMatchesSelection ? "Loaded" : "Different"),
+                "memorychip",
+                !activeLocalLMStudioModel.isEmpty
+            ),
+            (
+                "OpenClaw config",
+                currentModel.isEmpty ? "No model configured" : currentModel,
+                localConfigured || isCloudLikeInferenceMode ? "Configured" : "Check",
+                "gearshape.fill",
+                !currentModel.isEmpty
+            ),
+            (
+                "Selected local matches config",
+                configuredLocal.isEmpty ? "Current model is not local" : configuredLocal,
+                configuredLocal.isEmpty ? "Cloud/OAuth" : (configuredLocal == selectedLocalLMStudioModel ? "Matches" : "Different"),
+                "checkmark.seal.fill",
+                configuredLocal.isEmpty || configuredLocal == selectedLocalLMStudioModel
+            )
+        ]
     }
 
     func openControlDashboard() {
@@ -16588,6 +16661,7 @@ struct ContentView: View {
             modelsHeader
             modelsSummaryRow
             modelsConfigAndEstimator
+            modelsHealthAndRecommendations
             modelsInventoryPanel
             Spacer()
         }
@@ -16718,6 +16792,9 @@ struct ContentView: View {
                 Button(vm.modelsApplyInProgress ? "Applying..." : "Apply selected model") { vm.applyModelsTabSelection() }
                     .buttonStyle(CTAButton(primary: true))
                     .disabled(vm.modelsApplyInProgress || (vm.inferenceMode == .local && vm.selectedLocalLMStudioModel.isEmpty) || (vm.inferenceMode == .cloud && vm.selectedOpenRouterModel.isEmpty))
+                Button("Use everywhere") { vm.useSelectedModelEverywhere() }
+                    .buttonStyle(CTAButton(primary: false))
+                    .disabled(vm.modelsApplyInProgress || (vm.inferenceMode == .local && vm.selectedLocalLMStudioModel.isEmpty) || (vm.inferenceMode == .cloud && vm.selectedOpenRouterModel.isEmpty))
                 Button("Scan models") {
                     vm.refreshOpenRouterModels()
                     vm.refreshLocalLMStudioModels()
@@ -16733,6 +16810,91 @@ struct ContentView: View {
         .padding(12).frame(maxWidth: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    var modelsHealthAndRecommendations: some View {
+        HStack(alignment: .top, spacing: 14) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Model health check").font(AppFont.bodySemi(15)).foregroundStyle(UI.text)
+                ForEach(Array(vm.modelHealthRows().enumerated()), id: \.offset) { _, row in
+                    modelHealthRow(row.title, detail: row.detail, status: row.status, icon: row.icon, healthy: row.healthy)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
+
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("Recommended local models").font(AppFont.bodySemi(15)).foregroundStyle(UI.text)
+                    Spacer()
+                    Picker("Filter", selection: $vm.modelsRecommendationFilter) {
+                        ForEach(["Balanced", "Fast", "Low RAM", "Long context", "Coding", "Best quality"], id: \.self) { filter in
+                            Text(filter).tag(filter)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 150)
+                }
+                ForEach(vm.recommendedLocalModels(filter: vm.modelsRecommendationFilter).prefix(4)) { model in
+                    Button {
+                        vm.inferenceMode = .local
+                        vm.selectInferenceModeFromUser(.local)
+                        vm.selectedLocalLMStudioModel = vm.localProviderModelIds[model.name] ?? model.providerId
+                        if !vm.localLMStudioModels.contains(vm.selectedLocalLMStudioModel),
+                           let match = vm.localLMStudioModels.first(where: { $0.contains(model.providerId) || $0.contains(model.query.split(separator: "@").first.map(String.init) ?? model.providerId) }) {
+                            vm.selectedLocalLMStudioModel = match
+                        }
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: model.family == "qwen" ? "q.square.fill" : "cpu.fill")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(UI.accent)
+                                .frame(width: 24)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(model.name).font(AppFont.bodySemi(12)).foregroundStyle(UI.text).lineLimit(1)
+                                Text("\(model.summary) · \(model.size) · \(model.context)").font(AppFont.body(10)).foregroundStyle(UI.muted).lineLimit(1)
+                            }
+                            Spacer()
+                            Text("Select")
+                                .font(AppFont.bodySemi(10))
+                                .foregroundStyle(UI.accent)
+                        }
+                        .padding(9)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
+        }
+    }
+
+    func modelHealthRow(_ title: String, detail: String, status: String, icon: String, healthy: Bool) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(healthy ? Color(NSColor.systemGreen) : Color(NSColor.systemOrange))
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(AppFont.bodySemi(12)).foregroundStyle(UI.text)
+                Text(detail).font(AppFont.body(10)).foregroundStyle(UI.muted).lineLimit(1).truncationMode(.middle)
+            }
+            Spacer()
+            Text(status)
+                .font(AppFont.bodySemi(10))
+                .foregroundStyle(healthy ? Color(NSColor.systemGreen) : Color(NSColor.systemOrange))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Capsule().fill((healthy ? Color(NSColor.systemGreen) : Color(NSColor.systemOrange)).opacity(0.12)))
+        }
+        .padding(9)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
     }
 
     var currentModelCard: some View {
