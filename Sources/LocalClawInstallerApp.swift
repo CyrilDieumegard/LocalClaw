@@ -947,6 +947,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var installerCurrentVersion = InstallerViewModel.detectAppVersion()
     @Published var installerBuildNumber = InstallerViewModel.detectBuildNumber()
     @Published var installerLatestVersion = "Checking..."
+    @Published var installerLatestBuild = ""
     @Published var installerUpdateStatus = "Checking..."
     @Published var installerDownloadURL = ""
     @Published var installerExpectedSHA256 = ""
@@ -1743,7 +1744,7 @@ final class InstallerViewModel: ObservableObject {
     }
 
     private var installerUpdateManifestURL: String {
-        ProcessInfo.processInfo.environment["LOCALCLAW_INSTALLER_UPDATE_URL"] ?? "https://localclaw.io/downloads/localclaw-installer-latest.json"
+        ProcessInfo.processInfo.environment["LOCALCLAW_INSTALLER_UPDATE_URL"] ?? "https://raw.githubusercontent.com/CyrilDieumegard/localclaw.io/main/downloads/localclaw-installer-latest.json"
     }
 
     private var localLicenseFile: URL {
@@ -3208,6 +3209,7 @@ final class InstallerViewModel: ObservableObject {
                 let manifest = try JSONDecoder().decode(InstallerUpdateManifest.self, from: data)
                 await MainActor.run {
                     self.installerLatestVersion = manifest.latestVersion
+                    self.installerLatestBuild = manifest.latestBuild?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                     var normalizedURL = manifest.dmgUrl
                     if normalizedURL.contains("/LocalClawInstaller.dmg") {
                         normalizedURL = normalizedURL.replacingOccurrences(of: "/LocalClawInstaller.dmg", with: "/localclaw.dmg")
@@ -12917,7 +12919,7 @@ struct ContentView: View {
                     versionRow("Homebrew", vm.brewVersion, "latest via brew update", isUpToDate: vm.brewUpToDate)
                     versionRow("Node", vm.nodeVersion, "22.19+ required for OpenClaw", isUpToDate: vm.nodeUpToDate)
                     versionRow("LM Studio", vm.lmStudioVersion, "latest via brew cask", isUpToDate: vm.lmStudioUpToDate)
-                    versionRow("LocalClaw", "\(vm.installerCurrentVersion) (build \(vm.installerBuildNumber))", vm.installerLatestVersion, isUpToDate: vm.installerUpdateStatus == "Up to date")
+                    versionRow("LocalClaw", "\(vm.installerCurrentVersion) (build \(vm.installerBuildNumber))", vm.installerLatestBuild.isEmpty ? vm.installerLatestVersion : "\(vm.installerLatestVersion) (build \(vm.installerLatestBuild))", isUpToDate: vm.installerUpdateStatus == "Up to date")
                 }
 
                 updateChangePlanPanel
@@ -13028,7 +13030,7 @@ struct ContentView: View {
             if vm.installerUpdateStatus == "Update available" {
                 compactUpdatePlanRow(
                     title: "LocalClaw app",
-                    detail: "\(vm.installerCurrentVersion) -> \(vm.installerLatestVersion)",
+                    detail: vm.installerLatestBuild.isEmpty ? "\(vm.installerCurrentVersion) -> \(vm.installerLatestVersion)" : "\(vm.installerCurrentVersion) (build \(vm.installerBuildNumber)) -> \(vm.installerLatestVersion) (build \(vm.installerLatestBuild))",
                     status: "Will update",
                     tint: UI.accent
                 )
