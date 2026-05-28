@@ -1628,51 +1628,42 @@ final class InstallerViewModel: ObservableObject {
         localModelCandidates.map(\.name)
     }
 
+    var localModelCatalog: [LocalModelCandidate] {
+        localModelCandidates
+    }
+
+    func localModelCandidate(named name: String) -> LocalModelCandidate? {
+        localModelCandidates.first { $0.name == name }
+    }
+
     private var localModelCandidates: [LocalModelCandidate] {
         [
-            LocalModelCandidate(name: "Qwen 3.5 35B-A3B Q4_K_M", query: "qwen3.5-35b-a3b@q4_k_m", providerId: "qwen3.5-35b-a3b"),
-            LocalModelCandidate(name: "Qwen 3.5 27B Q4_K_M", query: "qwen3.5-27b@q4_k_m", providerId: "qwen3.5-27b"),
-            LocalModelCandidate(name: "Qwen 3.5 9B Q4_K_M", query: "qwen3.5-9b@q4_k_m", providerId: "qwen3.5-9b"),
-            LocalModelCandidate(name: "Qwen 3.5 4B Q4_K_M", query: "qwen3.5-4b@q4_k_m", providerId: "qwen3.5-4b"),
-            LocalModelCandidate(name: "Qwen 3.5 2B Q4_K_M", query: "qwen3.5-2b@q4_k_m", providerId: "qwen3.5-2b"),
-            LocalModelCandidate(name: "Qwen 3.5 0.8B Q4_K_M", query: "qwen3.5-0.8b@q4_k_m", providerId: "qwen3.5-0.8b"),
-            LocalModelCandidate(name: "Qwen 3 14B Q4_K_M", query: "qwen-3-14b@q4_k_m", providerId: "qwen3-14b"),
-            LocalModelCandidate(name: "Qwen 3 8B Q4_K_M", query: "qwen-3-8b@q4_k_m", providerId: "qwen3-8b"),
-            LocalModelCandidate(name: "Nemotron 3 Nano 4B Q4_K_M", query: "nemotron-3-nano-4b@q4_k_m", providerId: "nvidia/nemotron-3-nano-4b"),
-            LocalModelCandidate(name: "DeepSeek R1 14B Q4_K_M", query: "deepseek-r1-distill-qwen-14b@q4_k_m", providerId: "deepseek-r1-distill-qwen-14b"),
-            LocalModelCandidate(name: "Llama 3.3 8B Q4_K_M", query: "llama-3.3-8b-instruct@q4_k_m", providerId: "llama-3.3-8b-instruct")
+            LocalModelCandidate(name: "Gemma 4 E4B Q4_K_M", query: "gemma-4-e4b@q4_k_m", providerId: "google/gemma-4-e4b", family: "google", summary: "Compact multimodal reasoning", size: "5 GB", context: "128K", badges: []),
+            LocalModelCandidate(name: "Gemma 4 26B-A4B Q4_K_M", query: "gemma-4-26b-a4b@q4_k_m", providerId: "google/gemma-4-26b-a4b", family: "google", summary: "Fast MoE with long context", size: "16.9 GB", context: "256K", badges: ["High Performance"]),
+            LocalModelCandidate(name: "Gemma 4 31B Q4_K_M", query: "gemma-4-31b@q4_k_m", providerId: "google/gemma-4-31b", family: "google", summary: "Top-tier dense reasoning", size: "19 GB", context: "256K", badges: ["High Performance"]),
+            LocalModelCandidate(name: "Qwen 3.5 35B-A3B Q4_K_M", query: "qwen3.5-35b-a3b@q4_k_m", providerId: "qwen3.5-35b-a3b", family: "qwen", summary: "High quality reasoning", size: "22 GB", context: "256K", badges: ["High Performance", "May be slow"]),
+            LocalModelCandidate(name: "Qwen 3.5 27B Q4_K_M", query: "qwen3.5-27b@q4_k_m", providerId: "qwen3.5-27b", family: "qwen", summary: "Next-gen dense reasoning", size: "17.6 GB", context: "256K", badges: ["New"]),
+            LocalModelCandidate(name: "Qwen 3.5 9B Q4_K_M", query: "qwen3.5-9b@q4_k_m", providerId: "qwen3.5-9b", family: "qwen", summary: "Balanced performance", size: "5.3 GB", context: "256K", badges: []),
+            LocalModelCandidate(name: "Qwen 3.5 4B Q4_K_M", query: "qwen3.5-4b@q4_k_m", providerId: "qwen3.5-4b", family: "qwen", summary: "Quality-size sweet spot", size: "2.7 GB", context: "256K", badges: []),
+            LocalModelCandidate(name: "Qwen 3.5 2B Q4_K_M", query: "qwen3.5-2b@q4_k_m", providerId: "qwen3.5-2b", family: "qwen", summary: "Fast lightweight reasoning", size: "1.7 GB", context: "256K", badges: []),
+            LocalModelCandidate(name: "Qwen 3.5 0.8B Q4_K_M", query: "qwen3.5-0.8b@q4_k_m", providerId: "qwen3.5-0.8b", family: "qwen", summary: "Smallest local fallback", size: "0.8 GB", context: "256K", badges: []),
+            LocalModelCandidate(name: "Qwen 3 14B Q4_K_M", query: "qwen-3-14b@q4_k_m", providerId: "qwen3-14b", family: "qwen", summary: "Older strong reasoning model", size: "8.9 GB", context: "128K", badges: []),
+            LocalModelCandidate(name: "Qwen 3 8B Q4_K_M", query: "qwen-3-8b@q4_k_m", providerId: "qwen3-8b", family: "qwen", summary: "Reliable compact coder", size: "5 GB", context: "128K", badges: []),
+            LocalModelCandidate(name: "Nemotron 3 Nano 4B Q4_K_M", query: "nemotron-3-nano-4b@q4_k_m", providerId: "nvidia/nemotron-3-nano-4b", family: "nvidia", summary: "Edge-optimized hybrid reasoning", size: "4.2 GB", context: "256K", badges: []),
+            LocalModelCandidate(name: "Nemotron 3 Nano 30B-A3B Q4_K_M", query: "nemotron-3-nano-30b-a3b@q4_k_m", providerId: "nvidia/nemotron-3-nano-30b-a3b", family: "nvidia", summary: "High-quality MoE reasoning", size: "24.6 GB", context: "1M", badges: ["May be slow"]),
+            LocalModelCandidate(name: "GLM 4.7 Flash 30B Q4_K_M", query: "glm-4.7-flash-30b@q4_k_m", providerId: "zai/glm-4.7-flash-30b", family: "zai", summary: "Lightweight deployment", size: "19 GB", context: "128K", badges: []),
+            LocalModelCandidate(name: "DeepSeek R1 14B Q4_K_M", query: "deepseek-r1-distill-qwen-14b@q4_k_m", providerId: "deepseek-r1-distill-qwen-14b", family: "deepseek", summary: "Reasoning fallback", size: "8.9 GB", context: "128K", badges: []),
+            LocalModelCandidate(name: "Llama 3.3 8B Q4_K_M", query: "llama-3.3-8b-instruct@q4_k_m", providerId: "llama-3.3-8b-instruct", family: "meta", summary: "General-purpose fallback", size: "5 GB", context: "128K", badges: [])
         ]
     }
 
-    let modelQueries: [String: String] = [
-        "Qwen 3.5 35B-A3B Q4_K_M": "qwen3.5-35b-a3b@q4_k_m",
-        "Qwen 3.5 27B Q4_K_M": "qwen3.5-27b@q4_k_m",
-        "Qwen 3.5 9B Q4_K_M": "qwen3.5-9b@q4_k_m",
-        "Qwen 3.5 4B Q4_K_M": "qwen3.5-4b@q4_k_m",
-        "Qwen 3.5 2B Q4_K_M": "qwen3.5-2b@q4_k_m",
-        "Qwen 3.5 0.8B Q4_K_M": "qwen3.5-0.8b@q4_k_m",
-        "Qwen 3 8B Q4_K_M": "qwen-3-8b@q4_k_m",
-        "Qwen 3 14B Q4_K_M": "qwen-3-14b@q4_k_m",
-        "Qwen 3 32B Q4_K_M": "qwen-3-32b@q4_k_m",
-        "Nemotron 3 Nano 4B Q4_K_M": "nemotron-3-nano-4b@q4_k_m",
-        "DeepSeek R1 14B Q4_K_M": "deepseek-r1-distill-qwen-14b@q4_k_m",
-        "Llama 3.3 8B Q4_K_M": "llama-3.3-8b-instruct@q4_k_m"
-    ]
+    var modelQueries: [String: String] {
+        Dictionary(uniqueKeysWithValues: localModelCandidates.map { ($0.name, $0.query) })
+    }
 
-    let localProviderModelIds: [String: String] = [
-        "Qwen 3.5 35B-A3B Q4_K_M": "qwen3.5-35b-a3b",
-        "Qwen 3.5 27B Q4_K_M": "qwen3.5-27b",
-        "Qwen 3.5 9B Q4_K_M": "qwen3.5-9b",
-        "Qwen 3.5 4B Q4_K_M": "qwen3.5-4b",
-        "Qwen 3.5 2B Q4_K_M": "qwen3.5-2b",
-        "Qwen 3.5 0.8B Q4_K_M": "qwen3.5-0.8b",
-        "Qwen 3 8B Q4_K_M": "qwen3-8b",
-        "Qwen 3 14B Q4_K_M": "qwen3-14b",
-        "Qwen 3 32B Q4_K_M": "qwen3-32b",
-        "Nemotron 3 Nano 4B Q4_K_M": "nvidia/nemotron-3-nano-4b",
-        "DeepSeek R1 14B Q4_K_M": "deepseek-r1-distill-qwen-14b",
-        "Llama 3.3 8B Q4_K_M": "llama-3.3-8b-instruct"
-    ]
+    var localProviderModelIds: [String: String] {
+        Dictionary(uniqueKeysWithValues: localModelCandidates.map { ($0.name, $0.providerId) })
+    }
 
     private let engine = InstallerEngine()
 
@@ -1693,10 +1684,20 @@ final class InstallerViewModel: ObservableObject {
         let sha256: String?
     }
 
-    private struct LocalModelCandidate {
+    struct LocalModelCandidate: Identifiable, Hashable {
+        var id: String { name }
         let name: String
         let query: String
         let providerId: String
+        let family: String
+        let summary: String
+        let size: String
+        let context: String
+        let badges: [String]
+
+        var detail: String {
+            "\(summary) · \(size) · \(context)"
+        }
     }
 
     private var licenseEndpoint: String {
@@ -12187,26 +12188,32 @@ struct ContentView: View {
 
                 if vm.inferenceMode == .local {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("2. Local model")
-                            .font(AppFont.bodySemi(14))
-                            .foregroundStyle(UI.text)
+                        HStack(alignment: .firstTextBaseline) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("2. Local model")
+                                    .font(AppFont.bodySemi(14))
+                                    .foregroundStyle(UI.text)
+                                Text("Recommended for \(vm.chip.isEmpty ? "this Mac" : vm.chip) · \(vm.ram)")
+                                    .font(AppFont.body(11))
+                                    .foregroundStyle(UI.muted)
+                            }
+                            Spacer()
+                            Text(vm.recommendation)
+                                .font(AppFont.bodySemi(11))
+                                .foregroundStyle(UI.accent)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
 
-                        Picker("Model", selection: $vm.selectedModel) {
-                            ForEach(vm.modelOptions, id: \.self) { model in
-                                Text(model).tag(model)
+                        VStack(spacing: 8) {
+                            ForEach(vm.localModelCatalog) { model in
+                                installLocalModelRow(model)
                             }
                         }
-                        .pickerStyle(.menu)
 
-                        Text("Tip: if chat fails with context error, set LM Studio Context Length to 16384+ and reload model")
+                        Text("LocalClaw downloads the selected GGUF through LM Studio during install. Pick smaller if you want speed, bigger if you accept slower responses for quality.")
                             .font(AppFont.body(12))
                             .foregroundStyle(UI.muted)
-
-                        if !vm.selectedModel.isEmpty {
-                            Text(vm.selectedModel == vm.recommendation ? "Recommended for your Mac" : "Compatible with your Mac")
-                                .font(AppFont.body(12))
-                                .foregroundStyle(UI.accent)
-                        }
                     }
                     .padding(14)
                     .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
@@ -12313,6 +12320,107 @@ struct ContentView: View {
             .overlay(RoundedRectangle(cornerRadius: 9).stroke(selected ? UI.accent.opacity(0.45) : UI.lineSoft, lineWidth: 1))
         }
         .buttonStyle(.plain)
+    }
+
+    private func installLocalModelRow(_ model: InstallerViewModel.LocalModelCandidate) -> some View {
+        let selected = vm.selectedModel == model.name
+        let recommended = vm.recommendation == model.name
+
+        return Button {
+            vm.selectedModel = model.name
+        } label: {
+            HStack(spacing: 12) {
+                modelFamilyMark(model.family)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 6) {
+                        Text(model.name.replacingOccurrences(of: " Q4_K_M", with: " GGUF"))
+                            .font(AppFont.bodySemi(13))
+                            .foregroundStyle(UI.text)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        if recommended {
+                            installModelBadge("Recommended", color: Color(NSColor.systemGreen))
+                        }
+                        ForEach(model.badges, id: \.self) { badge in
+                            installModelBadge(badge, color: installModelBadgeColor(badge))
+                        }
+                    }
+                    Text(model.detail)
+                        .font(AppFont.body(11))
+                        .foregroundStyle(UI.muted)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+
+                Spacer(minLength: 10)
+
+                Text(selected ? "Selected" : "Select")
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(selected ? .white : UI.text)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Capsule().fill(selected ? UI.accent : UI.cardSoft))
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 9).fill(selected ? UI.accent.opacity(0.10) : UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(selected ? UI.accent.opacity(0.55) : UI.lineSoft, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func modelFamilyMark(_ family: String) -> some View {
+        let normalized = family.lowercased()
+        let color: Color
+        let label: String
+        switch normalized {
+        case "google":
+            color = Color(NSColor.systemBlue)
+            label = "G"
+        case "qwen":
+            color = Color(NSColor.systemPurple)
+            label = "Q"
+        case "nvidia":
+            color = Color(NSColor.systemGreen)
+            label = "N"
+        case "zai":
+            color = Color(NSColor.systemGray)
+            label = "Z"
+        case "deepseek":
+            color = Color(NSColor.systemTeal)
+            label = "D"
+        case "meta":
+            color = Color(NSColor.systemIndigo)
+            label = "M"
+        default:
+            color = UI.accent
+            label = "AI"
+        }
+
+        return ZStack {
+            RoundedRectangle(cornerRadius: 8).fill(color.opacity(0.14))
+            Text(label)
+                .font(AppFont.bodySemi(12))
+                .foregroundStyle(color)
+        }
+        .frame(width: 34, height: 34)
+    }
+
+    private func installModelBadge(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(AppFont.bodySemi(10))
+            .foregroundStyle(color)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(RoundedRectangle(cornerRadius: 6).fill(color.opacity(0.16)))
+    }
+
+    private func installModelBadgeColor(_ text: String) -> Color {
+        let value = text.lowercased()
+        if value.contains("slow") { return Color(NSColor.systemOrange) }
+        if value.contains("new") { return Color(NSColor.systemPurple) }
+        if value.contains("performance") { return Color(NSColor.systemPurple) }
+        return UI.accent
     }
 
     private var installPreflightPanel: some View {
