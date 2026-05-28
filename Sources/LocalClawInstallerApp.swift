@@ -14867,6 +14867,9 @@ struct ContentView: View {
             if vm.agentsStatus == "Not loaded" {
                 vm.refreshAgents()
             }
+            if vm.cronJobsStatus == "Not loaded" {
+                vm.refreshCronJobs(silent: true)
+            }
         }
     }
 
@@ -14923,6 +14926,8 @@ struct ContentView: View {
                     .foregroundStyle(UI.muted)
                     .lineLimit(2)
                     .truncationMode(.middle)
+
+                agentRoutingSummary(agent)
             }
 
             Spacer(minLength: 8)
@@ -14947,6 +14952,64 @@ struct ContentView: View {
         .padding(16)
         .background(RoundedRectangle(cornerRadius: 14).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(agent.statusTint.opacity(0.35), lineWidth: 1))
+    }
+
+    private func agentRoutingSummary(_ agent: InstallerViewModel.AgentInfo) -> some View {
+        let routes = agentRoutes(agent)
+        return VStack(alignment: .leading, spacing: 7) {
+            Text("Used in")
+                .font(AppFont.bodySemi(10))
+                .foregroundStyle(UI.muted)
+            if routes.isEmpty {
+                agentRouteBadge("Not assigned yet", icon: "circle.dashed", tint: UI.muted)
+            } else {
+                HStack(spacing: 6) {
+                    ForEach(routes, id: \.label) { route in
+                        agentRouteBadge(route.label, icon: route.icon, tint: route.tint)
+                    }
+                }
+            }
+        }
+    }
+
+    private func agentRoutes(_ agent: InstallerViewModel.AgentInfo) -> [(label: String, icon: String, tint: Color)] {
+        let id = agent.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isMain = id == "main" || agent.isDefault
+        let cronCount = vm.cronJobs.filter { job in
+            let jobAgent = job.agentID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return isMain ? (jobAgent.isEmpty || jobAgent == "main") : jobAgent == id
+        }.count
+        let kanbanCount = vm.kanbanCards.filter { card in
+            let cardAgent = card.agentID.trimmingCharacters(in: .whitespacesAndNewlines)
+            return isMain ? (cardAgent.isEmpty || cardAgent == "main") : cardAgent == id
+        }.count
+
+        var routes: [(label: String, icon: String, tint: Color)] = []
+        if isMain {
+            routes.append(("OpenClaw Chat", "bubble.left.and.bubble.right.fill", Color(NSColor.systemBlue)))
+            routes.append(("Developer", "curlybraces.square.fill", UI.accent))
+        }
+        if cronCount > 0 {
+            routes.append(("Cron Jobs \(cronCount)", "calendar.badge.clock", Color(NSColor.systemPurple)))
+        }
+        if kanbanCount > 0 {
+            routes.append(("Kanban \(kanbanCount)", "rectangle.3.group.fill", Color(NSColor.systemGreen)))
+        }
+        if agent.bindings > 0 {
+            routes.append(("Routes \(agent.bindings)", "arrow.triangle.branch", Color(NSColor.systemOrange)))
+        }
+        return routes
+    }
+
+    private func agentRouteBadge(_ label: String, icon: String, tint: Color) -> some View {
+        Label(label, systemImage: icon)
+            .font(AppFont.bodySemi(10))
+            .foregroundStyle(tint)
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 999).stroke(tint.opacity(0.24), lineWidth: 1))
     }
 
     var agentSetupPanel: some View {
