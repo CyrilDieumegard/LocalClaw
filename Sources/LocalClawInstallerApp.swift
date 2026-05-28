@@ -995,6 +995,8 @@ final class InstallerViewModel: ObservableObject {
     @Published var skillsLog: String = ""
     @Published var skillsIsLoading = false
     @Published var installingSkillName: String = ""
+    @Published var skillsCatalogFilter: String = "Installed"
+    @Published var testingSkillName: String = ""
     @Published var openRouterKeyVerified: Bool = false
     @Published var cloudProviderAuthConfigured: Bool = false
     @Published var hasExistingOpenClawSetup = false
@@ -3006,8 +3008,19 @@ final class InstallerViewModel: ObservableObject {
 
     var visibleInstalledSkills: [OpenClawSkill] {
         let query = skillsSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else { return installedSkills }
-        return installedSkills.filter {
+        let filtered: [OpenClawSkill]
+        switch skillsCatalogFilter {
+        case "Ready":
+            filtered = installedSkills.filter { $0.isActive }
+        case "Needs setup":
+            filtered = installedSkills.filter { $0.disabled == true || $0.eligible != true || $0.missing != nil }
+        case "Broken":
+            filtered = installedSkills.filter { $0.disabled == true || ($0.missing?.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) }
+        default:
+            filtered = installedSkills
+        }
+        guard !query.isEmpty else { return filtered }
+        return filtered.filter {
             $0.name.lowercased().contains(query) ||
             ($0.description ?? "").lowercased().contains(query) ||
             ($0.source ?? "").lowercased().contains(query)
@@ -3100,6 +3113,43 @@ final class InstallerViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    func testSkill(_ skill: OpenClawSkill) {
+        let name = skill.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        testingSkillName = name
+        skillsStatus = "Testing \(name)..."
+
+        var checks: [String] = []
+        checks.append("Skill: \(name)")
+        checks.append("Status: \(skill.statusLabel)")
+        checks.append("Source: \(skill.sourceLabel)")
+        checks.append("Visible to model: \(skill.modelVisible == true ? "yes" : "no")")
+        checks.append("User invocable: \(skill.userInvocable == true ? "yes" : "no")")
+        checks.append("Command visible: \(skill.commandVisible == true ? "yes" : "no")")
+        if let missing = skill.missing?.summary, !missing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            checks.append("Missing: \(missing)")
+        } else {
+            checks.append("Requirements: OK")
+        }
+        checks.append("Used by: available to OpenClaw agents/chats when active")
+
+        skillsLog = checks.joined(separator: "\n")
+        skillsStatus = skill.isActive ? "\(name) ready" : "\(name) needs attention"
+        testingSkillName = ""
+    }
+
+    func repairSkill(_ skill: OpenClawSkill) {
+        let name = skill.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        skillsStatus = "Repair check for \(name)..."
+        skillsLog = """
+        Repair check: \(name)
+        LocalClaw refreshed the OpenClaw skill inventory.
+        If this skill still shows missing requirements, install the dependency listed in the skill details or reinstall it from ClawHub.
+        """
+        refreshSkills()
     }
 
     func useTestLicense() {
@@ -16444,93 +16494,107 @@ struct ContentView: View {
     }
 
     var skillsCenter: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("SKILLS")
-                        .font(AppFont.heading(28))
-                        .foregroundStyle(UI.text)
-                    Text("Browse OpenClaw skills, check what is ready, and install ClawHub skills.")
-                        .font(AppFont.body(13))
-                        .foregroundStyle(UI.muted)
-                }
-
-                Spacer()
-
-                Text(vm.skillsStatus)
-                    .font(AppFont.bodySemi(12))
-                    .foregroundStyle(vm.skillsIsLoading ? UI.accent : UI.muted)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
-            }
-
-            HStack(spacing: 10) {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(UI.muted)
-                    TextField("Search installed skills or ClawHub", text: $vm.skillsSearchQuery)
-                        .textFieldStyle(.plain)
-                        .font(AppFont.body(13))
-                        .onSubmit { vm.searchClawHubSkills() }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
-                .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
-
-                Button("Refresh") { vm.refreshSkills() }
-                    .buttonStyle(CTAButton(primary: false))
-                    .disabled(vm.skillsIsLoading)
-
-                Button("Search ClawHub") { vm.searchClawHubSkills() }
-                    .buttonStyle(CTAButton(primary: true))
-                    .disabled(vm.skillsSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-
-            HStack(spacing: 10) {
-                skillMetricCard("Installed", value: "\(vm.installedSkills.count)", icon: "checkmark.seal.fill", tint: Color(NSColor.systemGreen))
-                skillMetricCard("Active", value: "\(vm.installedSkills.filter { $0.isActive }.count)", icon: "bolt.fill", tint: UI.accent)
-                skillMetricCard("Needs setup", value: "\(vm.installedSkills.filter { $0.disabled == true }.count)", icon: "exclamationmark.triangle.fill", tint: Color(NSColor.systemOrange))
-                skillMetricCard("Not installed", value: "\(vm.clawHubSkills.count)", icon: "tray.and.arrow.down.fill", tint: UI.muted)
-            }
-
-            HStack(alignment: .top, spacing: 14) {
-                skillsListPanel(
-                    title: "Installed and bundled",
-                    emptyText: vm.skillsIsLoading ? "Loading skills..." : "No skill found.",
-                    skills: vm.visibleInstalledSkills,
-                    showInstall: false
-                )
-
-                skillsListPanel(
-                    title: "ClawHub results",
-                    emptyText: vm.skillsSearchQuery.isEmpty ? "Search ClawHub to find new skills." : "No ClawHub result yet.",
-                    skills: vm.clawHubSkills,
-                    showInstall: true
-                )
-            }
-
-            if !vm.skillsLog.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Activity")
-                        .font(AppFont.bodySemi(13))
-                        .foregroundStyle(UI.muted)
-                    ScrollView {
-                        Text(vm.skillsLog)
-                            .font(.system(size: 12, design: .monospaced))
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("SKILLS")
+                            .font(AppFont.heading(28))
                             .foregroundStyle(UI.text)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(12)
+                        Text("Browse OpenClaw skills, test readiness, and install ClawHub skills without opening Terminal.")
+                            .font(AppFont.body(13))
+                            .foregroundStyle(UI.muted)
                     }
-                    .frame(maxHeight: 120)
-                    .scrollIndicators(.hidden)
+
+                    Spacer()
+
+                    Text(vm.skillsStatus)
+                        .font(AppFont.bodySemi(12))
+                        .foregroundStyle(vm.skillsIsLoading ? UI.accent : UI.muted)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
+                }
+
+                HStack(spacing: 10) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(UI.muted)
+                        TextField("Search installed skills or ClawHub", text: $vm.skillsSearchQuery)
+                            .textFieldStyle(.plain)
+                            .font(AppFont.body(13))
+                            .onSubmit { vm.searchClawHubSkills() }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
                     .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
                     .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+
+                    Picker("", selection: $vm.skillsCatalogFilter) {
+                        ForEach(["Installed", "Ready", "Needs setup", "Broken"], id: \.self) { filter in
+                            Text(filter).tag(filter)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 390)
+
+                    Button("Refresh") { vm.refreshSkills() }
+                        .buttonStyle(CTAButton(primary: false))
+                        .disabled(vm.skillsIsLoading)
+
+                    Button("Search ClawHub") { vm.searchClawHubSkills() }
+                        .buttonStyle(CTAButton(primary: true))
+                        .disabled(vm.skillsSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+
+                HStack(spacing: 10) {
+                    skillMetricCard("Installed", value: "\(vm.installedSkills.count)", icon: "checkmark.seal.fill", tint: Color(NSColor.systemGreen))
+                    skillMetricCard("Active", value: "\(vm.installedSkills.filter { $0.isActive }.count)", icon: "bolt.fill", tint: UI.accent)
+                    skillMetricCard("Needs setup", value: "\(vm.installedSkills.filter { $0.disabled == true || $0.missing != nil }.count)", icon: "exclamationmark.triangle.fill", tint: Color(NSColor.systemOrange))
+                    skillMetricCard("ClawHub results", value: "\(vm.clawHubSkills.count)", icon: "tray.and.arrow.down.fill", tint: UI.muted)
+                }
+
+                skillsSetupGuide
+
+                HStack(alignment: .top, spacing: 14) {
+                    skillsListPanel(
+                        title: "\(vm.skillsCatalogFilter) skills",
+                        emptyText: vm.skillsIsLoading ? "Loading skills..." : "No skill found for this filter.",
+                        skills: vm.visibleInstalledSkills,
+                        showInstall: false
+                    )
+
+                    skillsListPanel(
+                        title: "Available on ClawHub",
+                        emptyText: vm.skillsSearchQuery.isEmpty ? "Search ClawHub to find new skills." : "No ClawHub result yet.",
+                        skills: vm.clawHubSkills,
+                        showInstall: true
+                    )
+                }
+
+                if !vm.skillsLog.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Activity")
+                            .font(AppFont.bodySemi(13))
+                            .foregroundStyle(UI.muted)
+                        ScrollView {
+                            Text(vm.skillsLog)
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(UI.text)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(12)
+                        }
+                        .frame(maxHeight: 140)
+                        .scrollIndicators(.visible)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+                    }
                 }
             }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .padding(18)
+        .scrollIndicators(.visible)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
@@ -16540,6 +16604,37 @@ struct ContentView: View {
                 vm.refreshSkills()
             }
         }
+    }
+
+    private var skillsSetupGuide: some View {
+        HStack(spacing: 10) {
+            skillGuideCard("1. Browse", "Filter installed skills by readiness before changing anything.", icon: "square.grid.2x2.fill", tint: Color(NSColor.systemBlue))
+            skillGuideCard("2. Test", "Run a local diagnostic to see visibility, missing requirements, and expected usage.", icon: "checkmark.seal.fill", tint: Color(NSColor.systemGreen))
+            skillGuideCard("3. Repair", "Refresh inventory after setup changes and surface missing dependencies clearly.", icon: "wrench.and.screwdriver.fill", tint: UI.accent)
+        }
+    }
+
+    private func skillGuideCard(_ title: String, _ detail: String, icon: String, tint: Color) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(UI.text)
+                Text(detail)
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     private func skillMetricCard(_ title: String, value: String, icon: String, tint: Color) -> some View {
@@ -16644,6 +16739,21 @@ struct ContentView: View {
                 }
                 .buttonStyle(CTAButton(primary: false))
                 .disabled(!vm.installingSkillName.isEmpty)
+            } else {
+                VStack(spacing: 7) {
+                    Button(vm.testingSkillName == skill.name ? "Testing..." : "Test") {
+                        vm.testSkill(skill)
+                    }
+                    .buttonStyle(CTAButton(primary: false))
+                    .disabled(!vm.testingSkillName.isEmpty)
+
+                    Button("Repair") {
+                        vm.repairSkill(skill)
+                    }
+                    .buttonStyle(CTAButton(primary: false))
+                    .disabled(vm.skillsIsLoading)
+                }
+                .frame(width: 92)
             }
         }
         .padding(10)
