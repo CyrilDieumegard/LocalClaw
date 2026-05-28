@@ -153,6 +153,14 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    struct ChatToolVisibilityOption: Identifiable, Hashable {
+        let id: String
+        let title: String
+        let detail: String
+        let systemImage: String
+        let keywords: [String]
+    }
+
     struct ModelUsageRecord: Identifiable, Codable {
         let id: UUID
         let createdAt: Date
@@ -1001,6 +1009,15 @@ final class InstallerViewModel: ObservableObject {
     @Published var chatMemoryEnabled = true {
         didSet { UserDefaults.standard.set(chatMemoryEnabled, forKey: Self.chatMemoryEnabledDefaultsKey) }
     }
+    @Published var chatMemoryPanelVisible = true {
+        didSet { UserDefaults.standard.set(chatMemoryPanelVisible, forKey: Self.chatMemoryPanelVisibleDefaultsKey) }
+    }
+    @Published var chatCleanViewEnabled = false {
+        didSet { UserDefaults.standard.set(chatCleanViewEnabled, forKey: Self.chatCleanViewDefaultsKey) }
+    }
+    @Published var hiddenChatToolIDs: Set<String> = [] {
+        didSet { UserDefaults.standard.set(Array(hiddenChatToolIDs).sorted(), forKey: Self.hiddenChatToolIDsDefaultsKey) }
+    }
     @Published var chatSavedNotes: [String] = [] {
         didSet { persistChatSavedNotes() }
     }
@@ -1203,6 +1220,9 @@ final class InstallerViewModel: ObservableObject {
     private static let selectedChatSessionDefaultsKey = "localclaw.chat.selectedSession.v1"
     private static let selectedChatResponseModeDefaultsKey = "localclaw.chat.responseMode.v1"
     private static let chatMemoryEnabledDefaultsKey = "localclaw.chat.memoryEnabled.v1"
+    private static let chatMemoryPanelVisibleDefaultsKey = "localclaw.chat.memoryPanelVisible.v1"
+    private static let chatCleanViewDefaultsKey = "localclaw.chat.cleanView.v1"
+    private static let hiddenChatToolIDsDefaultsKey = "localclaw.chat.hiddenToolIDs.v1"
     private static let chatSavedNotesDefaultsKey = "localclaw.chat.savedNotes.v1"
     private static let developerProjectNameDefaultsKey = "localclaw.developer.projectName.v1"
     private static let developerFreshContextDefaultsKey = "localclaw.developer.freshContext.v1"
@@ -1219,6 +1239,15 @@ final class InstallerViewModel: ObservableObject {
         }
         if UserDefaults.standard.object(forKey: Self.chatMemoryEnabledDefaultsKey) != nil {
             chatMemoryEnabled = UserDefaults.standard.bool(forKey: Self.chatMemoryEnabledDefaultsKey)
+        }
+        if UserDefaults.standard.object(forKey: Self.chatMemoryPanelVisibleDefaultsKey) != nil {
+            chatMemoryPanelVisible = UserDefaults.standard.bool(forKey: Self.chatMemoryPanelVisibleDefaultsKey)
+        }
+        if UserDefaults.standard.object(forKey: Self.chatCleanViewDefaultsKey) != nil {
+            chatCleanViewEnabled = UserDefaults.standard.bool(forKey: Self.chatCleanViewDefaultsKey)
+        }
+        if let hiddenIDs = UserDefaults.standard.stringArray(forKey: Self.hiddenChatToolIDsDefaultsKey) {
+            hiddenChatToolIDs = Set(hiddenIDs)
         }
         if let savedProjectName = UserDefaults.standard.string(forKey: Self.developerProjectNameDefaultsKey),
            !savedProjectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -6327,6 +6356,56 @@ final class InstallerViewModel: ObservableObject {
         return Array(notes.suffix(6))
     }
 
+    static let chatToolVisibilityOptions: [ChatToolVisibilityOption] = [
+        ChatToolVisibilityOption(id: "shell", title: "Shell", detail: "Terminal commands and command output", systemImage: "terminal", keywords: ["shell", "terminal", "command", "exec", "stdout", "stderr", "$ "]),
+        ChatToolVisibilityOption(id: "files", title: "Files", detail: "Read/write file activity", systemImage: "doc.text", keywords: ["file", "read", "write", "patch", "diff", "workspace"]),
+        ChatToolVisibilityOption(id: "browser", title: "Browser", detail: "Browser, web, and page inspection", systemImage: "globe", keywords: ["browser", "web", "url", "http", "page", "screenshot"]),
+        ChatToolVisibilityOption(id: "channels", title: "Channels", detail: "Telegram, Discord, and delivery actions", systemImage: "bubble.left.and.bubble.right", keywords: ["telegram", "discord", "channel", "delivery", "send to channel"]),
+        ChatToolVisibilityOption(id: "memory", title: "Memory", detail: "Context and memory notices", systemImage: "memorychip", keywords: ["memory", "context", "saved to chat memory", "visible memory"])
+    ]
+
+    var visibleChatMessages: [ChatMessage] {
+        chatMessages.filter { !shouldHideChatMessage($0) }
+    }
+
+    func chatToolOption(for message: ChatMessage) -> ChatToolVisibilityOption? {
+        let haystack = "\(message.role) \(message.metadata ?? "") \(message.text)".lowercased()
+        let looksTechnical = haystack.contains("tool") ||
+            haystack.contains("stdout") ||
+            haystack.contains("stderr") ||
+            haystack.contains("command") ||
+            haystack.contains("saved to chat memory") ||
+            haystack.contains("send to channel")
+
+        for option in Self.chatToolVisibilityOptions {
+            if option.keywords.contains(where: { haystack.contains($0.lowercased()) }) {
+                return option
+            }
+        }
+        return looksTechnical ? Self.chatToolVisibilityOptions.first { $0.id == "shell" } : nil
+    }
+
+    func shouldHideChatMessage(_ message: ChatMessage) -> Bool {
+        guard message.role != "user" else { return false }
+        if chatCleanViewEnabled, chatToolOption(for: message) != nil {
+            return true
+        }
+        guard let option = chatToolOption(for: message) else { return false }
+        return hiddenChatToolIDs.contains(option.id)
+    }
+
+    func isChatToolVisible(_ option: ChatToolVisibilityOption) -> Bool {
+        !hiddenChatToolIDs.contains(option.id)
+    }
+
+    func setChatTool(_ option: ChatToolVisibilityOption, visible: Bool) {
+        if visible {
+            hiddenChatToolIDs.remove(option.id)
+        } else {
+            hiddenChatToolIDs.insert(option.id)
+        }
+    }
+
     var developerMemoryPreview: [String] {
         let recent = developerChatMessages
             .filter { $0.role == "user" || $0.role == "assistant" }
@@ -11365,6 +11444,8 @@ struct ContentView: View {
 
                     Spacer(minLength: 0)
 
+                    chatViewControls
+
                     Label(vm.chatStatus, systemImage: vm.chatStatus == "Ready" ? "checkmark.circle.fill" : "circle.fill")
                         .font(AppFont.bodySemi(12))
                         .foregroundStyle(vm.chatStatus == "Ready" ? Color(NSColor.systemGreen) : UI.accent)
@@ -11409,6 +11490,7 @@ struct ContentView: View {
                     oauthUsagePill
                     chatModelPicker(width: 260)
                     Spacer()
+                    chatViewControls
                     Label(vm.chatStatus, systemImage: vm.chatStatus == "Ready" ? "checkmark.circle.fill" : "circle.fill")
                         .font(AppFont.bodySemi(12))
                         .foregroundStyle(vm.chatStatus == "Ready" ? Color(NSColor.systemGreen) : UI.accent)
@@ -11482,7 +11564,7 @@ struct ContentView: View {
                     ScrollViewReader { proxy in
                         ScrollView {
                             VStack(alignment: .leading, spacing: 10) {
-                                ForEach(vm.chatMessages) { message in
+                                ForEach(vm.visibleChatMessages) { message in
                                     chatBubble(message)
                                         .id(message.id)
                                 }
@@ -11528,7 +11610,9 @@ struct ContentView: View {
                 }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                chatMemoryPanel
+                if vm.chatMemoryPanelVisible {
+                    chatMemoryPanel
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -11543,6 +11627,80 @@ struct ContentView: View {
             vm.refreshOpenClawChatInfo()
             vm.refreshOAuthUsage()
         }
+    }
+
+    var chatViewControls: some View {
+        HStack(spacing: 7) {
+            chatToolsMenu
+            chatHeaderIconButton(
+                vm.chatCleanViewEnabled ? "eye.fill" : "eye",
+                active: vm.chatCleanViewEnabled,
+                help: vm.chatCleanViewEnabled ? "Clean view is on" : "Clean view"
+            ) {
+                vm.chatCleanViewEnabled.toggle()
+            }
+            chatHeaderIconButton(
+                vm.chatMemoryPanelVisible ? "sidebar.right" : "sidebar.right",
+                active: vm.chatMemoryPanelVisible,
+                help: vm.chatMemoryPanelVisible ? "Hide Memory panel" : "Show Memory panel"
+            ) {
+                vm.chatMemoryPanelVisible.toggle()
+            }
+        }
+    }
+
+    var chatToolsMenu: some View {
+        Menu {
+            Text("Show tool activity")
+            Divider()
+            ForEach(InstallerViewModel.chatToolVisibilityOptions) { option in
+                Button {
+                    vm.setChatTool(option, visible: !vm.isChatToolVisible(option))
+                } label: {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(option.title)
+                            Text(option.detail)
+                                .font(AppFont.body(10))
+                                .foregroundStyle(UI.muted)
+                        }
+                    } icon: {
+                        Image(systemName: vm.isChatToolVisible(option) ? "checkmark.square.fill" : "square")
+                    }
+                }
+            }
+            Divider()
+            Button(vm.hiddenChatToolIDs.isEmpty ? "Hide all tools" : "Show all tools") {
+                if vm.hiddenChatToolIDs.isEmpty {
+                    vm.hiddenChatToolIDs = Set(InstallerViewModel.chatToolVisibilityOptions.map(\.id))
+                } else {
+                    vm.hiddenChatToolIDs = []
+                }
+            }
+        } label: {
+            Label("Tools", systemImage: "wrench.and.screwdriver")
+                .font(AppFont.bodySemi(11))
+                .foregroundStyle(UI.text)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 9).fill(UI.cardSoft))
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(vm.hiddenChatToolIDs.isEmpty ? UI.lineSoft : UI.accent.opacity(0.55), lineWidth: 1))
+        }
+        .menuStyle(.borderlessButton)
+        .help("Choose which OpenClaw tool activity appears in chat")
+    }
+
+    func chatHeaderIconButton(_ systemName: String, active: Bool, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(active ? UI.accent : UI.muted)
+                .frame(width: 30, height: 30)
+                .background(RoundedRectangle(cornerRadius: 9).fill(UI.cardSoft))
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(active ? UI.accent.opacity(0.5) : UI.lineSoft, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     func scrollChatToBottom(_ proxy: ScrollViewProxy) {
@@ -12029,6 +12187,7 @@ struct ContentView: View {
         let bubbleFill = isError ? Color(NSColor.systemRed).opacity(0.08) : (isUser ? UI.accent.opacity(0.16) : UI.card)
         let bubbleStroke = isError ? Color(NSColor.systemRed).opacity(0.35) : (isUser ? UI.accent.opacity(0.22) : Color.black.opacity(0.06))
         let modelName = message.modelName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let toolOption = vm.chatToolOption(for: message)
         return HStack {
             if isUser { Spacer(minLength: 80) }
             VStack(alignment: .leading, spacing: 8) {
@@ -12042,6 +12201,16 @@ struct ContentView: View {
                             .foregroundStyle(UI.muted)
                             .lineLimit(1)
                             .truncationMode(.middle)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(UI.cardSoft))
+                            .overlay(Capsule().stroke(UI.lineSoft, lineWidth: 1))
+                    }
+                    if let toolOption, !vm.chatCleanViewEnabled {
+                        Label(toolOption.title, systemImage: toolOption.systemImage)
+                            .font(AppFont.bodySemi(10))
+                            .foregroundStyle(UI.muted)
+                            .lineLimit(1)
                             .padding(.horizontal, 7)
                             .padding(.vertical, 3)
                             .background(Capsule().fill(UI.cardSoft))
@@ -12089,10 +12258,19 @@ struct ContentView: View {
                 if let imagePath = message.imagePath, !imagePath.isEmpty {
                     chatMessageImage(path: imagePath)
                 }
-                if let metadata = message.metadata, !metadata.isEmpty {
+                if let metadata = message.metadata, !metadata.isEmpty, !vm.chatCleanViewEnabled {
                     Label(metadata, systemImage: "speedometer")
                         .font(AppFont.body(10))
                         .foregroundStyle(UI.muted)
+                }
+                if let metadata = message.metadata, !metadata.isEmpty, vm.chatCleanViewEnabled {
+                    Button("Show details") {
+                        vm.chatCleanViewEnabled = false
+                    }
+                    .font(AppFont.bodySemi(10))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(UI.accent)
+                    .help(metadata)
                 }
             }
             .padding(12)
