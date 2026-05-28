@@ -204,15 +204,34 @@ final class InstallerViewModel: ObservableObject {
         let id: String
         var name: String
         var path: String
+        var icon: String
+        var colorName: String
         var createdAt: Date
         var lastOpenedAt: Date
 
-        init(id: String = UUID().uuidString, name: String, path: String, createdAt: Date = Date(), lastOpenedAt: Date = Date()) {
+        init(id: String = UUID().uuidString, name: String, path: String, icon: String = "curlybraces.square", colorName: String = "red", createdAt: Date = Date(), lastOpenedAt: Date = Date()) {
             self.id = id
             self.name = name
             self.path = path
+            self.icon = icon
+            self.colorName = colorName
             self.createdAt = createdAt
             self.lastOpenedAt = lastOpenedAt
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id, name, path, icon, colorName, createdAt, lastOpenedAt
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            name = try container.decode(String.self, forKey: .name)
+            path = try container.decode(String.self, forKey: .path)
+            icon = try container.decodeIfPresent(String.self, forKey: .icon) ?? "curlybraces.square"
+            colorName = try container.decodeIfPresent(String.self, forKey: .colorName) ?? "red"
+            createdAt = try container.decode(Date.self, forKey: .createdAt)
+            lastOpenedAt = try container.decode(Date.self, forKey: .lastOpenedAt)
         }
     }
 
@@ -1107,6 +1126,13 @@ final class InstallerViewModel: ObservableObject {
         didSet { persistDeveloperProjects() }
     }
     @Published var selectedDeveloperProjectID = ""
+    @Published var developerProjectsPanelVisible = true {
+        didSet { UserDefaults.standard.set(developerProjectsPanelVisible, forKey: Self.developerProjectsPanelVisibleDefaultsKey) }
+    }
+    @Published var editingDeveloperProjectID = ""
+    @Published var editingDeveloperProjectName = ""
+    @Published var developerProjectDeleteCandidateID = ""
+    @Published var developerProjectDeleteCandidateName = ""
     @Published var developerGitRepoInput = ""
     @Published var developerGitNewRepoName = ""
     @Published var developerGitActionStatus = ""
@@ -1306,6 +1332,7 @@ final class InstallerViewModel: ObservableObject {
     private static let developerProjectNameDefaultsKey = "localclaw.developer.projectName.v1"
     private static let developerProjectsDefaultsKey = "localclaw.developer.projects.v1"
     private static let selectedDeveloperProjectDefaultsKey = "localclaw.developer.selectedProject.v1"
+    private static let developerProjectsPanelVisibleDefaultsKey = "localclaw.developer.projectsPanelVisible.v1"
     private static let developerFreshContextDefaultsKey = "localclaw.developer.freshContext.v1"
     private static let modelUsageDefaultsKey = "localclaw.modelUsage.records.v1"
     private static let homeUsageWindowDefaultsKey = "localclaw.home.usageWindow.v1"
@@ -1336,6 +1363,9 @@ final class InstallerViewModel: ObservableObject {
         }
         if UserDefaults.standard.object(forKey: Self.developerFreshContextDefaultsKey) != nil {
             developerFreshContextEnabled = UserDefaults.standard.bool(forKey: Self.developerFreshContextDefaultsKey)
+        }
+        if UserDefaults.standard.object(forKey: Self.developerProjectsPanelVisibleDefaultsKey) != nil {
+            developerProjectsPanelVisible = UserDefaults.standard.bool(forKey: Self.developerProjectsPanelVisibleDefaultsKey)
         }
         if let rawUsageWindow = UserDefaults.standard.string(forKey: Self.homeUsageWindowDefaultsKey),
            let usageWindow = UsageWindow(rawValue: rawUsageWindow) {
@@ -7708,6 +7738,63 @@ final class InstallerViewModel: ObservableObject {
         developerProjects.sort { $0.lastOpenedAt > $1.lastOpenedAt }
     }
 
+    func beginEditingDeveloperProject(_ project: DeveloperProject) {
+        editingDeveloperProjectID = project.id
+        editingDeveloperProjectName = project.name
+    }
+
+    func commitEditingDeveloperProject() {
+        let name = editingDeveloperProjectName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !editingDeveloperProjectID.isEmpty, !name.isEmpty,
+              let index = developerProjects.firstIndex(where: { $0.id == editingDeveloperProjectID }) else {
+            cancelEditingDeveloperProject()
+            return
+        }
+        developerProjects[index].name = String(name.prefix(48))
+        if developerProjects[index].id == selectedDeveloperProjectID {
+            developerProjectName = developerProjects[index].name
+        }
+        cancelEditingDeveloperProject()
+    }
+
+    func cancelEditingDeveloperProject() {
+        editingDeveloperProjectID = ""
+        editingDeveloperProjectName = ""
+    }
+
+    func updateDeveloperProjectStyle(_ projectID: String, icon: String? = nil, colorName: String? = nil) {
+        guard let index = developerProjects.firstIndex(where: { $0.id == projectID }) else { return }
+        if let icon { developerProjects[index].icon = icon }
+        if let colorName { developerProjects[index].colorName = colorName }
+    }
+
+    func beginDeletingDeveloperProject(_ project: DeveloperProject) {
+        developerProjectDeleteCandidateID = project.id
+        developerProjectDeleteCandidateName = project.name
+    }
+
+    func cancelDeletingDeveloperProject() {
+        developerProjectDeleteCandidateID = ""
+        developerProjectDeleteCandidateName = ""
+    }
+
+    func deletePendingDeveloperProject() {
+        let id = developerProjectDeleteCandidateID
+        guard !id.isEmpty else { return }
+        developerProjects.removeAll { $0.id == id }
+        if selectedDeveloperProjectID == id {
+            selectedDeveloperProjectID = developerProjects.first?.id ?? ""
+            UserDefaults.standard.set(selectedDeveloperProjectID, forKey: Self.selectedDeveloperProjectDefaultsKey)
+            if let next = developerProjects.first {
+                openDeveloperProject(next)
+            }
+        }
+        if editingDeveloperProjectID == id {
+            cancelEditingDeveloperProject()
+        }
+        cancelDeletingDeveloperProject()
+    }
+
     func openDeveloperProject(_ project: DeveloperProject) {
         developerStopPreview()
         developerProjectName = project.name
@@ -11345,6 +11432,10 @@ struct ContentView: View {
                         .foregroundStyle(UI.muted)
                 }
                 Spacer()
+                developerActiveProjectPill
+                developerToolbarButton(vm.developerProjectsPanelVisible ? "Hide projects" : "Show projects", icon: vm.developerProjectsPanelVisible ? "sidebar.left" : "sidebar.left") {
+                    vm.developerProjectsPanelVisible.toggle()
+                }
                 developerToolbarButton("New app", icon: "plus.square.on.square") { vm.developerNewApp() }
                 developerToolbarButton("Open app", icon: "folder") { vm.developerChooseFolder() }
                 developerToolbarButton("Sync folder", icon: "folder.badge.gearshape") { vm.syncDeveloperProjectFolder() }
@@ -11352,8 +11443,10 @@ struct ContentView: View {
             }
 
             HStack(alignment: .top, spacing: 14) {
-                developerProjectsPanel
-                    .frame(width: 230)
+                if vm.developerProjectsPanelVisible {
+                    developerProjectsPanel
+                        .frame(width: 230)
+                }
                 developerChatPanel
                     .frame(minWidth: 360, idealWidth: 430, maxWidth: 500)
                 developerPreviewPanel
@@ -11367,6 +11460,41 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.06), radius: 6, x: 0, y: 2)
         .onAppear { vm.prepareDeveloperWorkspace() }
+        .alert("Remove Developer project?", isPresented: Binding(
+            get: { !vm.developerProjectDeleteCandidateID.isEmpty },
+            set: { if !$0 { vm.cancelDeletingDeveloperProject() } }
+        )) {
+            Button("Cancel", role: .cancel) { vm.cancelDeletingDeveloperProject() }
+            Button("Remove project", role: .destructive) { vm.deletePendingDeveloperProject() }
+        } message: {
+            Text("This removes \"\(vm.developerProjectDeleteCandidateName)\" from LocalClaw's Developer list. The project folder and files are not deleted.")
+        }
+    }
+
+    private var developerActiveProjectPill: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "folder.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(UI.accent)
+            Text(vm.developerProjectName)
+                .font(AppFont.bodySemi(11))
+                .foregroundStyle(UI.text)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Button(action: { vm.developerRevealFile(URL(fileURLWithPath: vm.developerProjectPath)) }) {
+                Image(systemName: "arrow.up.right.square")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(UI.muted)
+            }
+            .buttonStyle(.plain)
+            .help("Reveal project folder")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: 260)
+        .background(Capsule().fill(UI.cardSoft))
+        .overlay(Capsule().stroke(UI.lineSoft, lineWidth: 1))
+        .help(vm.developerProjectPath)
     }
 
     private var developerProjectsPanel: some View {
@@ -11410,24 +11538,69 @@ struct ContentView: View {
 
     private func developerProjectRow(_ project: InstallerViewModel.DeveloperProject) -> some View {
         let active = project.id == vm.selectedDeveloperProjectID || project.path == vm.developerProjectPath
+        let isEditing = vm.editingDeveloperProjectID == project.id
+        let color = chatProjectColor(project.colorName)
         return Button(action: { vm.openDeveloperProject(project) }) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(project.name)
-                    .font(AppFont.bodySemi(12))
-                    .foregroundStyle(active ? Color.white : UI.text)
-                    .lineLimit(1)
-                Text(project.path)
-                    .font(AppFont.body(10))
-                    .foregroundStyle(active ? Color.white.opacity(0.72) : UI.muted)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+            HStack(alignment: .top, spacing: 9) {
+                Image(systemName: project.icon)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(active ? Color.white : color)
+                    .frame(width: 18, height: 18)
+                VStack(alignment: .leading, spacing: 5) {
+                    if isEditing {
+                        TextField("Project name", text: $vm.editingDeveloperProjectName)
+                            .textFieldStyle(.plain)
+                            .font(AppFont.bodySemi(12))
+                            .foregroundStyle(active ? Color.white : UI.text)
+                            .onSubmit { vm.commitEditingDeveloperProject() }
+                    } else {
+                        Text(project.name)
+                            .font(AppFont.bodySemi(12))
+                            .foregroundStyle(active ? Color.white : UI.text)
+                            .lineLimit(1)
+                    }
+                    Text(project.path)
+                        .font(AppFont.body(10))
+                        .foregroundStyle(active ? Color.white.opacity(0.72) : UI.muted)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 4)
+                Menu {
+                    Button("Rename") { vm.beginEditingDeveloperProject(project) }
+                    Divider()
+                    ForEach(["curlybraces.square", "folder", "globe", "paintbrush", "app", "bolt", "hammer", "terminal"], id: \.self) { icon in
+                        Button {
+                            vm.updateDeveloperProjectStyle(project.id, icon: icon)
+                        } label: {
+                            Label(icon, systemImage: icon)
+                        }
+                    }
+                    Divider()
+                    ForEach(["red", "orange", "yellow", "green", "blue", "purple", "gray"], id: \.self) { colorName in
+                        Button(colorName.capitalized) {
+                            vm.updateDeveloperProjectStyle(project.id, colorName: colorName)
+                        }
+                    }
+                    Divider()
+                    Button("Reveal folder") { vm.developerRevealFile(URL(fileURLWithPath: project.path)) }
+                    Button("Remove from list...", role: .destructive) { vm.beginDeletingDeveloperProject(project) }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(active ? Color.white.opacity(0.8) : UI.muted)
+                        .frame(width: 18, height: 18)
+                }
+                .menuStyle(.borderlessButton)
+                .frame(width: 20)
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 11).fill(active ? UI.accent : UI.card))
-            .overlay(RoundedRectangle(cornerRadius: 11).stroke(UI.lineSoft, lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: 11).fill(active ? color : UI.card))
+            .overlay(RoundedRectangle(cornerRadius: 11).stroke(active ? color.opacity(0.65) : UI.lineSoft, lineWidth: 1))
         }
         .buttonStyle(.plain)
+        .disabled(isEditing)
     }
 
     private var developerChatPanel: some View {

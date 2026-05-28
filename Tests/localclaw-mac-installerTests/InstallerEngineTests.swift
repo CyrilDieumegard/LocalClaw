@@ -523,6 +523,29 @@ struct InstallerEngineTests {
         #expect(status.message.contains("No Git repository"))
     }
 
+    @MainActor
+    @Test func developerProjectRenameStyleAndDeleteOnlyAffectList() {
+        let vm = InstallerViewModel()
+        let project = InstallerViewModel.DeveloperProject(name: "Demo", path: "/tmp/demo")
+        vm.developerProjects = [project]
+        vm.selectedDeveloperProjectID = project.id
+
+        vm.beginEditingDeveloperProject(project)
+        vm.editingDeveloperProjectName = "Demo renamed"
+        vm.commitEditingDeveloperProject()
+        vm.updateDeveloperProjectStyle(project.id, icon: "hammer", colorName: "blue")
+
+        #expect(vm.developerProjects.first?.name == "Demo renamed")
+        #expect(vm.developerProjects.first?.icon == "hammer")
+        #expect(vm.developerProjects.first?.colorName == "blue")
+
+        vm.beginDeletingDeveloperProject(vm.developerProjects[0])
+        vm.deletePendingDeveloperProject()
+
+        #expect(vm.developerProjects.isEmpty)
+        #expect(vm.selectedDeveloperProjectID.isEmpty)
+    }
+
     @Test func quickDeveloperColorEditRewritesStyleFiles() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("localclaw-quick-color-test-\(UUID().uuidString)")
