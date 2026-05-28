@@ -441,6 +441,61 @@ struct InstallerEngineTests {
         #expect(vm.chatProjectMemories[projectB.id] == nil || vm.chatProjectMemories[projectB.id]?.isEmpty == true)
     }
 
+    @MainActor
+    @Test func projectBriefAndPinnedMessagesAreIncludedInContext() {
+        let vm = InstallerViewModel()
+        var project = InstallerViewModel.ChatProject.fresh(index: 1)
+        project.brief = "Ship the activation fix without breaking existing customers."
+        var session = InstallerViewModel.ChatSession.fresh(title: "Release plan")
+        session.projectID = project.id
+        session.messages.append(InstallerViewModel.ChatMessage(role: "user", text: "Keep update safety visible.", pinned: true))
+        vm.chatProjects = [project]
+        vm.chatSessions = [session]
+        vm.selectedChatSessionID = session.id
+
+        let context = vm.chatProjectContext(for: session.id)
+
+        #expect(context.contains("Project brief: Ship the activation fix"))
+        #expect(context.contains("Pinned project messages:"))
+        #expect(context.contains("Keep update safety visible"))
+        #expect(vm.chatMemoryPreview.contains { $0.contains("Pinned") && $0.contains("Keep update safety") })
+    }
+
+    @MainActor
+    @Test func summarizeCurrentChatSavesProjectMemoryNote() {
+        let vm = InstallerViewModel()
+        let project = InstallerViewModel.ChatProject.fresh(index: 1)
+        var session = InstallerViewModel.ChatSession.fresh(title: "Support issue")
+        session.projectID = project.id
+        session.messages.append(InstallerViewModel.ChatMessage(role: "user", text: "Client cannot update from 1.0.92."))
+        session.messages.append(InstallerViewModel.ChatMessage(role: "assistant", text: "Check the installer manifest and DMG URL."))
+        vm.chatProjects = [project]
+        vm.chatSessions = [session]
+        vm.selectedChatSessionID = session.id
+
+        vm.summarizeCurrentChatIntoProjectMemory()
+
+        #expect(vm.chatProjectMemories[project.id]?.contains { $0.contains("Client cannot update") } == true)
+    }
+
+    @MainActor
+    @Test func deletingProjectKeepsChatsUnfiledAndRemovesProjectMemory() {
+        let vm = InstallerViewModel()
+        let project = InstallerViewModel.ChatProject.fresh(index: 1)
+        var session = InstallerViewModel.ChatSession.fresh(title: "Customer")
+        session.projectID = project.id
+        vm.chatProjects = [project]
+        vm.chatSessions = [session]
+        vm.chatProjectMemories[project.id] = ["Important note"]
+
+        vm.beginDeletingChatProject(project)
+        vm.deletePendingChatProject()
+
+        #expect(vm.chatProjects.isEmpty)
+        #expect(vm.chatSessions.first?.projectID == nil)
+        #expect(vm.chatProjectMemories[project.id] == nil)
+    }
+
     @Test func quickDeveloperColorEditRewritesStyleFiles() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("localclaw-quick-color-test-\(UUID().uuidString)")

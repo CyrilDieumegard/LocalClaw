@@ -71,8 +71,9 @@ final class InstallerViewModel: ObservableObject {
         let modelName: String?
         let imagePath: String?
         let createdAt: Date
+        var pinned: Bool
 
-        init(id: UUID = UUID(), role: String, text: String, metadata: String? = nil, modelName: String? = nil, imagePath: String? = nil, createdAt: Date = Date()) {
+        init(id: UUID = UUID(), role: String, text: String, metadata: String? = nil, modelName: String? = nil, imagePath: String? = nil, createdAt: Date = Date(), pinned: Bool = false) {
             self.id = id
             self.role = role
             self.text = text
@@ -80,6 +81,23 @@ final class InstallerViewModel: ObservableObject {
             self.modelName = modelName
             self.imagePath = imagePath
             self.createdAt = createdAt
+            self.pinned = pinned
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id, role, text, metadata, modelName, imagePath, createdAt, pinned
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(UUID.self, forKey: .id)
+            role = try container.decode(String.self, forKey: .role)
+            text = try container.decode(String.self, forKey: .text)
+            metadata = try container.decodeIfPresent(String.self, forKey: .metadata)
+            modelName = try container.decodeIfPresent(String.self, forKey: .modelName)
+            imagePath = try container.decodeIfPresent(String.self, forKey: .imagePath)
+            createdAt = try container.decode(Date.self, forKey: .createdAt)
+            pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
         }
     }
 
@@ -119,18 +137,20 @@ final class InstallerViewModel: ObservableObject {
         var title: String
         var icon: String
         var colorName: String
+        var brief: String
         var createdAt: Date
 
-        init(id: String, title: String, icon: String = "folder", colorName: String = "red", createdAt: Date) {
+        init(id: String, title: String, icon: String = "folder", colorName: String = "red", brief: String = "", createdAt: Date) {
             self.id = id
             self.title = title
             self.icon = icon
             self.colorName = colorName
+            self.brief = brief
             self.createdAt = createdAt
         }
 
         private enum CodingKeys: String, CodingKey {
-            case id, title, icon, colorName, createdAt
+            case id, title, icon, colorName, brief, createdAt
         }
 
         init(from decoder: Decoder) throws {
@@ -139,6 +159,7 @@ final class InstallerViewModel: ObservableObject {
             title = try container.decode(String.self, forKey: .title)
             icon = try container.decodeIfPresent(String.self, forKey: .icon) ?? "folder"
             colorName = try container.decodeIfPresent(String.self, forKey: .colorName) ?? "red"
+            brief = try container.decodeIfPresent(String.self, forKey: .brief) ?? ""
             createdAt = try container.decode(Date.self, forKey: .createdAt)
         }
 
@@ -977,6 +998,9 @@ final class InstallerViewModel: ObservableObject {
     @Published var expandedChatProjectIDs: Set<String> = []
     @Published var editingChatProjectID = ""
     @Published var editingChatProjectTitle = ""
+    @Published var editingChatProjectBrief = ""
+    @Published var chatProjectDeleteCandidateID = ""
+    @Published var chatProjectDeleteCandidateTitle = ""
     @Published var chatSessions: [ChatSession] = [ChatSession.fresh(title: "Main setup")] {
         didSet { persistChatSessions() }
     }
@@ -6280,6 +6304,7 @@ final class InstallerViewModel: ObservableObject {
         expandedChatProjectIDs.insert(project.id)
         editingChatProjectID = project.id
         editingChatProjectTitle = project.title
+        editingChatProjectBrief = project.brief
     }
 
     func toggleChatProject(_ project: ChatProject) {
@@ -6317,19 +6342,56 @@ final class InstallerViewModel: ObservableObject {
     func beginEditingChatProject(_ project: ChatProject) {
         editingChatProjectID = project.id
         editingChatProjectTitle = project.title
+        editingChatProjectBrief = project.brief
     }
 
     func commitEditingChatProject() {
         let title = editingChatProjectTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let brief = editingChatProjectBrief.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !editingChatProjectID.isEmpty, !title.isEmpty,
               let index = chatProjects.firstIndex(where: { $0.id == editingChatProjectID }) else {
             editingChatProjectID = ""
             editingChatProjectTitle = ""
+            editingChatProjectBrief = ""
             return
         }
         chatProjects[index].title = String(title.prefix(40))
+        chatProjects[index].brief = String(brief.prefix(1200))
         editingChatProjectID = ""
         editingChatProjectTitle = ""
+        editingChatProjectBrief = ""
+    }
+
+    func cancelEditingChatProject() {
+        editingChatProjectID = ""
+        editingChatProjectTitle = ""
+        editingChatProjectBrief = ""
+    }
+
+    func beginDeletingChatProject(_ project: ChatProject) {
+        chatProjectDeleteCandidateID = project.id
+        chatProjectDeleteCandidateTitle = project.title
+    }
+
+    func cancelDeletingChatProject() {
+        chatProjectDeleteCandidateID = ""
+        chatProjectDeleteCandidateTitle = ""
+    }
+
+    func deletePendingChatProject() {
+        let projectID = chatProjectDeleteCandidateID
+        guard !projectID.isEmpty else { return }
+        for index in chatSessions.indices where chatSessions[index].projectID == projectID {
+            chatSessions[index].projectID = nil
+            chatSessions[index].updatedAt = Date()
+        }
+        chatProjects.removeAll { $0.id == projectID }
+        chatProjectMemories.removeValue(forKey: projectID)
+        expandedChatProjectIDs.remove(projectID)
+        if editingChatProjectID == projectID {
+            cancelEditingChatProject()
+        }
+        cancelDeletingChatProject()
     }
 
     func updateChatProjectStyle(_ projectID: String, icon: String? = nil, colorName: String? = nil) {
@@ -6352,6 +6414,24 @@ final class InstallerViewModel: ObservableObject {
             "Project context: \(project.title)",
             "The current chat belongs to this LocalClaw project. Treat chats in the same project as related work."
         ]
+        let brief = project.brief.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !brief.isEmpty {
+            lines.append("Project brief: \(brief)")
+        }
+        let memoryNotes = (chatProjectMemories[projectID] ?? []).suffix(8)
+        if !memoryNotes.isEmpty {
+            lines.append("Project memory notes:")
+            for note in memoryNotes {
+                lines.append("- \(note)")
+            }
+        }
+        let pinned = pinnedMessages(for: projectID).prefix(8)
+        if !pinned.isEmpty {
+            lines.append("Pinned project messages:")
+            for note in pinned {
+                lines.append("- \(note)")
+            }
+        }
 
         for sibling in siblings {
             let lastUseful = sibling.messages.reversed().first { $0.role == "user" || $0.role == "assistant" }?.text
@@ -6372,6 +6452,25 @@ final class InstallerViewModel: ObservableObject {
         return chatProjectMemories[projectID] ?? []
     }
 
+    func pinnedMessages(for projectID: String) -> [String] {
+        chatSessions
+            .filter { $0.projectID == projectID }
+            .flatMap { session in
+                session.messages
+                    .filter(\.pinned)
+                    .map { message in
+                        let cleaned = message.text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                        let role = message.role == "user" ? "You" : "OpenClaw"
+                        return "\(session.title) · \(role): \(String(cleaned.prefix(180)))"
+                    }
+            }
+    }
+
+    var activeProjectPinnedMessages: [String] {
+        guard let projectID = activeChatProjectID else { return [] }
+        return pinnedMessages(for: projectID)
+    }
+
     var activeMemoryScopeLabel: String {
         if let project = activeChatProject {
             return "Project memory · \(project.title)"
@@ -6386,6 +6485,13 @@ final class InstallerViewModel: ObservableObject {
             notes.append(contentsOf: chatSavedNotes)
         }
         if let session = selectedChatSession {
+            let pinned = session.messages
+                .filter(\.pinned)
+                .map { message in
+                    let cleaned = message.text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                    return "Pinned · \(message.role == "user" ? "You" : "OpenClaw"): \(String(cleaned.prefix(140)))"
+                }
+            notes.append(contentsOf: pinned)
             let recent = session.messages
                 .filter { $0.role == "user" || $0.role == "assistant" }
                 .suffix(4)
@@ -6396,6 +6502,41 @@ final class InstallerViewModel: ObservableObject {
             notes.append(contentsOf: recent)
         }
         return Array(notes.suffix(6))
+    }
+
+    func toggleChatMessagePin(_ message: ChatMessage) {
+        updateSelectedChatSession { session in
+            guard let index = session.messages.firstIndex(where: { $0.id == message.id }) else { return }
+            session.messages[index].pinned.toggle()
+        }
+    }
+
+    func summarizeCurrentChatIntoProjectMemory() {
+        guard let projectID = activeChatProjectID else {
+            appendChatSystemMessageOnce("Move this discussion into a project before saving a project summary.")
+            return
+        }
+        guard let session = selectedChatSession else { return }
+        let usefulMessages = session.messages
+            .filter { $0.role == "user" || $0.role == "assistant" }
+            .suffix(12)
+            .map { message -> String in
+                let cleaned = message.text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                return "\(message.role == "user" ? "You" : "OpenClaw"): \(String(cleaned.prefix(180)))"
+            }
+            .filter { !$0.isEmpty }
+        guard !usefulMessages.isEmpty else {
+            appendChatSystemMessageOnce("No chat content to summarize yet.")
+            return
+        }
+        let summary = "Summary · \(session.title): " + usefulMessages.joined(separator: " | ")
+        var notes = chatProjectMemories[projectID] ?? []
+        let note = String(summary.prefix(700))
+        if !notes.contains(note) {
+            notes.append(note)
+            chatProjectMemories[projectID] = Array(notes.suffix(30))
+        }
+        appendChatSystemMessageOnce("Summary saved to project memory.")
     }
 
     static let chatToolVisibilityOptions: [ChatToolVisibilityOption] = [
@@ -11679,6 +11820,15 @@ struct ContentView: View {
             vm.refreshOpenClawChatInfo()
             vm.refreshOAuthUsage()
         }
+        .alert("Delete project?", isPresented: Binding(
+            get: { !vm.chatProjectDeleteCandidateID.isEmpty },
+            set: { if !$0 { vm.cancelDeletingChatProject() } }
+        )) {
+            Button("Cancel", role: .cancel) { vm.cancelDeletingChatProject() }
+            Button("Delete project", role: .destructive) { vm.deletePendingChatProject() }
+        } message: {
+            Text("This removes \"\(vm.chatProjectDeleteCandidateTitle)\", its project brief, and its project memory. Discussions are kept and moved to No project.")
+        }
     }
 
     var chatViewControls: some View {
@@ -11829,9 +11979,56 @@ struct ContentView: View {
                 .foregroundStyle(UI.muted)
                 .lineLimit(2)
 
+            if vm.activeChatProject != nil {
+                Button(action: { vm.summarizeCurrentChatIntoProjectMemory() }) {
+                    Label("Summarize chat", systemImage: "text.badge.checkmark")
+                        .font(AppFont.bodySemi(11))
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+                .buttonStyle(.plain)
+                .padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: 9).fill(UI.card))
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(UI.lineSoft, lineWidth: 1))
+                .disabled(vm.chatIsSending)
+                .help("Save a short summary of this discussion to project memory")
+            }
+
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
-                    if vm.chatMemoryPreview.isEmpty {
+                    if let project = vm.activeChatProject,
+                       !project.brief.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Label("Brief", systemImage: "doc.text")
+                                .font(AppFont.bodySemi(10))
+                                .foregroundStyle(UI.muted)
+                            Text(project.brief)
+                                .font(AppFont.body(11))
+                                .foregroundStyle(UI.text)
+                                .lineLimit(5)
+                        }
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 9).fill(UI.card))
+                        .overlay(RoundedRectangle(cornerRadius: 9).stroke(UI.lineSoft, lineWidth: 1))
+                    }
+
+                    ForEach(Array(vm.activeProjectPinnedMessages.prefix(5).enumerated()), id: \.offset) { _, note in
+                        VStack(alignment: .leading, spacing: 5) {
+                            Label("Pinned", systemImage: "pin.fill")
+                                .font(AppFont.bodySemi(10))
+                                .foregroundStyle(UI.accent)
+                            Text(note)
+                                .font(AppFont.body(11))
+                                .foregroundStyle(UI.text)
+                                .lineLimit(4)
+                        }
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 9).fill(UI.card))
+                        .overlay(RoundedRectangle(cornerRadius: 9).stroke(UI.accent.opacity(0.25), lineWidth: 1))
+                    }
+
+                    if vm.chatMemoryPreview.isEmpty && vm.activeProjectPinnedMessages.isEmpty {
                         Text("No saved notes yet.")
                             .font(AppFont.body(11))
                             .foregroundStyle(UI.muted)
@@ -12038,7 +12235,7 @@ struct ContentView: View {
                     .foregroundStyle(UI.muted)
 
                 Menu {
-                    Button("Rename") { vm.beginEditingChatProject(project) }
+                    Button("Edit project") { vm.beginEditingChatProject(project) }
                     Divider()
                     ForEach(["folder", "briefcase", "sparkles", "cpu", "hammer", "graduationcap", "paintpalette"], id: \.self) { icon in
                         Button {
@@ -12052,6 +12249,10 @@ struct ContentView: View {
                         Button(colorName.capitalized) {
                             vm.updateChatProjectStyle(project.id, colorName: colorName)
                         }
+                    }
+                    Divider()
+                    Button("Delete project...", role: .destructive) {
+                        vm.beginDeletingChatProject(project)
                     }
                 } label: {
                     Image(systemName: "ellipsis")
@@ -12068,6 +12269,37 @@ struct ContentView: View {
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(color.opacity(0.32), lineWidth: 1))
 
             if isExpanded {
+                if isEditing {
+                    VStack(alignment: .leading, spacing: 7) {
+                        TextField("Project brief", text: $vm.editingChatProjectBrief, axis: .vertical)
+                            .textFieldStyle(.plain)
+                            .font(AppFont.body(11))
+                            .foregroundStyle(UI.text)
+                            .lineLimit(2...5)
+                            .padding(8)
+                            .background(RoundedRectangle(cornerRadius: 9).fill(UI.card))
+                            .overlay(RoundedRectangle(cornerRadius: 9).stroke(UI.lineSoft, lineWidth: 1))
+                        HStack(spacing: 8) {
+                            Button("Save") { vm.commitEditingChatProject() }
+                                .buttonStyle(.plain)
+                                .font(AppFont.bodySemi(10))
+                                .foregroundStyle(UI.accent)
+                            Button("Cancel") { vm.cancelEditingChatProject() }
+                                .buttonStyle(.plain)
+                                .font(AppFont.bodySemi(10))
+                                .foregroundStyle(UI.muted)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+                } else if !project.brief.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(project.brief)
+                        .font(AppFont.body(10))
+                        .foregroundStyle(UI.muted)
+                        .lineLimit(3)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 4)
+                }
                 if sessions.isEmpty {
                     Text("Drop chats here")
                         .font(AppFont.body(10))
@@ -12268,6 +12500,16 @@ struct ContentView: View {
                             .background(Capsule().fill(UI.cardSoft))
                             .overlay(Capsule().stroke(UI.lineSoft, lineWidth: 1))
                     }
+                    if message.pinned {
+                        Label("Pinned", systemImage: "pin.fill")
+                            .font(AppFont.bodySemi(10))
+                            .foregroundStyle(UI.accent)
+                            .lineLimit(1)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(UI.cardSoft))
+                            .overlay(Capsule().stroke(UI.accent.opacity(0.25), lineWidth: 1))
+                    }
                     Spacer(minLength: 12)
                     Button {
                         copyChatMessage(message.text)
@@ -12284,6 +12526,7 @@ struct ContentView: View {
 
                     Menu {
                         Button("Copy") { copyChatMessage(message.text) }
+                        Button(message.pinned ? "Unpin from project" : "Pin to project") { vm.toggleChatMessagePin(message) }
                         Button("Save as note") { vm.saveChatMessageAsNote(message) }
                         if isUser {
                             Button("Edit & resend") { vm.editChatMessage(message) }
