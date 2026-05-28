@@ -10152,7 +10152,7 @@ struct ContentView: View {
             }
             sidebarButton("Updates", icon: "arrow.clockwise", isActive: vm.screen == .updates) { vm.screen = .updates }
             sidebarButton("Control Center", icon: "slider.horizontal.3", isActive: vm.screen == .commandCenter) { vm.screen = .commandCenter }
-            sidebarButton("OpenClaw Chat", icon: "message.badge.waveform", isActive: vm.screen == .chat, isBeta: true) { vm.screen = .chat }
+            sidebarButton("OpenClaw Chat", icon: "message.badge.waveform", isActive: vm.screen == .chat) { vm.screen = .chat }
             sidebarButton("Developer", icon: "curlybraces.square", isActive: vm.screen == .developer, isBeta: true) { vm.screen = .developer }
             sidebarButton("Models", icon: "cpu", isActive: vm.screen == .models) { vm.screen = .models }
             sidebarButton("Skills", icon: "wand.and.stars", isActive: vm.screen == .skills) { vm.screen = .skills }
