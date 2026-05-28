@@ -12371,39 +12371,96 @@ struct ContentView: View {
 
     private func modelFamilyMark(_ family: String) -> some View {
         let normalized = family.lowercased()
-        let color: Color
-        let label: String
+        let style: ModelFamilyMarkStyle
         switch normalized {
         case "google":
-            color = Color(NSColor.systemBlue)
-            label = "G"
+            style = ModelFamilyMarkStyle(
+                title: "G",
+                subtitle: "Gemma",
+                foreground: Color(NSColor.systemBlue),
+                background: Color(NSColor.systemBlue).opacity(0.14),
+                symbol: nil
+            )
         case "qwen":
-            color = Color(NSColor.systemPurple)
-            label = "Q"
+            style = ModelFamilyMarkStyle(
+                title: "Qwen",
+                subtitle: "AI",
+                foreground: Color(NSColor.systemPurple),
+                background: Color(NSColor.systemPurple).opacity(0.16),
+                symbol: nil
+            )
         case "nvidia":
-            color = Color(NSColor.systemGreen)
-            label = "N"
+            style = ModelFamilyMarkStyle(
+                title: "NV",
+                subtitle: "NVIDIA",
+                foreground: Color(NSColor.systemGreen),
+                background: Color(NSColor.systemGreen).opacity(0.15),
+                symbol: "eye.fill"
+            )
         case "zai":
-            color = Color(NSColor.systemGray)
-            label = "Z"
+            style = ModelFamilyMarkStyle(
+                title: "Z.ai",
+                subtitle: "GLM",
+                foreground: Color(NSColor.systemGray),
+                background: Color(NSColor.systemGray).opacity(0.14),
+                symbol: nil
+            )
         case "deepseek":
-            color = Color(NSColor.systemTeal)
-            label = "D"
+            style = ModelFamilyMarkStyle(
+                title: "DS",
+                subtitle: "DeepSeek",
+                foreground: Color(NSColor.systemTeal),
+                background: Color(NSColor.systemTeal).opacity(0.14),
+                symbol: "sparkles"
+            )
         case "meta":
-            color = Color(NSColor.systemIndigo)
-            label = "M"
+            style = ModelFamilyMarkStyle(
+                title: "Meta",
+                subtitle: "Llama",
+                foreground: Color(NSColor.systemIndigo),
+                background: Color(NSColor.systemIndigo).opacity(0.14),
+                symbol: "infinity"
+            )
         default:
-            color = UI.accent
-            label = "AI"
+            style = ModelFamilyMarkStyle(
+                title: "AI",
+                subtitle: "Model",
+                foreground: UI.accent,
+                background: UI.accent.opacity(0.14),
+                symbol: nil
+            )
         }
 
-        return ZStack {
-            RoundedRectangle(cornerRadius: 8).fill(color.opacity(0.14))
-            Text(label)
-                .font(AppFont.bodySemi(12))
-                .foregroundStyle(color)
+        return VStack(spacing: 1) {
+            if let symbol = style.symbol {
+                Image(systemName: symbol)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(style.foreground)
+            } else {
+                Text(style.title)
+                    .font(AppFont.bodySemi(style.title.count > 2 ? 9 : 13))
+                    .foregroundStyle(style.foreground)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            Text(style.subtitle)
+                .font(AppFont.bodySemi(6))
+                .foregroundStyle(style.foreground.opacity(0.85))
+                .lineLimit(1)
+                .minimumScaleFactor(0.55)
         }
-        .frame(width: 34, height: 34)
+        .padding(.horizontal, 4)
+        .frame(width: 44, height: 44)
+        .background(RoundedRectangle(cornerRadius: 10).fill(style.background))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(style.foreground.opacity(0.22), lineWidth: 1))
+    }
+
+    private struct ModelFamilyMarkStyle {
+        let title: String
+        let subtitle: String
+        let foreground: Color
+        let background: Color
+        let symbol: String?
     }
 
     private func installModelBadge(_ text: String, color: Color) -> some View {
