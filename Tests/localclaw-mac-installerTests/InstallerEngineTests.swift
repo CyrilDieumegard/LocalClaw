@@ -496,6 +496,33 @@ struct InstallerEngineTests {
         #expect(vm.chatProjectMemories[project.id] == nil)
     }
 
+    @Test func developerGitStatusParsesGitHubRemoteAndChanges() {
+        let output = """
+        __BRANCH__main
+        __REMOTE__git@github.com:CyrilDieumegard/LocalClaw.git
+        __AHEAD_BEHIND__2 1
+        __LAST__abc123 Add feature
+        __CHANGE__ M Sources/App.swift
+        __CHANGE__?? README.md
+        """
+
+        let status = InstallerViewModel.parseDeveloperGitStatus(output: output)
+
+        #expect(status.isRepository)
+        #expect(status.branch == "main")
+        #expect(status.repoSlug == "CyrilDieumegard/LocalClaw")
+        #expect(status.behind == 2)
+        #expect(status.ahead == 1)
+        #expect(status.changedFiles == ["M Sources/App.swift", "?? README.md"])
+    }
+
+    @Test func developerGitStatusDetectsMissingRepository() {
+        let status = InstallerViewModel.parseDeveloperGitStatus(output: "__LOCALCLAW_NO_REPO__")
+
+        #expect(!status.isRepository)
+        #expect(status.message.contains("No Git repository"))
+    }
+
     @Test func quickDeveloperColorEditRewritesStyleFiles() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("localclaw-quick-color-test-\(UUID().uuidString)")

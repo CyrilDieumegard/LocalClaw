@@ -182,6 +182,24 @@ final class InstallerViewModel: ObservableObject {
         let keywords: [String]
     }
 
+    struct DeveloperGitStatus: Equatable {
+        var isRepository = false
+        var branch = "No branch"
+        var remoteURL = ""
+        var repoSlug = ""
+        var changedFiles: [String] = []
+        var ahead = 0
+        var behind = 0
+        var lastCommit = ""
+        var message = "GitHub not checked yet"
+
+        var isClean: Bool { isRepository && changedFiles.isEmpty }
+        var githubURL: String {
+            guard !repoSlug.isEmpty else { return "" }
+            return "https://github.com/\(repoSlug)"
+        }
+    }
+
     struct ModelUsageRecord: Identifiable, Codable {
         let id: UUID
         let createdAt: Date
@@ -1067,6 +1085,8 @@ final class InstallerViewModel: ObservableObject {
     @Published var developerPreviewRefreshID = UUID()
     @Published var developerPreviewDevice = "desktop"
     @Published var developerActiveTab = "preview"
+    @Published var developerGitStatus = DeveloperGitStatus()
+    @Published var developerGitIsRefreshing = false
     @Published var developerFreshContextEnabled = true {
         didSet { UserDefaults.standard.set(developerFreshContextEnabled, forKey: Self.developerFreshContextDefaultsKey) }
     }
@@ -6794,6 +6814,7 @@ final class InstallerViewModel: ObservableObject {
             [LocalClaw developer workspace]
             You are coding inside this local project folder:
             \(developerProjectPath)
+            \(developerGitContext())
 
             Make concrete file edits in that folder when the user asks to build, fix, or improve the app.
             Keep the app runnable from this folder and make sure the preview can be served by the existing package scripts.
@@ -7605,6 +7626,7 @@ final class InstallerViewModel: ObservableObject {
         refreshLocalLMStudioModels()
         refreshOpenRouterModels()
         ensureSelectedChatModel()
+        refreshDeveloperGitStatus()
     }
 
     func developerNewApp() {
@@ -7641,6 +7663,7 @@ final class InstallerViewModel: ObservableObject {
             developerPreviewRefreshID = UUID()
             developerActiveTab = "preview"
             developerPreviewStatus = "Project folder ready: \(slug)"
+            refreshDeveloperGitStatus()
         } catch {
             developerPreviewStatus = "Could not prepare project folder: \(error.localizedDescription)"
         }
@@ -7690,7 +7713,119 @@ final class InstallerViewModel: ObservableObject {
             developerActiveTab = "preview"
             developerPreviewStatus = "App opened. Run preview to load it."
             chatInput = "Use this project folder as context: \(url.path). Inspect it and suggest the next development step."
+            refreshDeveloperGitStatus()
         }
+    }
+
+    func refreshDeveloperGitStatus() {
+        let root = developerProjectPath
+        developerGitIsRefreshing = true
+        Task.detached { [engine] in
+            let quotedRoot = Self.shellSingleQuote(root)
+            let command = """
+            cd \(quotedRoot) 2>/dev/null || exit 2
+            if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+              echo "__LOCALCLAW_NO_REPO__"
+              exit 0
+            fi
+            printf "__BRANCH__%s\\n" "$(git branch --show-current 2>/dev/null || git rev-parse --short HEAD 2>/dev/null)"
+            printf "__REMOTE__%s\\n" "$(git remote get-url origin 2>/dev/null || true)"
+            printf "__AHEAD_BEHIND__%s\\n" "$(git rev-list --left-right --count @{upstream}...HEAD 2>/dev/null || echo "0 0")"
+            printf "__LAST__%s\\n" "$(git log -1 --pretty=format:'%h %s' 2>/dev/null || true)"
+            git status --short 2>/dev/null | sed 's/^/__CHANGE__/'
+            """
+            let result = engine.shell(command)
+            let status = Self.parseDeveloperGitStatus(output: result.1)
+            await MainActor.run {
+                self.developerGitStatus = status
+                self.developerGitIsRefreshing = false
+            }
+        }
+    }
+
+    nonisolated static func parseDeveloperGitStatus(output: String) -> DeveloperGitStatus {
+        var status = DeveloperGitStatus()
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.contains("__LOCALCLAW_NO_REPO__") || trimmed.isEmpty {
+            status.message = "No Git repository detected in this project folder."
+            return status
+        }
+        status.isRepository = true
+        for line in output.components(separatedBy: .newlines) {
+            if line.hasPrefix("__BRANCH__") {
+                status.branch = String(line.dropFirst("__BRANCH__".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            } else if line.hasPrefix("__REMOTE__") {
+                status.remoteURL = String(line.dropFirst("__REMOTE__".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                status.repoSlug = githubRepoSlug(from: status.remoteURL)
+            } else if line.hasPrefix("__AHEAD_BEHIND__") {
+                let parts = String(line.dropFirst("__AHEAD_BEHIND__".count)).split(separator: " ")
+                if parts.count >= 2 {
+                    status.behind = Int(parts[0]) ?? 0
+                    status.ahead = Int(parts[1]) ?? 0
+                }
+            } else if line.hasPrefix("__LAST__") {
+                status.lastCommit = String(line.dropFirst("__LAST__".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            } else if line.hasPrefix("__CHANGE__") {
+                let change = String(line.dropFirst("__CHANGE__".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !change.isEmpty { status.changedFiles.append(change) }
+            }
+        }
+        status.message = status.isClean ? "Working tree clean" : "\(status.changedFiles.count) changed file\(status.changedFiles.count == 1 ? "" : "s")"
+        return status
+    }
+
+    nonisolated static func githubRepoSlug(from remote: String) -> String {
+        let clean = remote
+            .replacingOccurrences(of: ".git", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let range = clean.range(of: "github.com:") {
+            return String(clean[range.upperBound...])
+        }
+        if let range = clean.range(of: "github.com/") {
+            return String(clean[range.upperBound...])
+        }
+        if clean.contains("github.com/"), let url = URL(string: clean) {
+            let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            return path
+        }
+        return ""
+    }
+
+    func developerGitContext() -> String {
+        guard developerGitStatus.isRepository else {
+            return "GitHub: no git repository detected."
+        }
+        var lines = [
+            "GitHub repository: \(developerGitStatus.repoSlug.isEmpty ? developerGitStatus.remoteURL : developerGitStatus.repoSlug)",
+            "Git branch: \(developerGitStatus.branch)",
+            "Git status: \(developerGitStatus.message)"
+        ]
+        if developerGitStatus.ahead > 0 || developerGitStatus.behind > 0 {
+            lines.append("Git sync: ahead \(developerGitStatus.ahead), behind \(developerGitStatus.behind)")
+        }
+        if !developerGitStatus.changedFiles.isEmpty {
+            lines.append("Changed files:")
+            lines.append(contentsOf: developerGitStatus.changedFiles.prefix(12).map { "- \($0)" })
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    func developerOpenGitHubRepo() {
+        let url = developerGitStatus.githubURL
+        guard !url.isEmpty else { return }
+        _ = engine.shell("open \(Self.shellSingleQuote(url))")
+    }
+
+    func developerCopyGitSummary() {
+        let summary = developerGitContext()
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(summary, forType: .string)
+    }
+
+    func developerAskForGitReview() {
+        refreshDeveloperGitStatus()
+        chatInput = "Review the current Git changes in this project. Explain what changed, risks, and what should be tested before committing."
+        screen = .developer
     }
 
     func developerRunPreview() {
@@ -11220,6 +11355,7 @@ struct ContentView: View {
             HStack(spacing: 10) {
                 developerTab("Preview", icon: "eye.fill", id: "preview")
                 developerTab("Files", icon: "doc.text", id: "files")
+                developerTab("GitHub", icon: "arrow.triangle.branch", id: "github")
                 developerTab("Database", icon: "cylinder.split.1x2", id: "database")
                 developerTab("Deploy", icon: "icloud.and.arrow.up", id: "deploy")
                 developerTab("Logs", icon: "terminal", id: "logs")
@@ -11243,6 +11379,8 @@ struct ContentView: View {
         switch vm.developerActiveTab {
         case "files":
             developerFilesPanel
+        case "github":
+            developerGitHubPanel
         case "database":
             developerDatabasePanel
         case "deploy":
@@ -11426,6 +11564,94 @@ struct ContentView: View {
             Spacer()
         }
         .background(UI.card)
+    }
+
+    private var developerGitHubPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            developerPanelHeader(
+                title: "GitHub",
+                subtitle: vm.developerGitStatus.isRepository ? (vm.developerGitStatus.repoSlug.isEmpty ? vm.developerGitStatus.remoteURL : vm.developerGitStatus.repoSlug) : "Connect a GitHub repository by opening a git project folder.",
+                icon: "arrow.triangle.branch",
+                actionTitle: vm.developerGitIsRefreshing ? "Checking..." : "Refresh",
+                action: { vm.refreshDeveloperGitStatus() }
+            )
+
+            VStack(alignment: .leading, spacing: 10) {
+                if !vm.developerGitStatus.isRepository {
+                    developerInfoCard("No repository", "Open a folder that contains a .git repository, or ask OpenClaw to initialize one and connect it to GitHub.", icon: "exclamationmark.triangle")
+                    HStack(spacing: 10) {
+                        developerToolbarButton("Open app folder", icon: "folder") { vm.developerChooseFolder() }
+                        developerToolbarButton("Ask setup", icon: "sparkles") {
+                            vm.chatInput = "Set up Git for this project and explain how to connect it to a GitHub repository safely."
+                        }
+                    }
+                } else {
+                    HStack(spacing: 10) {
+                        developerMetricCard("Branch", vm.developerGitStatus.branch, icon: "arrow.triangle.branch", tint: UI.accent)
+                        developerMetricCard("Status", vm.developerGitStatus.message, icon: vm.developerGitStatus.isClean ? "checkmark.circle.fill" : "circle.dashed", tint: vm.developerGitStatus.isClean ? Color(NSColor.systemGreen) : Color(NSColor.systemOrange))
+                        developerMetricCard("Sync", "↑\(vm.developerGitStatus.ahead) ↓\(vm.developerGitStatus.behind)", icon: "arrow.up.arrow.down", tint: UI.muted)
+                    }
+
+                    developerInfoCard("Remote", vm.developerGitStatus.remoteURL.isEmpty ? "No origin remote configured" : vm.developerGitStatus.remoteURL, icon: "link")
+                    developerInfoCard("Last commit", vm.developerGitStatus.lastCommit.isEmpty ? "No commit found" : vm.developerGitStatus.lastCommit, icon: "clock")
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Changed files")
+                                .font(AppFont.bodySemi(13))
+                                .foregroundStyle(UI.text)
+                            Spacer()
+                            Text("\(vm.developerGitStatus.changedFiles.count)")
+                                .font(AppFont.bodySemi(11))
+                                .foregroundStyle(UI.muted)
+                        }
+                        if vm.developerGitStatus.changedFiles.isEmpty {
+                            developerEmptyPanel("Working tree is clean.")
+                        } else {
+                            ForEach(vm.developerGitStatus.changedFiles.prefix(16), id: \.self) { file in
+                                Text(file)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(UI.text)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .padding(9)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(RoundedRectangle(cornerRadius: 9).fill(UI.cardSoft))
+                                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(UI.lineSoft, lineWidth: 1))
+                            }
+                        }
+                    }
+
+                    HStack(spacing: 10) {
+                        developerToolbarButton("Open GitHub", icon: "arrow.up.right.square") { vm.developerOpenGitHubRepo() }
+                            .disabled(vm.developerGitStatus.githubURL.isEmpty)
+                        developerToolbarButton("Copy status", icon: "doc.on.doc") { vm.developerCopyGitSummary() }
+                        developerToolbarButton("Review changes", icon: "checklist", primary: true) { vm.developerAskForGitReview() }
+                    }
+                }
+            }
+            .padding(12)
+            Spacer()
+        }
+        .background(UI.card)
+        .onAppear { vm.refreshDeveloperGitStatus() }
+    }
+
+    private func developerMetricCard(_ title: String, _ value: String, icon: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(title, systemImage: icon)
+                .font(AppFont.bodySemi(10))
+                .foregroundStyle(tint)
+            Text(value)
+                .font(AppFont.bodySemi(13))
+                .foregroundStyle(UI.text)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     private var developerDeployPanel: some View {
