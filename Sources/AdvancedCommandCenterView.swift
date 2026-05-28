@@ -72,6 +72,9 @@ final class CommandCenterViewModel: ObservableObject {
     @Published var perfHealthLabel: String = "Healthy"
     @Published var perfHealthColor: Color = .green
     @Published var perfAdvice: String = "Machine is stable"
+    @Published var healthChecks: [HealthCheckItem] = []
+    @Published var healthCheckSummary: String = "Not checked yet"
+    @Published var isHealthCheckRunning: Bool = false
     
     private var monitoringTimer: Timer?
     private var monitoringTick: Int = 0
@@ -137,6 +140,36 @@ final class CommandCenterViewModel: ObservableObject {
         var gatewayPort: String = "18789"
         var configPath: String = "~/.openclaw/openclaw.json"
         var logPath: String = "~/.openclaw/logs/"
+    }
+
+    struct HealthCheckItem: Identifiable {
+        enum State: String {
+            case ok = "OK"
+            case warning = "Warning"
+            case failed = "Failed"
+
+            var color: Color {
+                switch self {
+                case .ok: return Color(NSColor.systemGreen)
+                case .warning: return Color(NSColor.systemOrange)
+                case .failed: return Color(NSColor.systemRed)
+                }
+            }
+
+            var icon: String {
+                switch self {
+                case .ok: return "checkmark.circle.fill"
+                case .warning: return "exclamationmark.triangle.fill"
+                case .failed: return "xmark.circle.fill"
+                }
+            }
+        }
+
+        let id = UUID()
+        let title: String
+        let detail: String
+        let state: State
+        let repairHint: String?
     }
     
     private func syncModeFromConfig() {
@@ -233,6 +266,106 @@ final class CommandCenterViewModel: ObservableObject {
         systemInfo.nodeVersion = nodeVer.isEmpty ? "Not installed" : nodeVer
     }
 
+    func runHealthCheck() {
+        guard !isHealthCheckRunning else { return }
+        isHealthCheckRunning = true
+        healthCheckSummary = "Checking..."
+        addLog(.command, "Running Control Center health check...")
+
+        let items = buildHealthCheckItems()
+        healthChecks = items
+        let failed = items.filter { $0.state == .failed }.count
+        let warnings = items.filter { $0.state == .warning }.count
+        if failed > 0 {
+            healthCheckSummary = "\(failed) failed · \(warnings) warning"
+            addLog(.error, "Health check found \(failed) failed item(s)")
+        } else if warnings > 0 {
+            healthCheckSummary = "\(warnings) warning"
+            addLog(.warning, "Health check completed with \(warnings) warning(s)")
+        } else {
+            healthCheckSummary = "All checks passed"
+            addLog(.success, "Health check passed")
+        }
+        isHealthCheckRunning = false
+    }
+
+    private func buildHealthCheckItems() -> [HealthCheckItem] {
+        var items: [HealthCheckItem] = []
+
+        let (_, gatewayHTTP) = engine.shell("curl -s -o /dev/null -w '%{http_code}' http://localhost:18789/api/health 2>/dev/null || echo '000'")
+        let gatewayOK = gatewayHTTP.trimmingCharacters(in: .whitespacesAndNewlines) == "200"
+        items.append(HealthCheckItem(
+            title: "Gateway",
+            detail: gatewayOK ? "Responding on localhost:18789" : "Gateway is not responding on localhost:18789",
+            state: gatewayOK ? .ok : .failed,
+            repairHint: gatewayOK ? nil : "Use Repair OpenClaw Connection."
+        ))
+
+        let (_, openClawVersion) = engine.shell("openclaw --version 2>&1 | head -1")
+        let openClawInstalled = !openClawVersion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !openClawVersion.lowercased().contains("command not found")
+        items.append(HealthCheckItem(
+            title: "OpenClaw CLI",
+            detail: openClawInstalled ? openClawVersion.trimmingCharacters(in: .whitespacesAndNewlines) : "OpenClaw CLI was not found in PATH",
+            state: openClawInstalled ? .ok : .failed,
+            repairHint: openClawInstalled ? nil : "Run Updates, then update OpenClaw runtime."
+        ))
+
+        let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
+        let configExists = FileManager.default.fileExists(atPath: configPath)
+        items.append(HealthCheckItem(
+            title: "Config",
+            detail: configExists ? "~/.openclaw/openclaw.json found" : "Missing ~/.openclaw/openclaw.json",
+            state: configExists ? .ok : .failed,
+            repairHint: configExists ? nil : "Use Repair OpenClaw Connection."
+        ))
+
+        var tokenOK = false
+        if let data = FileManager.default.contents(atPath: configPath),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let gateway = json["gateway"] as? [String: Any],
+           let auth = gateway["auth"] as? [String: Any],
+           let token = auth["token"] as? String {
+            tokenOK = !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        items.append(HealthCheckItem(
+            title: "Gateway token",
+            detail: tokenOK ? "Token auth is configured" : "Gateway token is missing",
+            state: tokenOK ? .ok : .failed,
+            repairHint: tokenOK ? nil : "Use Repair OpenClaw Connection."
+        ))
+
+        let (_, nodeVersion) = engine.shell("node --version 2>&1")
+        let nodeClean = nodeVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nodeSupported = InstallerEngine.isNodeVersionSupported(nodeClean)
+        items.append(HealthCheckItem(
+            title: "Node.js",
+            detail: nodeClean.isEmpty ? "Node.js not found" : "\(nodeClean) · requires 22.19+",
+            state: nodeSupported ? .ok : .warning,
+            repairHint: nodeSupported ? nil : "Use Updates to upgrade dependencies."
+        ))
+
+        let (_, lmStudioPath) = engine.shell("test -d '/Applications/LM Studio.app' && echo yes || echo no")
+        let lmStudioInstalled = lmStudioPath.trimmingCharacters(in: .whitespacesAndNewlines) == "yes"
+        items.append(HealthCheckItem(
+            title: "LM Studio",
+            detail: lmStudioInstalled ? "LM Studio app found" : "LM Studio is not installed in /Applications",
+            state: lmStudioInstalled ? .ok : .warning,
+            repairHint: lmStudioInstalled ? nil : "Only required for Local LLM mode."
+        ))
+
+        let usage = engine.getSystemUsage()
+        let memoryRatio = usage.memoryTotalGB > 0 ? usage.memoryUsedGB / usage.memoryTotalGB : 0
+        let resourceState: HealthCheckItem.State = usage.swapUsedGB >= 3 || memoryRatio >= 0.9 ? .failed : (usage.swapUsedGB >= 1 || memoryRatio >= 0.75 ? .warning : .ok)
+        items.append(HealthCheckItem(
+            title: "Machine resources",
+            detail: String(format: "CPU %.1f%% · Memory %.1f/%.1f GB · Swap %.2f GB", usage.cpuPercent, usage.memoryUsedGB, usage.memoryTotalGB, usage.swapUsedGB),
+            state: resourceState,
+            repairHint: resourceState == .ok ? nil : "Use Fix My Speed or close heavy apps."
+        ))
+
+        return items
+    }
+
     func refreshResourceInfo() {
         usageSnapshot = engine.getSystemUsage()
         heavyProcesses = engine.topProcesses(limit: 12)
@@ -310,6 +443,69 @@ final class CommandCenterViewModel: ObservableObject {
     
     func clearLogs() {
         gatewayLogs.removeAll()
+    }
+
+    func copyLastErrorToClipboard() {
+        let error = gatewayLogs.reversed().first { $0.level == .error || $0.level == .warning }
+        let text = error.map { "[\(formatTime($0.timestamp))] [\($0.level.rawValue)] \($0.message)" } ?? "No error or warning logged yet."
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        addLog(.success, "Last error copied to clipboard")
+    }
+
+    func copyDiagnosticReportToClipboard() {
+        let report = diagnosticReport()
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(report, forType: .string)
+        addLog(.success, "Diagnostic report copied to clipboard")
+    }
+
+    func exportDiagnosticReport() {
+        let dir = NSHomeDirectory() + "/.openclaw"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let path = dir + "/localclaw-control-center-report.txt"
+        do {
+            try diagnosticReport().write(toFile: path, atomically: true, encoding: .utf8)
+            addLog(.success, "Diagnostic report exported to \(path)")
+            _ = engine.shell("open -R '\(path)' 2>/dev/null || true")
+        } catch {
+            addLog(.error, "Could not export report: \(error.localizedDescription)")
+        }
+    }
+
+    private func diagnosticReport() -> String {
+        let checks = healthChecks.isEmpty
+            ? "- Health check not run yet"
+            : healthChecks.map { "- \($0.state.rawValue): \($0.title) — \($0.detail)" }.joined(separator: "\n")
+        let lastIssues = gatewayLogs
+            .filter { $0.level == .error || $0.level == .warning }
+            .suffix(8)
+            .map { "- [\(formatTime($0.timestamp))] [\($0.level.rawValue)] \($0.message)" }
+            .joined(separator: "\n")
+        let logs = gatewayLogs
+            .suffix(80)
+            .map { "[\(formatTime($0.timestamp))] [\($0.level.rawValue)] \($0.message)" }
+            .joined(separator: "\n")
+
+        return """
+        LocalClaw Control Center Diagnostic Report
+        Timestamp: \(ISO8601DateFormatter().string(from: Date()))
+
+        Summary: \(healthCheckSummary)
+        Gateway: \(gatewayStatus.rawValue)
+        OpenClaw: \(systemInfo.openclawVersion)
+        Node.js: \(systemInfo.nodeVersion)
+        Port: \(systemInfo.gatewayPort)
+
+        Health checks:
+        \(checks)
+
+        Recent warnings/errors:
+        \(lastIssues.isEmpty ? "- none" : lastIssues)
+
+        Recent logs:
+        \(logs.isEmpty ? "- none" : logs)
+        """
     }
 
     func copyResourceReportToClipboard() {
@@ -952,22 +1148,11 @@ struct AdvancedCommandCenterView: View {
         ScrollView {
             VStack(spacing: 20) {
                 headerSection
+                healthCheckSection
                 healthSection
                 primaryWorkflowSection
+                supportReportSection
                 systemInfoSection
-                Spacer(minLength: 20)
-            }
-            .padding(16)
-        }
-        .scrollIndicators(.hidden)
-    }
-
-    private var modelsPanel: some View {
-        ScrollView {
-            VStack(spacing: 20) {
-                headerSection
-                modelSection
-                monitoringShortcutSection
                 Spacer(minLength: 20)
             }
             .padding(16)
@@ -979,7 +1164,9 @@ struct AdvancedCommandCenterView: View {
         ScrollView {
             VStack(spacing: 20) {
                 headerSection
+                healthCheckSection
                 actionsSection
+                supportReportSection
                 logsShortcutSection
                 rightPanel
                     .frame(minHeight: 420)
@@ -1027,6 +1214,106 @@ struct AdvancedCommandCenterView: View {
                 .foregroundStyle(UI.muted)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var healthCheckSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("HEALTH CHECK", systemImage: "checklist.checked")
+                    .font(AppFont.heading(10))
+                    .kerning(0.6)
+                    .foregroundStyle(UI.accent)
+                Spacer()
+                Text(viewModel.healthCheckSummary)
+                    .font(AppFont.bodySemi(10))
+                    .foregroundStyle(healthCheckSummaryColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 999).fill(UI.card))
+            }
+
+            Text("Run one clear check for Gateway, OpenClaw, config, token, Node, LM Studio, and machine resources.")
+                .font(AppFont.body(11))
+                .foregroundStyle(UI.muted)
+
+            if viewModel.healthChecks.isEmpty {
+                Text("No health check has been run yet.")
+                    .font(AppFont.body(12))
+                    .foregroundStyle(UI.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(viewModel.healthChecks) { item in
+                        healthCheckRow(item)
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                Button(viewModel.isHealthCheckRunning ? "Checking..." : "Run Health Check") {
+                    viewModel.runHealthCheck()
+                }
+                .buttonStyle(CTAButton(primary: true))
+                .disabled(viewModel.isHealthCheckRunning)
+
+                if viewModel.healthChecks.contains(where: { $0.state == .failed }) {
+                    Button("Repair Failed Items") {
+                        workspaceTab = .operations
+                        rightTab = .logs
+                        viewModel.repairOpenClawConnection()
+                    }
+                    .buttonStyle(CTAButton(primary: false))
+                }
+            }
+        }
+        .padding(12)
+        .background(UI.cardSoft)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+        .cornerRadius(10)
+    }
+
+    private var healthCheckSummaryColor: Color {
+        if viewModel.healthCheckSummary.contains("failed") { return Color(NSColor.systemRed) }
+        if viewModel.healthCheckSummary.contains("warning") { return Color(NSColor.systemOrange) }
+        if viewModel.healthCheckSummary.contains("passed") { return Color(NSColor.systemGreen) }
+        return UI.muted
+    }
+
+    private func healthCheckRow(_ item: CommandCenterViewModel.HealthCheckItem) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: item.state.icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(item.state.color)
+                .frame(width: 20, height: 20)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(item.title)
+                        .font(AppFont.bodySemi(12))
+                        .foregroundStyle(UI.text)
+                    Text(item.state.rawValue)
+                        .font(AppFont.bodySemi(9))
+                        .foregroundStyle(item.state.color)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(RoundedRectangle(cornerRadius: 999).fill(item.state.color.opacity(0.14)))
+                }
+                Text(item.detail)
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(2)
+                if let repairHint = item.repairHint {
+                    Text(repairHint)
+                        .font(AppFont.bodySemi(10))
+                        .foregroundStyle(item.state.color)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(item.state.color.opacity(item.state == .ok ? 0.12 : 0.35), lineWidth: 1))
     }
 
     private var healthSection: some View {
@@ -1106,6 +1393,37 @@ struct AdvancedCommandCenterView: View {
             Text("Use Control Center for health and repair. Model changes live in the Models section.")
                 .font(AppFont.body(11))
                 .foregroundStyle(UI.muted)
+        }
+        .padding(12)
+        .background(UI.cardSoft)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+        .cornerRadius(10)
+    }
+
+    private var supportReportSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("SUPPORT REPORT")
+                .font(AppFont.heading(10))
+                .kerning(0.6)
+                .foregroundStyle(UI.accent)
+
+            Text("Create a clean diagnostic report without exposing secrets. Use this when a customer sends a screenshot or says LocalClaw is stuck.")
+                .font(AppFont.body(11))
+                .foregroundStyle(UI.muted)
+
+            HStack(spacing: 8) {
+                Button("Copy Diagnostic Report") {
+                    if viewModel.healthChecks.isEmpty { viewModel.runHealthCheck() }
+                    viewModel.copyDiagnosticReportToClipboard()
+                }
+                .buttonStyle(CTAButton(primary: false))
+
+                Button("Copy Last Error") { viewModel.copyLastErrorToClipboard() }
+                    .buttonStyle(CTAButton(primary: false))
+
+                Button("Export Report") { viewModel.exportDiagnosticReport() }
+                    .buttonStyle(CTAButton(primary: false))
+            }
         }
         .padding(12)
         .background(UI.cardSoft)
@@ -1352,63 +1670,6 @@ struct AdvancedCommandCenterView: View {
         model.split(separator: "/").last.map(String.init) ?? model
     }
 
-    private var modelSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("MODE & MODEL")
-                .font(AppFont.heading(10))
-                .kerning(0.6)
-                .foregroundStyle(UI.accent)
-
-            Picker("Inference", selection: $viewModel.inferenceModeSelection) {
-                ForEach(CommandCenterViewModel.InferenceMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .tint(UI.accent)
-
-            if viewModel.inferenceModeSelection == .cloud {
-                HStack(spacing: 8) {
-                    if viewModel.availableModels.isEmpty {
-                        Text("OpenRouter catalog not loaded")
-                            .font(AppFont.body(12))
-                            .foregroundStyle(UI.muted)
-                    } else {
-                        Picker("Cloud model", selection: $viewModel.selectedModel) {
-                            ForEach(viewModel.availableModels, id: \.key) { model in
-                                Text(model.name).tag(model.key)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                    }
-
-                    Button("Refresh") {
-                        viewModel.refreshOpenRouterModels()
-                    }
-                    .buttonStyle(CTAButton(primary: false))
-                }
-            }
-
-            Text(viewModel.inferenceModeSelection == .local ? "You are configuring Local mode (LM Studio)." : "You are configuring Cloud mode (OpenRouter model).")
-                .font(AppFont.body(11))
-                .foregroundStyle(UI.muted)
-
-            Text("Changes apply only after clicking the button below.")
-                .font(AppFont.body(11))
-                .foregroundStyle(UI.muted)
-
-            Button(viewModel.inferenceModeSelection == .local ? "Apply Local" : "Apply Cloud") {
-                viewModel.applyInferenceMode()
-            }
-            .buttonStyle(CTAButton(primary: true))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(UI.cardSoft)
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
-        .cornerRadius(10)
-    }
-    
     private var systemInfoSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("SYSTEM")
