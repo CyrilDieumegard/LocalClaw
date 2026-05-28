@@ -595,12 +595,20 @@ final class InstallerViewModel: ObservableObject {
         let description: String?
         let enabled: Bool
         let scheduleLabel: String
+        let scheduleKind: String
+        let scheduleValue: String
+        let scheduleTimeZone: String?
         let payloadLabel: String
+        let message: String
         let agentID: String?
         let sessionTarget: String?
         let nextRun: String?
         let lastRun: String?
         let deliveryLabel: String?
+        let deliveryMode: String
+        let deliveryChannel: String?
+        let deliveryAccount: String?
+        let deliveryTo: String?
 
         var statusLabel: String { enabled ? "Active" : "Disabled" }
         var statusTint: Color { enabled ? Color(NSColor.systemGreen) : UI.muted }
@@ -613,6 +621,20 @@ final class InstallerViewModel: ObservableObject {
             if let nextRun, !nextRun.isEmpty { parts.append("Next: \(nextRun)") }
             if let lastRun, !lastRun.isEmpty { parts.append("Last: \(lastRun)") }
             return parts.joined(separator: " · ")
+        }
+    }
+
+    struct CronRunInfo: Identifiable {
+        let id: String
+        let status: String
+        let startedAt: String?
+        let duration: String?
+        let model: String?
+        let destination: String?
+        let error: String?
+
+        var statusTint: Color {
+            status.lowercased().contains("success") || status.lowercased() == "ok" ? Color(NSColor.systemGreen) : Color(NSColor.systemOrange)
         }
     }
 
@@ -1217,10 +1239,12 @@ final class InstallerViewModel: ObservableObject {
     @Published var agentSetupStatus = ""
     @Published var agentSetupIsRunning = false
     @Published var cronJobs: [CronJobInfo] = []
+    @Published var cronRunHistory: [String: [CronRunInfo]] = [:]
     @Published var cronJobsStatus: String = "Not loaded"
     @Published var cronJobsIsLoading = false
     @Published var cronJobLogs: String = ""
     @Published var showCronJobCreator = false
+    @Published var cronEditingJobID = ""
     @Published var cronCreateName = ""
     @Published var cronCreateAgentID = "main"
     @Published var cronCreateScheduleKind = "every" {
@@ -4227,6 +4251,9 @@ final class InstallerViewModel: ObservableObject {
 
                 let activeCount = self.cronJobs.filter(\.enabled).count
                 self.cronJobsStatus = "\(activeCount) active · \(self.cronJobs.count) jobs"
+                for job in self.cronJobs.prefix(12) {
+                    self.refreshCronRunHistory(jobID: job.id, silent: true)
+                }
                 if !silent {
                     if hasMore || total > self.cronJobs.count {
                         self.cronJobLogs += "\nCron inventory refreshed, but OpenClaw returned \(self.cronJobs.count) of \(total) jobs."
@@ -4236,6 +4263,49 @@ final class InstallerViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    func refreshCronRunHistory(jobID: String, silent: Bool = false) {
+        let quotedID = Self.shellSingleQuote(jobID)
+        Task.detached {
+            let engine = InstallerEngine()
+            let result = engine.shell("openclaw --no-color cron runs --id \(quotedID) --limit 3 2>&1")
+            guard result.0 == 0 else {
+                if !silent {
+                    await MainActor.run {
+                        self.cronJobLogs += "\nCould not load run history for \(jobID): \(result.1.trimmingCharacters(in: .whitespacesAndNewlines))"
+                    }
+                }
+                return
+            }
+            let runs = Self.parseCronRuns(result.1)
+            await MainActor.run {
+                self.cronRunHistory[jobID] = runs
+            }
+        }
+    }
+
+    nonisolated private static func parseCronRuns(_ output: String) -> [CronRunInfo] {
+        output.split(whereSeparator: \.isNewline).compactMap { line in
+            guard let data = String(line).data(using: .utf8),
+                  let row = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+            let id = row["runId"] as? String ?? row["id"] as? String ?? UUID().uuidString
+            let status = row["status"] as? String ?? row["state"] as? String ?? (row["ok"] as? Bool == true ? "success" : "run")
+            let startedAt = row["startedAt"] as? String ?? row["createdAt"] as? String ?? row["time"] as? String
+            let duration = Self.cronRunDurationLabel(row)
+            let model = row["model"] as? String ?? (row["agent"] as? [String: Any])?["model"] as? String
+            let delivery = row["delivery"] as? [String: Any] ?? [:]
+            let destination = delivery["to"] as? String ?? row["destination"] as? String
+            let error = row["error"] as? String ?? row["message"] as? String
+            return CronRunInfo(id: id, status: status, startedAt: startedAt, duration: duration, model: model, destination: destination, error: error)
+        }
+    }
+
+    nonisolated private static func cronRunDurationLabel(_ row: [String: Any]) -> String? {
+        let ms = row["durationMs"] as? Double ?? (row["durationMs"] as? Int).map(Double.init) ?? row["elapsedMs"] as? Double ?? (row["elapsedMs"] as? Int).map(Double.init)
+        guard let ms else { return nil }
+        if ms >= 1000 { return String(format: "%.1fs", ms / 1000) }
+        return "\(Int(ms))ms"
     }
 
     nonisolated static let cronListInventoryCommand = "openclaw --no-color cron list --all --json"
@@ -4258,6 +4328,15 @@ final class InstallerViewModel: ObservableObject {
             if let at = schedule["at"] as? String { return "At \(at)" }
             return kind.capitalized
         }()
+        let scheduleKind = schedule["kind"] as? String ?? row["scheduleKind"] as? String ?? "schedule"
+        let scheduleValue: String = {
+            if let expr = schedule["expr"] as? String { return expr }
+            if let everyMs = (schedule["everyMs"] as? Double) ?? (schedule["everyMs"] as? Int).map(Double.init) {
+                return Self.durationLabel(milliseconds: everyMs)
+            }
+            if let at = schedule["at"] as? String { return at }
+            return row["schedule"] as? String ?? ""
+        }()
 
         let payloadLabel: String = {
             let kind = payload["kind"] as? String ?? "payload"
@@ -4269,6 +4348,7 @@ final class InstallerViewModel: ObservableObject {
             }
             return kind
         }()
+        let message = payload["message"] as? String ?? payload["text"] as? String ?? row["message"] as? String ?? ""
 
         let deliveryLabel: String? = {
             guard !delivery.isEmpty else { return nil }
@@ -4277,6 +4357,7 @@ final class InstallerViewModel: ObservableObject {
             let to = delivery["to"] as? String
             return [mode, channel, to].compactMap { $0 }.joined(separator: " / ")
         }()
+        let deliveryMode = delivery["mode"] as? String ?? (delivery.isEmpty ? "none" : "channel")
 
         let agentID = Self.cronAgentID(row: row, payload: payload)
 
@@ -4286,12 +4367,20 @@ final class InstallerViewModel: ObservableObject {
             description: row["description"] as? String,
             enabled: row["enabled"] as? Bool ?? true,
             scheduleLabel: scheduleLabel,
+            scheduleKind: scheduleKind,
+            scheduleValue: scheduleValue,
+            scheduleTimeZone: schedule["tz"] as? String ?? row["tz"] as? String,
             payloadLabel: payloadLabel,
+            message: message,
             agentID: agentID,
             sessionTarget: row["sessionTarget"] as? String,
             nextRun: row["nextRunAt"] as? String ?? row["nextRun"] as? String,
             lastRun: row["lastRunAt"] as? String ?? row["lastRun"] as? String,
-            deliveryLabel: deliveryLabel
+            deliveryLabel: deliveryLabel,
+            deliveryMode: deliveryMode,
+            deliveryChannel: delivery["channel"] as? String,
+            deliveryAccount: delivery["account"] as? String ?? delivery["accountId"] as? String,
+            deliveryTo: delivery["to"] as? String
         )
     }
 
@@ -4378,6 +4467,7 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func resetCronJobCreator() {
+        cronEditingJobID = ""
         cronCreateName = ""
         cronCreateAgentID = agents.first(where: { $0.isDefault })?.id ?? "main"
         cronCreateScheduleKind = "every"
@@ -4393,6 +4483,7 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func prepareCronJobCreator() {
+        cronEditingJobID = ""
         cronCreateAgentID = agents.first(where: { $0.id == cronCreateAgentID })?.id ?? agents.first(where: { $0.isDefault })?.id ?? "main"
         cronCreateDeliveryChannel = activeCronDeliveryChannels.first?.id ?? cronCreateDeliveryChannel
         showCronJobCreator = true
@@ -4402,6 +4493,45 @@ final class InstallerViewModel: ObservableObject {
         if channels.isEmpty || channelsStatus == "Not loaded" {
             refreshChannels()
         }
+    }
+
+    func prepareCronJobEditor(_ job: CronJobInfo) {
+        cronEditingJobID = job.id
+        cronCreateName = job.name
+        cronCreateAgentID = job.agentID ?? agents.first(where: { $0.isDefault })?.id ?? "main"
+        cronCreateScheduleKind = Self.formScheduleKind(from: job.scheduleKind, scheduleLabel: job.scheduleLabel)
+        cronCreateScheduleValue = job.scheduleValue.isEmpty ? "30m" : job.scheduleValue
+        cronCreateTimeZoneID = job.scheduleTimeZone ?? TimeZone.current.identifier
+        if cronCreateScheduleKind == "at" {
+            cronCreateAtDate = Self.cronAtDate(from: cronCreateScheduleValue) ?? Self.defaultAtDate()
+            cronCreateScheduleValue = Self.cronAtDateString(cronCreateAtDate, timeZoneID: cronCreateTimeZoneID)
+        }
+        cronCreateMessage = job.message.isEmpty ? job.payloadLabel : job.message
+        if job.deliveryChannel == nil || job.deliveryMode == "none" {
+            cronCreateDeliveryMode = "none"
+        } else if job.deliveryChannel == "last" || job.deliveryLabel?.lowercased().contains("last") == true {
+            cronCreateDeliveryMode = "last"
+        } else {
+            cronCreateDeliveryMode = "channel"
+        }
+        cronCreateDeliveryChannel = job.deliveryChannel ?? activeCronDeliveryChannels.first?.id ?? "telegram"
+        cronCreateDeliveryAccount = job.deliveryAccount ?? ""
+        cronCreateDeliveryTo = job.deliveryTo ?? ""
+        cronCreateError = ""
+        showCronJobCreator = true
+        if agents.isEmpty || agentsStatus == "Not loaded" {
+            refreshAgents()
+        }
+        if channels.isEmpty || channelsStatus == "Not loaded" {
+            refreshChannels()
+        }
+    }
+
+    nonisolated private static func formScheduleKind(from kind: String, scheduleLabel: String) -> String {
+        let normalized = kind.lowercased()
+        if normalized.contains("cron") || scheduleLabel.hasPrefix("Cron:") { return "cron" }
+        if normalized == "at" || scheduleLabel.hasPrefix("At ") { return "at" }
+        return "every"
     }
 
     var activeCronDeliveryChannels: [ChannelInfo] {
@@ -4531,7 +4661,8 @@ final class InstallerViewModel: ObservableObject {
 
         cronCreateIsRunning = true
         cronCreateError = ""
-        cronJobLogs = cronJobLogs.isEmpty ? "Creating cron job \(name)..." : cronJobLogs + "\nCreating cron job \(name)..."
+        let isEditing = !cronEditingJobID.isEmpty
+        cronJobLogs = cronJobLogs.isEmpty ? "\(isEditing ? "Updating" : "Creating") cron job \(name)..." : cronJobLogs + "\n\(isEditing ? "Updating" : "Creating") cron job \(name)..."
 
         let scheduleFlag: String
         switch cronCreateScheduleKind {
@@ -4541,14 +4672,15 @@ final class InstallerViewModel: ObservableObject {
         }
 
         let command = [
-            "openclaw --no-color cron add",
+            isEditing ? "openclaw --no-color cron edit \(Self.shellSingleQuote(cronEditingJobID))" : "openclaw --no-color cron add",
             "--name \(Self.shellSingleQuote(name))",
             "--agent \(Self.shellSingleQuote(cronCreateAgentID))",
             "--message \(Self.shellSingleQuote(message))",
             "--session isolated",
             "\(scheduleFlag) \(Self.shellSingleQuote(scheduleValue))",
+            cronCreateScheduleKind == "cron" ? "--tz \(Self.shellSingleQuote(cronCreateTimeZoneID))" : "",
             cronDeliveryCommandArguments(),
-            "--json",
+            isEditing ? "" : "--json",
             "2>&1"
         ]
         .filter { !$0.isEmpty }
@@ -4562,13 +4694,14 @@ final class InstallerViewModel: ObservableObject {
                 let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
                 if result.0 == 0 {
                     self.showCronJobCreator = false
+                    let wasEditing = !self.cronEditingJobID.isEmpty
                     self.resetCronJobCreator()
-                    self.cronJobLogs += "\nCreated cron job \(name)."
+                    self.cronJobLogs += "\n\(wasEditing ? "Updated" : "Created") cron job \(name)."
                     if !output.isEmpty { self.cronJobLogs += "\n\(output)" }
                     self.refreshCronJobs()
                 } else {
-                    self.cronCreateError = output.isEmpty ? "Cron job creation failed." : output
-                    self.cronJobLogs += "\nFailed to create cron job \(name): \(self.cronCreateError)"
+                    self.cronCreateError = output.isEmpty ? "Cron job \(isEditing ? "update" : "creation") failed." : output
+                    self.cronJobLogs += "\nFailed to \(isEditing ? "update" : "create") cron job \(name): \(self.cronCreateError)"
                 }
             }
         }
@@ -4661,6 +4794,7 @@ final class InstallerViewModel: ObservableObject {
             let result = engine.shell("openclaw --no-color cron run \(quotedID) 2>&1")
             await MainActor.run {
                 self.cronJobLogs += "\n\(result.1.trimmingCharacters(in: .whitespacesAndNewlines))"
+                self.refreshCronRunHistory(jobID: jobID)
                 self.refreshCronJobs()
             }
         }
@@ -15307,10 +15441,10 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("New Cron Job")
+                    Text(vm.cronEditingJobID.isEmpty ? "New Cron Job" : "Edit Cron Job")
                         .font(AppFont.heading(24))
                         .foregroundStyle(UI.text)
-                    Text("Create a scheduled OpenClaw task without opening Terminal.")
+                    Text(vm.cronEditingJobID.isEmpty ? "Create a scheduled OpenClaw task without opening Terminal." : "Update the schedule, agent, message, or delivery without opening Terminal.")
                         .font(AppFont.body(13))
                         .foregroundStyle(UI.muted)
                 }
@@ -15546,7 +15680,7 @@ struct ContentView: View {
                     .font(AppFont.body(12))
                     .foregroundStyle(UI.muted)
                 Spacer()
-                Button(vm.cronCreateIsRunning ? "Creating..." : "Create Job") {
+                Button(vm.cronCreateIsRunning ? (vm.cronEditingJobID.isEmpty ? "Creating..." : "Saving...") : (vm.cronEditingJobID.isEmpty ? "Create Job" : "Save Job")) {
                     vm.createCronJobFromForm()
                 }
                 .buttonStyle(SheetActionButton(primary: true))
@@ -15735,6 +15869,7 @@ struct ContentView: View {
                         .foregroundStyle(UI.muted)
                         .lineLimit(3)
                         .truncationMode(.middle)
+                    cronNextRunView(job)
                     if let model = cronModelLabel(for: job) {
                         Text(model)
                             .font(AppFont.body(11))
@@ -15753,6 +15888,8 @@ struct ContentView: View {
 
                 Button("Run") { vm.runCronJobNow(job.id) }
                     .buttonStyle(CTAButton(primary: false))
+                Button("Edit") { vm.prepareCronJobEditor(job) }
+                    .buttonStyle(CTAButton(primary: false))
                 Button(job.enabled ? "Stop" : "Start") {
                     vm.setCronJob(job.id, enabled: !job.enabled)
                 }
@@ -15760,10 +15897,97 @@ struct ContentView: View {
                 Button("Delete") { vm.requestDeleteCronJob(job) }
                     .buttonStyle(CTAButton(primary: false))
             }
+            cronRunHistoryView(job)
         }
         .padding(16)
         .background(RoundedRectangle(cornerRadius: 14).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(job.statusTint.opacity(0.35), lineWidth: 1))
+    }
+
+    private func cronNextRunView(_ job: InstallerViewModel.CronJobInfo) -> some View {
+        let preview = cronNextRunPreview(job)
+        return HStack(spacing: 8) {
+            cronBadge(preview.relative, color: Color(NSColor.systemBlue), icon: "clock")
+            Text(preview.exact)
+                .font(AppFont.body(11))
+                .foregroundStyle(UI.muted)
+                .lineLimit(1)
+        }
+    }
+
+    private func cronNextRunPreview(_ job: InstallerViewModel.CronJobInfo) -> (relative: String, exact: String) {
+        guard job.enabled else { return ("Stopped", "This job will not run until it is started.") }
+        guard let raw = job.nextRun, !raw.isEmpty else {
+            return ("Next run unknown", job.scheduleLabel)
+        }
+        guard let date = parseCronDate(raw) else {
+            return ("Next run set", raw)
+        }
+        let relative = RelativeDateTimeFormatter()
+        relative.locale = Locale(identifier: "en_US_POSIX")
+        relative.unitsStyle = .short
+        let exact = DateFormatter()
+        exact.locale = Locale(identifier: "en_US_POSIX")
+        exact.dateStyle = .medium
+        exact.timeStyle = .short
+        exact.timeZone = .current
+        return (relative.localizedString(for: date, relativeTo: Date()), "\(exact.string(from: date)) · \(TimeZone.current.identifier)")
+    }
+
+    private func parseCronDate(_ raw: String) -> Date? {
+        if let date = ISO8601DateFormatter().date(from: raw) { return date }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        for format in ["yyyy-MM-dd'T'HH:mm:ssXXXXX", "yyyy-MM-dd'T'HH:mmXXXXX", "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm"] {
+            formatter.dateFormat = format
+            if let date = formatter.date(from: raw) { return date }
+        }
+        return nil
+    }
+
+    private func cronRunHistoryView(_ job: InstallerViewModel.CronJobInfo) -> some View {
+        let runs = vm.cronRunHistory[job.id] ?? []
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Run history", systemImage: "list.bullet.rectangle")
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(UI.muted)
+                Spacer()
+                Button("Refresh history") { vm.refreshCronRunHistory(jobID: job.id) }
+                    .buttonStyle(.plain)
+                    .font(AppFont.bodySemi(10))
+                    .foregroundStyle(UI.accent)
+            }
+            if runs.isEmpty {
+                Text("No recent run recorded yet. Click Run to test this job now.")
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+            } else {
+                ForEach(runs) { run in
+                    HStack(spacing: 8) {
+                        cronBadge(run.status.capitalized, color: run.statusTint, icon: run.status.lowercased().contains("success") || run.status.lowercased() == "ok" ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        if let startedAt = run.startedAt, !startedAt.isEmpty {
+                            Text(startedAt)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        if let duration = run.duration { Text(duration) }
+                        if let model = run.model { Text(model).lineLimit(1).truncationMode(.middle) }
+                        if let destination = run.destination { Text("to \(destination)").lineLimit(1).truncationMode(.middle) }
+                        if let error = run.error, !error.isEmpty { Text(error).foregroundStyle(Color(NSColor.systemOrange)).lineLimit(1).truncationMode(.middle) }
+                        Spacer(minLength: 0)
+                    }
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+                    .padding(8)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
+                }
+            }
+        }
     }
 
     private func cronBadge(_ label: String, color: Color, icon: String) -> some View {
