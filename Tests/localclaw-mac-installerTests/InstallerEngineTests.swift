@@ -527,7 +527,8 @@ struct InstallerEngineTests {
     @Test func developerProjectRenameStyleAndDeleteOnlyAffectList() {
         let vm = InstallerViewModel()
         let project = InstallerViewModel.DeveloperProject(name: "Demo", path: "/tmp/demo")
-        vm.developerProjects = [project]
+        let duplicate = InstallerViewModel.DeveloperProject(name: "Demo old", path: "/tmp/demo")
+        vm.developerProjects = [project, duplicate]
         vm.selectedDeveloperProjectID = project.id
 
         vm.beginEditingDeveloperProject(project)
@@ -544,6 +545,16 @@ struct InstallerEngineTests {
 
         #expect(vm.developerProjects.isEmpty)
         #expect(vm.selectedDeveloperProjectID.isEmpty)
+    }
+
+    @Test func developerProjectsDeduplicateByPath() {
+        let first = InstallerViewModel.DeveloperProject(name: "First", path: "/tmp/app", lastOpenedAt: Date(timeIntervalSince1970: 10))
+        let latest = InstallerViewModel.DeveloperProject(name: "Latest", path: "/tmp/app", lastOpenedAt: Date(timeIntervalSince1970: 20))
+
+        let projects = InstallerViewModel.deduplicatedDeveloperProjects([first, latest])
+
+        #expect(projects.count == 1)
+        #expect(projects.first?.name == "Latest")
     }
 
     @Test func quickDeveloperColorEditRewritesStyleFiles() throws {

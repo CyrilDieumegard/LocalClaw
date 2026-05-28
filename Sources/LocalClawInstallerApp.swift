@@ -1137,6 +1137,9 @@ final class InstallerViewModel: ObservableObject {
     @Published var developerGitNewRepoName = ""
     @Published var developerGitActionStatus = ""
     @Published var developerGitActionRunning = false
+    @Published var developerGitHubRepos: [String] = []
+    @Published var developerGitHubRepoListStatus = ""
+    @Published var developerGitHubRepoListLoading = false
     @Published var developerFreshContextEnabled = true {
         didSet { UserDefaults.standard.set(developerFreshContextEnabled, forKey: Self.developerFreshContextDefaultsKey) }
     }
@@ -5719,7 +5722,7 @@ final class InstallerViewModel: ObservableObject {
     func restoreDeveloperProjects() {
         if let data = UserDefaults.standard.data(forKey: Self.developerProjectsDefaultsKey),
            let decoded = try? JSONDecoder().decode([DeveloperProject].self, from: data) {
-            developerProjects = decoded.sorted { $0.lastOpenedAt > $1.lastOpenedAt }
+            developerProjects = Self.deduplicatedDeveloperProjects(decoded)
         }
         selectedDeveloperProjectID = UserDefaults.standard.string(forKey: Self.selectedDeveloperProjectDefaultsKey) ?? ""
         if let selected = developerProjects.first(where: { $0.id == selectedDeveloperProjectID }) {
@@ -5731,6 +5734,18 @@ final class InstallerViewModel: ObservableObject {
     func persistDeveloperProjects() {
         guard let data = try? JSONEncoder().encode(developerProjects) else { return }
         UserDefaults.standard.set(data, forKey: Self.developerProjectsDefaultsKey)
+    }
+
+    nonisolated static func deduplicatedDeveloperProjects(_ projects: [DeveloperProject]) -> [DeveloperProject] {
+        var seen = Set<String>()
+        var cleaned: [DeveloperProject] = []
+        for project in projects.sorted(by: { $0.lastOpenedAt > $1.lastOpenedAt }) {
+            let key = URL(fileURLWithPath: project.path).standardizedFileURL.path
+            guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !seen.contains(key) else { continue }
+            seen.insert(key)
+            cleaned.append(project)
+        }
+        return cleaned
     }
 
     func restoreModelUsageRecords() {
@@ -7725,17 +7740,19 @@ final class InstallerViewModel: ObservableObject {
 
     func rememberDeveloperProject(name: String, path: String) {
         let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? URL(fileURLWithPath: path).lastPathComponent : name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let index = developerProjects.firstIndex(where: { $0.path == path }) {
+        let normalizedPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        if let index = developerProjects.firstIndex(where: { URL(fileURLWithPath: $0.path).standardizedFileURL.path == normalizedPath }) {
             developerProjects[index].name = cleanName
+            developerProjects[index].path = normalizedPath
             developerProjects[index].lastOpenedAt = Date()
             selectedDeveloperProjectID = developerProjects[index].id
         } else {
-            let project = DeveloperProject(name: cleanName, path: path)
+            let project = DeveloperProject(name: cleanName, path: normalizedPath)
             developerProjects.insert(project, at: 0)
             selectedDeveloperProjectID = project.id
         }
         UserDefaults.standard.set(selectedDeveloperProjectID, forKey: Self.selectedDeveloperProjectDefaultsKey)
-        developerProjects.sort { $0.lastOpenedAt > $1.lastOpenedAt }
+        developerProjects = Self.deduplicatedDeveloperProjects(developerProjects)
     }
 
     func beginEditingDeveloperProject(_ project: DeveloperProject) {
@@ -7781,13 +7798,17 @@ final class InstallerViewModel: ObservableObject {
     func deletePendingDeveloperProject() {
         let id = developerProjectDeleteCandidateID
         guard !id.isEmpty else { return }
-        developerProjects.removeAll { $0.id == id }
+        let deletedPath = developerProjects.first(where: { $0.id == id })?.path ?? ""
+        let normalizedDeletedPath = URL(fileURLWithPath: deletedPath).standardizedFileURL.path
+        developerProjects.removeAll { project in
+            project.id == id || (!normalizedDeletedPath.isEmpty && URL(fileURLWithPath: project.path).standardizedFileURL.path == normalizedDeletedPath)
+        }
         if selectedDeveloperProjectID == id {
-            selectedDeveloperProjectID = developerProjects.first?.id ?? ""
+            selectedDeveloperProjectID = ""
             UserDefaults.standard.set(selectedDeveloperProjectID, forKey: Self.selectedDeveloperProjectDefaultsKey)
-            if let next = developerProjects.first {
-                openDeveloperProject(next)
-            }
+        }
+        if URL(fileURLWithPath: developerProjectPath).standardizedFileURL.path == normalizedDeletedPath {
+            developerPreviewStatus = "Project removed from LocalClaw list. Files were kept."
         }
         if editingDeveloperProjectID == id {
             cancelEditingDeveloperProject()
@@ -7995,6 +8016,44 @@ final class InstallerViewModel: ObservableObject {
         refreshDeveloperGitStatus()
         chatInput = "Review the current Git changes in this project. Explain what changed, risks, and what should be tested before committing."
         screen = .developer
+    }
+
+    func developerConnectGitHub() {
+        developerGitActionStatus = "Opening GitHub login..."
+        Task.detached { [engine] in
+            let result = engine.shell("gh auth status >/dev/null 2>&1 || gh auth login -h github.com -w 2>&1")
+            await MainActor.run {
+                self.developerGitActionStatus = result.0 == 0 ? "GitHub account connected." : (result.1.isEmpty ? "GitHub connection failed." : result.1)
+                self.refreshDeveloperGitHubRepos()
+            }
+        }
+    }
+
+    func refreshDeveloperGitHubRepos() {
+        guard !developerGitHubRepoListLoading else { return }
+        developerGitHubRepoListLoading = true
+        developerGitHubRepoListStatus = "Loading GitHub repositories..."
+        Task.detached { [engine] in
+            let result = engine.shell("gh repo list --limit 50 --json nameWithOwner --jq '.[].nameWithOwner' 2>&1")
+            let repos = result.1
+                .components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && !$0.lowercased().contains("error") }
+            await MainActor.run {
+                self.developerGitHubRepoListLoading = false
+                if result.0 == 0 {
+                    self.developerGitHubRepos = repos
+                    self.developerGitHubRepoListStatus = repos.isEmpty ? "No GitHub repositories found." : "\(repos.count) repositories available."
+                } else {
+                    self.developerGitHubRepoListStatus = "Connect GitHub to list repositories."
+                }
+            }
+        }
+    }
+
+    func developerSelectGitHubRepo(_ repo: String) {
+        developerGitRepoInput = repo
+        developerCloneGitHubRepo()
     }
 
     func developerCloneGitHubRepo() {
@@ -11514,7 +11573,8 @@ struct ContentView: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
-                    if vm.developerProjects.isEmpty {
+                    let visibleProjects = vm.developerProjects.filter { FileManager.default.fileExists(atPath: $0.path) }
+                    if visibleProjects.isEmpty {
                         Text("No Developer project yet.")
                             .font(AppFont.body(11))
                             .foregroundStyle(UI.muted)
@@ -11522,7 +11582,7 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
                     } else {
-                        ForEach(vm.developerProjects) { project in
+                        ForEach(visibleProjects) { project in
                             developerProjectRow(project)
                         }
                     }
@@ -11979,6 +12039,29 @@ struct ContentView: View {
                     Text("Connect GitHub")
                         .font(AppFont.bodySemi(13))
                         .foregroundStyle(UI.text)
+                    HStack(spacing: 8) {
+                        developerToolbarButton("Connect GitHub", icon: "person.crop.circle.badge.checkmark", primary: true) { vm.developerConnectGitHub() }
+                        developerToolbarButton(vm.developerGitHubRepoListLoading ? "Loading..." : "Load repos", icon: "tray.full") { vm.refreshDeveloperGitHubRepos() }
+                            .disabled(vm.developerGitHubRepoListLoading)
+                    }
+                    if !vm.developerGitHubRepoListStatus.isEmpty {
+                        Text(vm.developerGitHubRepoListStatus)
+                            .font(AppFont.body(11))
+                            .foregroundStyle(UI.muted)
+                            .lineLimit(2)
+                    }
+                    if !vm.developerGitHubRepos.isEmpty {
+                        Menu {
+                            ForEach(vm.developerGitHubRepos, id: \.self) { repo in
+                                Button(repo) { vm.developerSelectGitHubRepo(repo) }
+                            }
+                        } label: {
+                            Label("Choose repository", systemImage: "book.closed")
+                                .font(AppFont.bodySemi(12))
+                                .frame(maxWidth: .infinity, alignment: .center)
+                        }
+                        .buttonStyle(CompactChatButton(primary: false))
+                    }
                     HStack(spacing: 8) {
                         TextField("owner/repo or GitHub URL", text: $vm.developerGitRepoInput)
                             .textFieldStyle(.plain)
