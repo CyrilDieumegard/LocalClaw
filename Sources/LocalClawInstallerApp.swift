@@ -5963,6 +5963,21 @@ final class InstallerViewModel: ObservableObject {
         healthLogs += "Backup: \(result.1)\n"
     }
 
+    func copyHealthReport() {
+        let report = [
+            "LocalClaw \(installerCurrentVersion) build \(installerBuildNumber)",
+            "OpenClaw \(openclawInstalledVersion)",
+            "Mode: \(openClawChatModeLabel)",
+            "Model: \(openClawChatModelLabel)",
+            "Health: \(healthStatus)",
+            "",
+            healthLogs.isEmpty ? "No diagnostic log yet." : healthLogs
+        ].joined(separator: "\n")
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(report, forType: .string)
+    }
+
     func refreshUsageCostEstimate() {
         // Simple blended estimate ($ per 1M tokens) by current model family
         let model = selectedOpenRouterModel.lowercased()
@@ -16758,6 +16773,101 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
     }
 
+    private var helpHealthTint: Color {
+        if vm.healthStatus == "Healthy" { return Color(NSColor.systemGreen) }
+        if vm.healthStatus == "Critical" { return Color(NSColor.systemRed) }
+        if vm.healthStatus == "Warning" { return Color(NSColor.systemOrange) }
+        return UI.muted
+    }
+
+    private var helpStatusPanel: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(spacing: 9) {
+                Circle()
+                    .fill(helpHealthTint)
+                    .frame(width: 10, height: 10)
+                Text("Setup status")
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(UI.muted)
+                Spacer()
+                Text(vm.healthStatus)
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(helpHealthTint)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 999).fill(helpHealthTint.opacity(0.12)))
+            }
+            Text(helpStatusTitle)
+                .font(AppFont.heading(22))
+                .foregroundStyle(UI.text)
+            VStack(alignment: .leading, spacing: 7) {
+                helpStatusLine("Gateway", value: vm.gatewayIsRunning ? "Running" : "Needs check", ok: vm.gatewayIsRunning)
+                helpStatusLine("Mode", value: vm.openClawChatModeLabel, ok: true)
+                helpStatusLine("Model", value: vm.openClawChatModelLabel, ok: !dashboardModelNeedsSetup)
+            }
+        }
+        .padding(14)
+        .frame(width: 310, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 13).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 13).stroke(helpHealthTint.opacity(0.30), lineWidth: 1))
+    }
+
+    private var helpStatusTitle: String {
+        switch vm.healthStatus {
+        case "Healthy": return "Ready to use"
+        case "Critical": return "Needs repair"
+        case "Warning": return "Check recommended"
+        default: return "Run a check"
+        }
+    }
+
+    private func helpStatusLine(_ title: String, value: String, ok: Bool) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(ok ? Color(NSColor.systemGreen) : Color(NSColor.systemOrange))
+                .frame(width: 16)
+            Text(title)
+                .font(AppFont.bodySemi(11))
+                .foregroundStyle(UI.text)
+            Spacer()
+            Text(value)
+                .font(AppFont.body(10))
+                .foregroundStyle(UI.muted)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+    }
+
+    private func helpActionCard(_ title: String, _ detail: String, icon: String, tint: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 24, height: 24)
+                    .background(Circle().fill(tint.opacity(0.12)))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(AppFont.bodySemi(12))
+                        .foregroundStyle(UI.text)
+                    Text(detail)
+                        .font(AppFont.body(10))
+                        .foregroundStyle(UI.muted)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(UI.muted)
+            }
+            .padding(11)
+            .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
     var healthCenter: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
@@ -16770,17 +16880,25 @@ struct ContentView: View {
                         .foregroundStyle(UI.muted)
                 }
                 Spacer()
-                Button("Rerun setup guide") {
-                    vm.restartOnboarding()
-                }
-                .buttonStyle(CTAButton(primary: false))
+                Button("Run check") { vm.runHealthCheck() }
+                    .buttonStyle(CTAButton(primary: false))
+                Button("Setup guide") { vm.restartOnboarding() }
+                    .buttonStyle(CTAButton(primary: true))
+            }
 
-                Text(vm.healthStatus)
-                    .font(AppFont.bodySemi(12))
-                    .foregroundStyle(vm.healthStatus == "Healthy" ? .green : (vm.healthStatus == "Critical" ? .red : .orange))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
+            HStack(alignment: .top, spacing: 12) {
+                helpStatusPanel
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("What do you need help with?")
+                        .font(AppFont.bodySemi(14))
+                        .foregroundStyle(UI.text)
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                        helpActionCard("Install or update", "Open guided install, updates, and recovery.", icon: "arrow.down.app.fill", tint: UI.accent) { vm.screen = .install }
+                        helpActionCard("Model replies", "Fix local/cloud/OAuth model issues.", icon: "cpu.fill", tint: Color(NSColor.systemPurple)) { vm.screen = .models }
+                        helpActionCard("Channels", "Repair Telegram, Discord, Slack, WhatsApp and more.", icon: "bubble.left.and.bubble.right.fill", tint: Color(NSColor.systemBlue)) { vm.screen = .channelSetup }
+                        helpActionCard("Automations", "Check agents, cron jobs, and Kanban tasks.", icon: "calendar.badge.clock", tint: Color(NSColor.systemGreen)) { vm.screen = .cronJobs }
+                    }
+                }
             }
 
             Picker("Help section", selection: $helpTab) {
@@ -16788,7 +16906,7 @@ struct ContentView: View {
                     Text(tab.rawValue).tag(tab)
                 }
             }
-            .pickerStyle(.segmented)
+                .pickerStyle(.segmented)
                 .tint(UI.accent)
 
             Group {
@@ -16800,22 +16918,20 @@ struct ContentView: View {
                                 .font(AppFont.bodySemi(14))
                                 .foregroundStyle(UI.text)
 
-                            Group {
-                                helpStepCard(number: 1, title: "Open Install", detail: "Go to Install in the left sidebar.", icon: "play.circle.fill", tint: UI.accent)
-                                helpStepCard(number: 2, title: "Choose your mode", detail: "Cloud LLM for fastest setup, Local LLM for offline usage.", icon: "slider.horizontal.3", tint: .blue)
-                                helpStepCard(number: 3, title: "Set provider auth", detail: "Cloud LLM mode: choose OpenAI OAuth or API key.", icon: "key.fill", tint: .purple)
-                                helpStepCard(number: 4, title: "If API key mode", detail: "Paste key first, then click Verify.", icon: "checkmark.shield.fill", tint: .green)
-                                helpStepCard(number: 5, title: "Run installation", detail: "Click Install Everything and keep Terminal open.", icon: "gearshape.2.fill", tint: .orange)
-                                helpStepCard(number: 6, title: "Mac password prompt", detail: "If Terminal asks Password, type your Mac password. Input is hidden by macOS.", icon: "lock.fill", tint: .red)
-                                helpStepCard(number: 7, title: "Wait for completion", detail: "Stop only when Installation Complete appears.", icon: "hourglass.circle.fill", tint: .mint)
-                                helpStepCard(number: 8, title: "Final test", detail: "Open Dashboard and send one test message.", icon: "message.fill", tint: .indigo)
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 10)], spacing: 10) {
+                                helpStepCard(number: 1, title: "Choose runtime", detail: "Cloud LLM is fastest. OAuth LLM uses your OpenAI login. Local LLM runs through LM Studio.", icon: "slider.horizontal.3", tint: .blue)
+                                helpStepCard(number: 2, title: "Install essentials", detail: "Open Install, pick your mode, then run Install Everything or the missing step only.", icon: "gearshape.2.fill", tint: .orange)
+                                helpStepCard(number: 3, title: "Verify model", detail: "Open Models and apply the model you want before testing chat.", icon: "cpu.fill", tint: .purple)
+                                helpStepCard(number: 4, title: "Send first message", detail: "Open OpenClaw Chat and send one short test message.", icon: "message.fill", tint: .green)
+                                helpStepCard(number: 5, title: "Connect channels", detail: "Use Channels to connect Telegram, Discord, Slack, WhatsApp or another platform.", icon: "bubble.left.and.bubble.right.fill", tint: .indigo)
+                                helpStepCard(number: 6, title: "Automate work", detail: "Use Agents, Cron Jobs, or Kanban once chat and channels are confirmed working.", icon: "calendar.badge.clock", tint: UI.accent)
                             }
 
                             VStack(alignment: .leading, spacing: 8) {
-                                Label("Pro tip", systemImage: "lightbulb.fill")
+                                Label("When something feels stuck", systemImage: "lightbulb.fill")
                                     .font(AppFont.bodySemi(13))
                                     .foregroundStyle(.yellow)
-                                Text("If something fails, go to Help > Health commands and run Run Health Check before retrying full install.")
+                                Text("Run Health Check first, copy the report if needed, then use Quick Repair. Avoid reinstalling everything unless the report says the setup is missing.")
                                     .font(AppFont.body(12))
                                     .foregroundStyle(UI.muted)
                             }
@@ -16866,6 +16982,8 @@ struct ContentView: View {
                                 .buttonStyle(CTAButton(primary: false))
                             Button("Backup Config") { vm.backupOpenClawConfig() }
                                 .buttonStyle(CTAButton(primary: false))
+                            Button("Copy Report") { vm.copyHealthReport() }
+                                .buttonStyle(CTAButton(primary: false))
                         }
 
                         Text("Diagnostics log")
@@ -16892,6 +17010,11 @@ struct ContentView: View {
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
+        .onAppear {
+            if vm.healthStatus == "Unknown" {
+                vm.runHealthCheck()
+            }
+        }
     }
 
     var usageCenter: some View {
