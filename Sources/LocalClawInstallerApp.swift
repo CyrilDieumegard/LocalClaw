@@ -200,6 +200,22 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    struct DeveloperProject: Identifiable, Codable, Equatable {
+        let id: String
+        var name: String
+        var path: String
+        var createdAt: Date
+        var lastOpenedAt: Date
+
+        init(id: String = UUID().uuidString, name: String, path: String, createdAt: Date = Date(), lastOpenedAt: Date = Date()) {
+            self.id = id
+            self.name = name
+            self.path = path
+            self.createdAt = createdAt
+            self.lastOpenedAt = lastOpenedAt
+        }
+    }
+
     struct ModelUsageRecord: Identifiable, Codable {
         let id: UUID
         let createdAt: Date
@@ -1087,6 +1103,14 @@ final class InstallerViewModel: ObservableObject {
     @Published var developerActiveTab = "preview"
     @Published var developerGitStatus = DeveloperGitStatus()
     @Published var developerGitIsRefreshing = false
+    @Published var developerProjects: [DeveloperProject] = [] {
+        didSet { persistDeveloperProjects() }
+    }
+    @Published var selectedDeveloperProjectID = ""
+    @Published var developerGitRepoInput = ""
+    @Published var developerGitNewRepoName = ""
+    @Published var developerGitActionStatus = ""
+    @Published var developerGitActionRunning = false
     @Published var developerFreshContextEnabled = true {
         didSet { UserDefaults.standard.set(developerFreshContextEnabled, forKey: Self.developerFreshContextDefaultsKey) }
     }
@@ -1280,6 +1304,8 @@ final class InstallerViewModel: ObservableObject {
     private static let chatSavedNotesDefaultsKey = "localclaw.chat.savedNotes.v1"
     private static let chatProjectMemoriesDefaultsKey = "localclaw.chat.projectMemories.v1"
     private static let developerProjectNameDefaultsKey = "localclaw.developer.projectName.v1"
+    private static let developerProjectsDefaultsKey = "localclaw.developer.projects.v1"
+    private static let selectedDeveloperProjectDefaultsKey = "localclaw.developer.selectedProject.v1"
     private static let developerFreshContextDefaultsKey = "localclaw.developer.freshContext.v1"
     private static let modelUsageDefaultsKey = "localclaw.modelUsage.records.v1"
     private static let homeUsageWindowDefaultsKey = "localclaw.home.usageWindow.v1"
@@ -1317,6 +1343,7 @@ final class InstallerViewModel: ObservableObject {
         }
         restoreChatSessions()
         restoreChatSavedNotes()
+        restoreDeveloperProjects()
         restoreModelUsageRecords()
         restoreKanbanBoard()
         channels = Self.defaultChannelCatalog.map { entry in
@@ -5659,6 +5686,23 @@ final class InstallerViewModel: ObservableObject {
         UserDefaults.standard.set(data, forKey: Self.chatProjectMemoriesDefaultsKey)
     }
 
+    func restoreDeveloperProjects() {
+        if let data = UserDefaults.standard.data(forKey: Self.developerProjectsDefaultsKey),
+           let decoded = try? JSONDecoder().decode([DeveloperProject].self, from: data) {
+            developerProjects = decoded.sorted { $0.lastOpenedAt > $1.lastOpenedAt }
+        }
+        selectedDeveloperProjectID = UserDefaults.standard.string(forKey: Self.selectedDeveloperProjectDefaultsKey) ?? ""
+        if let selected = developerProjects.first(where: { $0.id == selectedDeveloperProjectID }) {
+            developerProjectName = selected.name
+            developerProjectPath = selected.path
+        }
+    }
+
+    func persistDeveloperProjects() {
+        guard let data = try? JSONEncoder().encode(developerProjects) else { return }
+        UserDefaults.standard.set(data, forKey: Self.developerProjectsDefaultsKey)
+    }
+
     func restoreModelUsageRecords() {
         guard let data = UserDefaults.standard.data(forKey: Self.modelUsageDefaultsKey),
               let decoded = try? JSONDecoder().decode([ModelUsageRecord].self, from: data) else { return }
@@ -7074,12 +7118,19 @@ final class InstallerViewModel: ObservableObject {
                     self.recordModelUsage(model: runtimeModel ?? self.currentModel, input: usage.input, output: usage.output, total: usage.total)
                 }
                 if useDeveloperSession && result.0 == 0 {
-                    self.developerPreviewRefreshID = UUID()
-                    self.developerActiveTab = "preview"
-                    if self.developerPreviewProcess != nil {
-                        self.developerPreviewStatus = "Preview refreshed after code changes"
+                    self.refreshDeveloperGitStatus()
+                    let packageURL = URL(fileURLWithPath: self.developerProjectPath).appendingPathComponent("package.json")
+                    if FileManager.default.fileExists(atPath: packageURL.path) {
+                        if self.developerPreviewProcess != nil {
+                            self.developerPreviewRefreshID = UUID()
+                            self.developerActiveTab = "preview"
+                            self.developerPreviewStatus = "Preview refreshed after code changes"
+                        } else {
+                            self.developerRunPreview(updatePrompt: false)
+                        }
                     } else {
-                        self.developerPreviewStatus = "Code changes applied. Run preview to view them."
+                        self.developerActiveTab = "files"
+                        self.developerPreviewStatus = "Code changes applied. Open Files or add package.json to preview."
                     }
                 }
                 self.chatStatus = result.0 == 0 ? "Ready" : (knownDiagnostic == nil ? "Error" : "Needs setup")
@@ -7637,8 +7688,37 @@ final class InstallerViewModel: ObservableObject {
         let baseURL = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".openclaw/workspace/projects", isDirectory: true)
         developerProjectName = Self.nextDeveloperProjectName(in: baseURL)
         syncDeveloperProjectFolder(moveExistingProject: false)
+        rememberDeveloperProject(name: developerProjectName, path: developerProjectPath)
         chatInput = "Create a new web app named \(developerProjectName) in \(developerProjectPath). Set up a minimal runnable project, then tell me how to preview it locally inside LocalClaw."
         screen = .developer
+    }
+
+    func rememberDeveloperProject(name: String, path: String) {
+        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? URL(fileURLWithPath: path).lastPathComponent : name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let index = developerProjects.firstIndex(where: { $0.path == path }) {
+            developerProjects[index].name = cleanName
+            developerProjects[index].lastOpenedAt = Date()
+            selectedDeveloperProjectID = developerProjects[index].id
+        } else {
+            let project = DeveloperProject(name: cleanName, path: path)
+            developerProjects.insert(project, at: 0)
+            selectedDeveloperProjectID = project.id
+        }
+        UserDefaults.standard.set(selectedDeveloperProjectID, forKey: Self.selectedDeveloperProjectDefaultsKey)
+        developerProjects.sort { $0.lastOpenedAt > $1.lastOpenedAt }
+    }
+
+    func openDeveloperProject(_ project: DeveloperProject) {
+        developerStopPreview()
+        developerProjectName = project.name
+        developerProjectPath = project.path
+        selectedDeveloperProjectID = project.id
+        UserDefaults.standard.set(project.id, forKey: Self.selectedDeveloperProjectDefaultsKey)
+        rememberDeveloperProject(name: project.name, path: project.path)
+        developerPreviewRefreshID = UUID()
+        developerActiveTab = "preview"
+        developerPreviewStatus = "Project opened. Run preview to load it."
+        refreshDeveloperGitStatus()
     }
 
     func syncDeveloperProjectFolder(moveExistingProject: Bool = true) {
@@ -7660,6 +7740,7 @@ final class InstallerViewModel: ObservableObject {
                 try fm.createDirectory(at: targetURL, withIntermediateDirectories: true)
             }
             developerProjectPath = targetURL.path
+            rememberDeveloperProject(name: cleanName, path: targetURL.path)
             developerPreviewRefreshID = UUID()
             developerActiveTab = "preview"
             developerPreviewStatus = "Project folder ready: \(slug)"
@@ -7709,6 +7790,7 @@ final class InstallerViewModel: ObservableObject {
             developerStopPreview()
             developerProjectPath = url.path
             developerProjectName = url.lastPathComponent
+            rememberDeveloperProject(name: url.lastPathComponent, path: url.path)
             developerPreviewRefreshID = UUID()
             developerActiveTab = "preview"
             developerPreviewStatus = "App opened. Run preview to load it."
@@ -7828,7 +7910,76 @@ final class InstallerViewModel: ObservableObject {
         screen = .developer
     }
 
-    func developerRunPreview() {
+    func developerCloneGitHubRepo() {
+        let input = developerGitRepoInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !input.isEmpty, !developerGitActionRunning else { return }
+        developerGitActionRunning = true
+        developerGitActionStatus = "Cloning repository..."
+        Task.detached { [engine] in
+            let baseURL = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".openclaw/workspace/projects", isDirectory: true)
+            let base = Self.shellSingleQuote(baseURL.path)
+            let repo = Self.shellSingleQuote(input)
+            let command = "mkdir -p \(base) && cd \(base) && gh repo clone \(repo) 2>&1"
+            let result = engine.shell(command)
+            await MainActor.run {
+                self.developerGitActionRunning = false
+                if result.0 == 0 {
+                    let name = Self.githubRepoName(from: input)
+                    let path = baseURL.appendingPathComponent(name, isDirectory: true).path
+                    self.developerProjectName = name
+                    self.developerProjectPath = path
+                    self.rememberDeveloperProject(name: name, path: path)
+                    self.developerGitRepoInput = ""
+                    self.developerGitActionStatus = "Repository cloned."
+                    self.developerActiveTab = "github"
+                    self.refreshDeveloperGitStatus()
+                } else {
+                    self.developerGitActionStatus = result.1.isEmpty ? "Clone failed. Check GitHub auth." : result.1
+                }
+            }
+        }
+    }
+
+    func developerCreateGitHubRepo() {
+        let rawName = developerGitNewRepoName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let repoName = rawName.isEmpty ? Self.slugifyProjectName(developerProjectName) : Self.slugifyProjectName(rawName)
+        guard !repoName.isEmpty, !developerGitActionRunning else { return }
+        developerGitActionRunning = true
+        developerGitActionStatus = "Creating GitHub repository..."
+        let root = developerProjectPath
+        Task.detached { [engine] in
+            let quotedRoot = Self.shellSingleQuote(root)
+            let quotedName = Self.shellSingleQuote(repoName)
+            let command = """
+            cd \(quotedRoot) 2>&1 || exit 2
+            if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git init; fi
+            git add -A
+            if ! git rev-parse --verify HEAD >/dev/null 2>&1; then git commit -m 'Initial LocalClaw project' || true; fi
+            gh repo create \(quotedName) --source . --private --remote origin --push 2>&1
+            """
+            let result = engine.shell(command)
+            await MainActor.run {
+                self.developerGitActionRunning = false
+                if result.0 == 0 {
+                    self.developerGitNewRepoName = ""
+                    self.developerGitActionStatus = "GitHub repository created and pushed."
+                    self.refreshDeveloperGitStatus()
+                } else {
+                    self.developerGitActionStatus = result.1.isEmpty ? "Create repo failed. Check GitHub auth." : result.1
+                }
+            }
+        }
+    }
+
+    nonisolated static func githubRepoName(from value: String) -> String {
+        let clean = value
+            .replacingOccurrences(of: ".git", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let last = clean.split(separator: "/").last.map(String.init) ?? clean
+        return slugifyProjectName(last.isEmpty ? "github-project" : last)
+    }
+
+    func developerRunPreview(updatePrompt: Bool = true) {
         syncDeveloperProjectFolder()
         developerPreviewRefreshID = UUID()
         developerPreviewStatus = "Starting preview..."
@@ -7847,7 +7998,9 @@ final class InstallerViewModel: ObservableObject {
             }
         } catch {
             developerPreviewStatus = "Could not prepare preview project: \(error.localizedDescription)"
-            chatInput = "Create or fix a runnable web preview for \(developerProjectPath). Add package.json scripts if needed, then report the preview URL."
+            if updatePrompt {
+                chatInput = "Create or fix a runnable web preview for \(developerProjectPath). Add package.json scripts if needed, then report the preview URL."
+            }
             return
         }
 
@@ -7880,7 +8033,9 @@ final class InstallerViewModel: ObservableObject {
         } catch {
             developerPreviewStatus = "Preview failed: \(error.localizedDescription)"
         }
-        chatInput = "Start or verify the local preview for \(developerProjectPath). If a dev server is needed, use the existing project scripts and report the local URL."
+        if updatePrompt {
+            chatInput = "Start or verify the local preview for \(developerProjectPath). If a dev server is needed, use the existing project scripts and report the local URL."
+        }
     }
 
     nonisolated static func createDeveloperPreviewScaffold(at root: URL, appName: String) throws {
@@ -11197,6 +11352,8 @@ struct ContentView: View {
             }
 
             HStack(alignment: .top, spacing: 14) {
+                developerProjectsPanel
+                    .frame(width: 230)
                 developerChatPanel
                     .frame(minWidth: 360, idealWidth: 430, maxWidth: 500)
                 developerPreviewPanel
@@ -11210,6 +11367,67 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.06), radius: 6, x: 0, y: 2)
         .onAppear { vm.prepareDeveloperWorkspace() }
+    }
+
+    private var developerProjectsPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Projects")
+                    .font(AppFont.bodySemi(13))
+                    .foregroundStyle(UI.text)
+                Spacer()
+                Button(action: { vm.developerNewApp() }) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(UI.accent)
+                }
+                .buttonStyle(.plain)
+                .help("New Developer project")
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    if vm.developerProjects.isEmpty {
+                        Text("No Developer project yet.")
+                            .font(AppFont.body(11))
+                            .foregroundStyle(UI.muted)
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
+                    } else {
+                        ForEach(vm.developerProjects) { project in
+                            developerProjectRow(project)
+                        }
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+        }
+        .padding(12)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(RoundedRectangle(cornerRadius: 16).fill(UI.cardSoft.opacity(0.65)))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private func developerProjectRow(_ project: InstallerViewModel.DeveloperProject) -> some View {
+        let active = project.id == vm.selectedDeveloperProjectID || project.path == vm.developerProjectPath
+        return Button(action: { vm.openDeveloperProject(project) }) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(project.name)
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(active ? Color.white : UI.text)
+                    .lineLimit(1)
+                Text(project.path)
+                    .font(AppFont.body(10))
+                    .foregroundStyle(active ? Color.white.opacity(0.72) : UI.muted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 11).fill(active ? UI.accent : UI.card))
+            .overlay(RoundedRectangle(cornerRadius: 11).stroke(UI.lineSoft, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
     }
 
     private var developerChatPanel: some View {
@@ -11287,13 +11505,20 @@ struct ContentView: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
+                if !vm.chatImagePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    chatImagePreview(path: vm.chatImagePath)
+                }
                 TextField("Ask OpenClaw to build, fix, or improve the app...", text: $vm.chatInput, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(AppFont.body(14))
                     .lineLimit(2...5)
                     .onSubmit { vm.sendDeveloperChatMessage() }
+                    .onPasteCommand(of: [.image]) { _ in
+                        vm.pasteChatImageFromClipboard()
+                    }
                 HStack(spacing: 10) {
                     developerIconButton("paperclip") { vm.attachChatImage() }
+                    developerIconButton("clipboard") { vm.pasteChatImageFromClipboard() }
                     developerIconButton("terminal") { vm.chatInput = "Run the project checks for \(vm.developerProjectPath) and summarize failures with fixes." }
                     developerIconButton("photo") { vm.attachChatImage() }
                     Text("Will send with \(vm.selectedChatModel.isEmpty ? vm.openClawChatModelLabel : vm.selectedChatModel)")
@@ -11577,6 +11802,45 @@ struct ContentView: View {
             )
 
             VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 9) {
+                    Text("Connect GitHub")
+                        .font(AppFont.bodySemi(13))
+                        .foregroundStyle(UI.text)
+                    HStack(spacing: 8) {
+                        TextField("owner/repo or GitHub URL", text: $vm.developerGitRepoInput)
+                            .textFieldStyle(.plain)
+                            .font(AppFont.body(12))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(RoundedRectangle(cornerRadius: 9).fill(UI.card))
+                            .overlay(RoundedRectangle(cornerRadius: 9).stroke(UI.lineSoft, lineWidth: 1))
+                            .onSubmit { vm.developerCloneGitHubRepo() }
+                        developerToolbarButton("Clone", icon: "square.and.arrow.down", primary: true) { vm.developerCloneGitHubRepo() }
+                            .disabled(vm.developerGitActionRunning || vm.developerGitRepoInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                    HStack(spacing: 8) {
+                        TextField("new repo name", text: $vm.developerGitNewRepoName)
+                            .textFieldStyle(.plain)
+                            .font(AppFont.body(12))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(RoundedRectangle(cornerRadius: 9).fill(UI.card))
+                            .overlay(RoundedRectangle(cornerRadius: 9).stroke(UI.lineSoft, lineWidth: 1))
+                            .onSubmit { vm.developerCreateGitHubRepo() }
+                        developerToolbarButton("Create repo", icon: "plus.square") { vm.developerCreateGitHubRepo() }
+                            .disabled(vm.developerGitActionRunning)
+                    }
+                    if !vm.developerGitActionStatus.isEmpty {
+                        Text(vm.developerGitActionStatus)
+                            .font(AppFont.body(11))
+                            .foregroundStyle(vm.developerGitActionStatus.lowercased().contains("failed") ? Color(NSColor.systemRed) : UI.muted)
+                            .lineLimit(3)
+                    }
+                }
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
+
                 if !vm.developerGitStatus.isRepository {
                     developerInfoCard("No repository", "Open a folder that contains a .git repository, or ask OpenClaw to initialize one and connect it to GitHub.", icon: "exclamationmark.triangle")
                     HStack(spacing: 10) {
@@ -12337,7 +12601,7 @@ struct ContentView: View {
             let isCommandV = event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command
                 && event.charactersIgnoringModifiers?.lowercased() == "v"
             guard isCommandV,
-                  vm.screen == .chat,
+                  (vm.screen == .chat || vm.screen == .developer),
                   InstallerViewModel.imageFromPasteboard(NSPasteboard.general) != nil else {
                 return event
             }
