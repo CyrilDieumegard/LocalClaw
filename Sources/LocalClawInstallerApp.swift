@@ -11550,43 +11550,49 @@ struct ContentView: View {
     }
 
     var developerCenter: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .center, spacing: 12) {
-                Image(systemName: "curlybraces.square.fill")
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(UI.accent)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Developer")
-                        .font(AppFont.heading(28))
-                        .foregroundStyle(UI.text)
-                    Text("Build with OpenClaw: chat-driven coding on the left, live app preview and project context on the right.")
-                        .font(AppFont.body(13))
-                        .foregroundStyle(UI.muted)
-                }
-                Spacer()
-                developerActiveProjectPill
-                developerToolbarButton(vm.developerProjectsPanelVisible ? "Hide projects" : "Show projects", icon: vm.developerProjectsPanelVisible ? "sidebar.left" : "sidebar.left") {
-                    vm.developerProjectsPanelVisible.toggle()
-                }
-                developerToolbarButton("New app", icon: "plus.square.on.square") { vm.developerNewApp() }
-                developerToolbarButton("Open app", icon: "folder") { vm.developerChooseFolder() }
-                developerToolbarButton("Sync folder", icon: "folder.badge.gearshape") { vm.syncDeveloperProjectFolder() }
-                developerToolbarButton("Run preview", icon: "play.fill", primary: true) { vm.developerRunPreview() }
-            }
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(alignment: .center, spacing: 12) {
+                        Image(systemName: "curlybraces.square.fill")
+                            .font(.system(size: 24, weight: .semibold))
+                            .foregroundStyle(UI.accent)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Developer")
+                                .font(AppFont.heading(28))
+                                .foregroundStyle(UI.text)
+                            Text("Build with OpenClaw: chat-driven coding on the left, live app preview and project context on the right.")
+                                .font(AppFont.body(13))
+                                .foregroundStyle(UI.muted)
+                        }
+                        Spacer()
+                        developerActiveProjectPill
+                        developerToolbarButton(vm.developerProjectsPanelVisible ? "Hide projects" : "Show projects", icon: vm.developerProjectsPanelVisible ? "sidebar.left" : "sidebar.left") {
+                            vm.developerProjectsPanelVisible.toggle()
+                        }
+                        developerToolbarButton("New app", icon: "plus.square.on.square") { vm.developerNewApp() }
+                        developerToolbarButton("Open app", icon: "folder") { vm.developerChooseFolder() }
+                        developerToolbarButton("Sync folder", icon: "folder.badge.gearshape") { vm.syncDeveloperProjectFolder() }
+                        developerToolbarButton("Run preview", icon: "play.fill", primary: true) { vm.developerRunPreview() }
+                    }
 
-            HStack(alignment: .top, spacing: 14) {
-                if vm.developerProjectsPanelVisible {
-                    developerProjectsPanel
-                        .frame(width: 230)
-                }
-                developerChatPanel
-                    .frame(minWidth: 360, idealWidth: 430, maxWidth: 500)
-                developerPreviewPanel
+                    HStack(alignment: .top, spacing: 14) {
+                        if vm.developerProjectsPanelVisible {
+                            developerProjectsPanel
+                                .frame(width: 230)
+                        }
+                        developerChatPanel
+                            .frame(minWidth: 360, idealWidth: 430, maxWidth: 500)
+                        developerPreviewPanel
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .padding(18)
+                .frame(maxWidth: .infinity, minHeight: max(geometry.size.height, 720), alignment: .topLeading)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .scrollIndicators(.visible)
         }
-        .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
@@ -16657,15 +16663,18 @@ struct ContentView: View {
     }
 
     var modelsCenter: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            modelsHeader
-            modelsSummaryRow
-            modelsConfigAndEstimator
-            modelsHealthAndRecommendations
-            modelsInventoryPanel
-            Spacer()
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                modelsHeader
+                modelsSummaryRow
+                modelsConfigAndEstimator
+                modelsHealthAndRecommendations
+                modelsInventoryPanel
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .padding(18)
+        .scrollIndicators(.visible)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
