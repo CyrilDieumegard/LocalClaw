@@ -1194,6 +1194,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var channelCredentialValues: [String: String] = [:]
     @Published var channelCredentialStatus = ""
     @Published var channelCredentialIsRunning = false
+    @Published var channelActionInProgress = ""
     @Published var agents: [AgentInfo] = []
     @Published var agentsStatus: String = "Not loaded"
     @Published var agentsIsLoading = false
@@ -5147,6 +5148,65 @@ final class InstallerViewModel: ObservableObject {
                 self.channelCredentialStatus = output.isEmpty ? "\(label) checked." : output
                 self.channelSetupLogs += "\n\(label) check finished."
                 if !output.isEmpty { self.channelSetupLogs += "\n\(output)" }
+                self.refreshChannels()
+            }
+        }
+    }
+
+    func repairChannelConnection(_ channel: ChannelInfo) {
+        let channelID = channel.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !channelID.isEmpty, channelActionInProgress.isEmpty else { return }
+        channelActionInProgress = "repair:\(channelID)"
+        channelsStatus = "Repairing \(channel.label)..."
+        channelSetupLogs = channelSetupLogs.isEmpty ? "Repairing \(channel.label)..." : channelSetupLogs + "\nRepairing \(channel.label)..."
+
+        Task.detached {
+            let engine = InstallerEngine()
+            if channelID == "telegram" {
+                Self.ensureTelegramDefaultAccountToken()
+            }
+            let quotedChannel = Self.shellSingleQuote(channelID)
+            let restart = engine.shell("openclaw --no-color gateway restart 2>&1 || true")
+            let status = engine.shell("openclaw --no-color channels status --channel \(quotedChannel) --probe --timeout 8000 2>&1 || true")
+            let output = [restart.1, status.1]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+
+            await MainActor.run {
+                self.channelActionInProgress = ""
+                self.channelsStatus = "\(channel.label) repair finished"
+                self.channelSetupLogs += "\n\(channel.label) repair finished."
+                if !output.isEmpty { self.channelSetupLogs += "\n\(output)" }
+                self.refreshChannels()
+            }
+        }
+    }
+
+    func sendChannelTestMessage(_ channel: ChannelInfo) {
+        let channelID = channel.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !channelID.isEmpty, channelActionInProgress.isEmpty else { return }
+        channelActionInProgress = "test:\(channelID)"
+        channelsStatus = "Sending test to \(channel.label)..."
+        channelSetupLogs = channelSetupLogs.isEmpty ? "Sending test to \(channel.label)..." : channelSetupLogs + "\nSending test to \(channel.label)..."
+
+        Task.detached {
+            let engine = InstallerEngine()
+            let message = "LocalClaw channel test: \(channel.label) is able to send outbound messages."
+            let command = "openclaw --no-color message send --channel \(Self.shellSingleQuote(channelID)) --message \(Self.shellSingleQuote(message)) 2>&1"
+            let result = engine.shell(command)
+            let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
+            let status = engine.shell("openclaw --no-color channels status --channel \(Self.shellSingleQuote(channelID)) --probe --timeout 5000 2>&1 || true")
+            let statusOutput = status.1.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            await MainActor.run {
+                self.channelActionInProgress = ""
+                self.channelsStatus = result.0 == 0 ? "\(channel.label) test sent" : "\(channel.label) test failed"
+                self.channelSetupLogs += result.0 == 0
+                    ? "\n\(channel.label) outbound test sent."
+                    : "\n\(channel.label) outbound test failed."
+                if !output.isEmpty { self.channelSetupLogs += "\n\(output)" }
+                if !statusOutput.isEmpty { self.channelSetupLogs += "\n\(statusOutput)" }
                 self.refreshChannels()
             }
         }
@@ -17499,6 +17559,35 @@ struct ContentView: View {
                     .help(channel.configured ? "Remove account from OpenClaw config" : "No account to remove")
             }
 
+            channelHealthPanel(channel)
+
+            HStack(spacing: 8) {
+                Button {
+                    vm.repairChannelConnection(channel)
+                } label: {
+                    Label(vm.channelActionInProgress == "repair:\(channel.id)" ? "Repairing" : "Repair connection", systemImage: "wrench.and.screwdriver")
+                        .lineLimit(1)
+                }
+                .buttonStyle(CompactChatButton(primary: false))
+                .disabled(vm.channelActionInProgress.isEmpty == false || !channel.configured)
+
+                Button {
+                    vm.sendChannelTestMessage(channel)
+                } label: {
+                    Label(vm.channelActionInProgress == "test:\(channel.id)" ? "Sending" : "Send test message", systemImage: "paperplane.fill")
+                        .lineLimit(1)
+                }
+                .buttonStyle(CompactChatButton(primary: channel.isActive))
+                .disabled(vm.channelActionInProgress.isEmpty == false || !channel.configured)
+
+                Text(channel.configured ? "Use Repair first if receive works but outbound replies fail." : "Connect this channel before running repair or delivery tests.")
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
+            }
+
             VStack(spacing: 8) {
                 if channel.id == "telegram" {
                     telegramSetupSteps(channel)
@@ -17511,6 +17600,72 @@ struct ContentView: View {
         .padding(16)
         .background(RoundedRectangle(cornerRadius: 14).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(channel.isActive ? Color(NSColor.systemGreen).opacity(0.35) : UI.lineSoft, lineWidth: 1))
+    }
+
+    @ViewBuilder
+    private func channelHealthPanel(_ channel: InstallerViewModel.ChannelInfo) -> some View {
+        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+            channelHealthItem(
+                "Config",
+                value: channel.configured ? "Persistent" : "Missing",
+                ok: channel.configured,
+                icon: "doc.badge.gearshape"
+            )
+            channelHealthItem(
+                "Gateway",
+                value: channel.running ? "Running" : "Check needed",
+                ok: channel.running,
+                icon: "antenna.radiowaves.left.and.right"
+            )
+            channelHealthItem(
+                "Probe",
+                value: channel.probeOK == true ? "OK" : (channel.probeOK == false ? "Failed" : "Unknown"),
+                ok: channel.probeOK == true,
+                icon: channel.probeOK == false ? "exclamationmark.triangle.fill" : "checkmark.seal.fill"
+            )
+            channelHealthItem(
+                "Activity",
+                value: channel.lastActivity ?? "No recent event",
+                ok: channel.lastActivity != nil || channel.connected,
+                icon: "clock.arrow.circlepath"
+            )
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+
+        if let lastError = channel.lastError, !lastError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            Label(lastError, systemImage: "exclamationmark.triangle.fill")
+                .font(AppFont.body(11))
+                .foregroundStyle(Color(NSColor.systemOrange))
+                .lineLimit(2)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color(NSColor.systemOrange).opacity(0.10)))
+        }
+    }
+
+    private func channelHealthItem(_ title: String, value: String, ok: Bool, icon: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(ok ? Color(NSColor.systemGreen) : UI.muted)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(AppFont.bodySemi(10))
+                    .foregroundStyle(UI.muted)
+                Text(value)
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(ok ? UI.text : UI.muted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
     }
 
     private func telegramSetupSteps(_ channel: InstallerViewModel.ChannelInfo) -> some View {
