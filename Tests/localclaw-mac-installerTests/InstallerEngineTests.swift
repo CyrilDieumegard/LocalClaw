@@ -404,6 +404,43 @@ struct InstallerEngineTests {
         #expect(vm.selectedOAuthModelIdentifier() == "openai/gpt-5.4-mini")
     }
 
+    @MainActor
+    @Test func chatMemorySavedInsideProjectStaysInProjectMemory() {
+        let vm = InstallerViewModel()
+        let project = InstallerViewModel.ChatProject.fresh(index: 1)
+        var session = InstallerViewModel.ChatSession.fresh(title: "Project chat")
+        session.projectID = project.id
+        vm.chatProjects = [project]
+        vm.chatSessions = [session]
+        vm.selectedChatSessionID = session.id
+
+        vm.saveChatMessageAsNote(InstallerViewModel.ChatMessage(role: "assistant", text: "Use the red API token migration plan."))
+
+        #expect(vm.chatSavedNotes.isEmpty)
+        #expect(vm.chatProjectMemories[project.id]?.contains("Use the red API token migration plan.") == true)
+        #expect(vm.chatMemoryPreview.contains { $0.contains("red API token") })
+    }
+
+    @MainActor
+    @Test func projectMemoryIsIsolatedBetweenProjects() {
+        let vm = InstallerViewModel()
+        let projectA = InstallerViewModel.ChatProject.fresh(index: 1)
+        let projectB = InstallerViewModel.ChatProject.fresh(index: 2)
+        var sessionA = InstallerViewModel.ChatSession.fresh(title: "A")
+        var sessionB = InstallerViewModel.ChatSession.fresh(title: "B")
+        sessionA.projectID = projectA.id
+        sessionB.projectID = projectB.id
+        vm.chatProjects = [projectA, projectB]
+        vm.chatSessions = [sessionA, sessionB]
+
+        vm.selectedChatSessionID = sessionA.id
+        vm.saveChatMessageAsNote(InstallerViewModel.ChatMessage(role: "assistant", text: "Project A only remembers bananas."))
+
+        vm.selectedChatSessionID = sessionB.id
+        #expect(!vm.chatMemoryPreview.contains { $0.contains("bananas") })
+        #expect(vm.chatProjectMemories[projectB.id] == nil || vm.chatProjectMemories[projectB.id]?.isEmpty == true)
+    }
+
     @Test func quickDeveloperColorEditRewritesStyleFiles() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("localclaw-quick-color-test-\(UUID().uuidString)")

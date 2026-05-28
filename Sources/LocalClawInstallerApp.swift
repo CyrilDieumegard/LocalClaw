@@ -990,6 +990,13 @@ final class InstallerViewModel: ObservableObject {
     var selectedChatSession: ChatSession? {
         chatSessions.first { $0.id == activeChatSessionID }
     }
+    var activeChatProjectID: String? {
+        selectedChatSession?.projectID
+    }
+    var activeChatProject: ChatProject? {
+        guard let projectID = activeChatProjectID else { return nil }
+        return chatProjects.first { $0.id == projectID }
+    }
     var activeChatSessionID: String {
         if !selectedChatSessionID.isEmpty, chatSessions.contains(where: { $0.id == selectedChatSessionID }) {
             return selectedChatSessionID
@@ -1020,6 +1027,9 @@ final class InstallerViewModel: ObservableObject {
     }
     @Published var chatSavedNotes: [String] = [] {
         didSet { persistChatSavedNotes() }
+    }
+    @Published var chatProjectMemories: [String: [String]] = [:] {
+        didSet { persistChatProjectMemories() }
     }
     @Published var selectedDeveloperChatSessionID = "" {
         didSet { UserDefaults.standard.set(selectedDeveloperChatSessionID, forKey: "localclaw.developer.selectedSession.v1") }
@@ -1224,6 +1234,7 @@ final class InstallerViewModel: ObservableObject {
     private static let chatCleanViewDefaultsKey = "localclaw.chat.cleanView.v1"
     private static let hiddenChatToolIDsDefaultsKey = "localclaw.chat.hiddenToolIDs.v1"
     private static let chatSavedNotesDefaultsKey = "localclaw.chat.savedNotes.v1"
+    private static let chatProjectMemoriesDefaultsKey = "localclaw.chat.projectMemories.v1"
     private static let developerProjectNameDefaultsKey = "localclaw.developer.projectName.v1"
     private static let developerFreshContextDefaultsKey = "localclaw.developer.freshContext.v1"
     private static let modelUsageDefaultsKey = "localclaw.modelUsage.records.v1"
@@ -5555,6 +5566,7 @@ final class InstallerViewModel: ObservableObject {
 
     func restoreChatSessions() {
         restoreChatProjects()
+        restoreChatProjectMemories()
         if let data = UserDefaults.standard.data(forKey: Self.chatSessionsDefaultsKey),
            let decoded = try? JSONDecoder().decode([ChatSession].self, from: data),
            !decoded.isEmpty {
@@ -5590,6 +5602,17 @@ final class InstallerViewModel: ObservableObject {
     func persistChatSavedNotes() {
         guard let data = try? JSONEncoder().encode(chatSavedNotes) else { return }
         UserDefaults.standard.set(data, forKey: Self.chatSavedNotesDefaultsKey)
+    }
+
+    func restoreChatProjectMemories() {
+        guard let data = UserDefaults.standard.data(forKey: Self.chatProjectMemoriesDefaultsKey),
+              let decoded = try? JSONDecoder().decode([String: [String]].self, from: data) else { return }
+        chatProjectMemories = decoded
+    }
+
+    func persistChatProjectMemories() {
+        guard let data = try? JSONEncoder().encode(chatProjectMemories) else { return }
+        UserDefaults.standard.set(data, forKey: Self.chatProjectMemoriesDefaultsKey)
     }
 
     func restoreModelUsageRecords() {
@@ -6253,6 +6276,7 @@ final class InstallerViewModel: ObservableObject {
     func newChatProject() {
         let project = ChatProject.fresh(index: chatProjects.count + 1)
         chatProjects.append(project)
+        chatProjectMemories[project.id] = []
         expandedChatProjectIDs.insert(project.id)
         editingChatProjectID = project.id
         editingChatProjectTitle = project.title
@@ -6283,6 +6307,9 @@ final class InstallerViewModel: ObservableObject {
         chatSessions[index].projectID = projectID
         chatSessions[index].updatedAt = Date()
         if let projectID {
+            if chatProjectMemories[projectID] == nil {
+                chatProjectMemories[projectID] = []
+            }
             expandedChatProjectIDs.insert(projectID)
         }
     }
@@ -6340,9 +6367,24 @@ final class InstallerViewModel: ObservableObject {
         return lines.joined(separator: "\n")
     }
 
+    var activeProjectMemoryNotes: [String] {
+        guard let projectID = activeChatProjectID else { return [] }
+        return chatProjectMemories[projectID] ?? []
+    }
+
+    var activeMemoryScopeLabel: String {
+        if let project = activeChatProject {
+            return "Project memory · \(project.title)"
+        }
+        return "Chat memory"
+    }
+
     var chatMemoryPreview: [String] {
         guard chatMemoryEnabled else { return [] }
-        var notes = chatSavedNotes
+        var notes = activeProjectMemoryNotes
+        if activeChatProjectID == nil {
+            notes.append(contentsOf: chatSavedNotes)
+        }
         if let session = selectedChatSession {
             let recent = session.messages
                 .filter { $0.role == "user" || $0.role == "assistant" }
@@ -6457,16 +6499,26 @@ final class InstallerViewModel: ObservableObject {
         let cleaned = message.text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return }
         let note = String(cleaned.prefix(220))
-        if !chatSavedNotes.contains(note) {
+        if let projectID = activeChatProjectID {
+            var notes = chatProjectMemories[projectID] ?? []
+            if !notes.contains(note) {
+                notes.append(note)
+                chatProjectMemories[projectID] = Array(notes.suffix(30))
+            }
+        } else if !chatSavedNotes.contains(note) {
             chatSavedNotes.append(note)
         }
-        appendChatSystemMessageOnce("Saved to chat memory.")
+        appendChatSystemMessageOnce(activeChatProject == nil ? "Saved to chat memory." : "Saved to project memory.")
     }
 
     func forgetChatMemory() {
-        chatSavedNotes.removeAll()
+        if let projectID = activeChatProjectID {
+            chatProjectMemories[projectID] = []
+        } else {
+            chatSavedNotes.removeAll()
+        }
         chatMemoryEnabled = false
-        appendChatSystemMessageOnce("Chat memory cleared and paused.")
+        appendChatSystemMessageOnce(activeChatProject == nil ? "Chat memory cleared and paused." : "Project memory cleared and paused.")
     }
 
     struct ChatContextUsage {
@@ -11744,7 +11796,7 @@ struct ContentView: View {
     var chatMemoryPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 7) {
-                Label("Memory", systemImage: "memorychip")
+                Label(vm.activeMemoryScopeLabel, systemImage: vm.activeChatProject == nil ? "memorychip" : "folder.badge.gearshape")
                     .font(AppFont.bodySemi(12))
                     .foregroundStyle(UI.text)
                     .lineLimit(1)
@@ -11768,11 +11820,11 @@ struct ContentView: View {
                         .frame(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
-                .disabled(vm.chatIsSending || (!vm.chatMemoryEnabled && vm.chatSavedNotes.isEmpty))
-                .help("Forget chat memory")
+                .disabled(vm.chatIsSending || (!vm.chatMemoryEnabled && vm.chatMemoryPreview.isEmpty && vm.activeProjectMemoryNotes.isEmpty && vm.chatSavedNotes.isEmpty))
+                .help(vm.activeChatProject == nil ? "Forget chat memory" : "Forget project memory")
             }
 
-            Text(vm.chatMemoryEnabled ? "Visible context used for this chat." : "Memory is paused for new messages.")
+            Text(vm.chatMemoryEnabled ? (vm.activeChatProject == nil ? "Visible context used for this chat." : "Shared context for every discussion in this project.") : "Memory is paused for new messages.")
                 .font(AppFont.body(10))
                 .foregroundStyle(UI.muted)
                 .lineLimit(2)
