@@ -16745,13 +16745,15 @@ struct ContentView: View {
                 Text("Step \(number) - \(title)")
                     .font(AppFont.bodySemi(13))
                     .foregroundStyle(UI.text)
+                    .lineLimit(1)
                 Text(detail)
                     .font(AppFont.body(12))
                     .foregroundStyle(UI.muted)
+                    .lineLimit(3)
             }
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 74, maxHeight: 74, alignment: .topLeading)
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
@@ -16851,6 +16853,7 @@ struct ContentView: View {
                     Text(title)
                         .font(AppFont.bodySemi(12))
                         .foregroundStyle(UI.text)
+                        .lineLimit(1)
                     Text(detail)
                         .font(AppFont.body(10))
                         .foregroundStyle(UI.muted)
@@ -16861,6 +16864,7 @@ struct ContentView: View {
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(UI.muted)
             }
+            .frame(maxWidth: .infinity, minHeight: 46, maxHeight: 46, alignment: .leading)
             .padding(11)
             .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
@@ -16882,8 +16886,10 @@ struct ContentView: View {
                 Spacer()
                 Button("Run check") { vm.runHealthCheck() }
                     .buttonStyle(CTAButton(primary: false))
+                    .frame(width: 132)
                 Button("Setup guide") { vm.restartOnboarding() }
                     .buttonStyle(CTAButton(primary: true))
+                    .frame(width: 132)
             }
 
             HStack(alignment: .top, spacing: 12) {
