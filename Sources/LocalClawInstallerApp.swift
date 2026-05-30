@@ -16872,6 +16872,38 @@ struct ContentView: View {
         .buttonStyle(.plain)
     }
 
+    private func helpHeaderButton(_ title: String, primary: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(AppFont.bodySemi(13))
+                .foregroundStyle(primary ? .white : UI.text)
+                .lineLimit(1)
+                .minimumScaleFactor(0.86)
+                .frame(width: 128, height: 42)
+                .background(RoundedRectangle(cornerRadius: 8).fill(primary ? UI.accent : UI.cardSoft))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(primary ? UI.accent : UI.lineSoft, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func helpCommandButton(_ title: String, icon: String, primary: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .semibold))
+                Text(title)
+                    .font(AppFont.bodySemi(12))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.86)
+            }
+            .foregroundStyle(primary ? .white : UI.text)
+            .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)
+            .background(RoundedRectangle(cornerRadius: 8).fill(primary ? UI.accent : UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(primary ? UI.accent : UI.lineSoft, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
     var healthCenter: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
@@ -16884,12 +16916,10 @@ struct ContentView: View {
                         .foregroundStyle(UI.muted)
                 }
                 Spacer()
-                Button("Run check") { vm.runHealthCheck() }
-                    .buttonStyle(CTAButton(primary: false))
-                    .frame(width: 132)
-                Button("Setup guide") { vm.restartOnboarding() }
-                    .buttonStyle(CTAButton(primary: true))
-                    .frame(width: 132)
+                HStack(spacing: 10) {
+                    helpHeaderButton("Run check", primary: false) { vm.runHealthCheck() }
+                    helpHeaderButton("Setup guide", primary: true) { vm.restartOnboarding() }
+                }
             }
 
             HStack(alignment: .top, spacing: 12) {
@@ -16981,15 +17011,11 @@ struct ContentView: View {
 
                 case .healthCommands:
                     VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 10) {
-                            Button("Run Health Check") { vm.runHealthCheck() }
-                                .buttonStyle(CTAButton(primary: true))
-                            Button("Quick Repair") { vm.runQuickRepair() }
-                                .buttonStyle(CTAButton(primary: false))
-                            Button("Backup Config") { vm.backupOpenClawConfig() }
-                                .buttonStyle(CTAButton(primary: false))
-                            Button("Copy Report") { vm.copyHealthReport() }
-                                .buttonStyle(CTAButton(primary: false))
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 10) {
+                            helpCommandButton("Run Health Check", icon: "stethoscope", primary: true) { vm.runHealthCheck() }
+                            helpCommandButton("Quick Repair", icon: "wrench.and.screwdriver.fill", primary: false) { vm.runQuickRepair() }
+                            helpCommandButton("Backup Config", icon: "externaldrive.fill", primary: false) { vm.backupOpenClawConfig() }
+                            helpCommandButton("Copy Report", icon: "doc.on.doc.fill", primary: false) { vm.copyHealthReport() }
                         }
 
                         Text("Diagnostics log")
