@@ -46,27 +46,38 @@ bash scripts/build-dmg.sh
 
 Build artifacts are generated in `dist/` and ignored by git.
 
-## Signing and notarization
+## Signing, notarization, and publishing
 
-`build-dmg.sh` supports Apple signing and notarization through env vars:
-
-- `DEVELOPER_ID_APP`
-- `APPLE_ID`
-- `APPLE_TEAM_ID`
-- `APPLE_APP_SPECIFIC_PASSWORD`
-
-Example:
+Local development builds stay ad-hoc signed by default:
 
 ```bash
-export DEVELOPER_ID_APP="Developer ID Application: Your Name (TEAMID)"
-export APPLE_ID="you@example.com"
-export APPLE_TEAM_ID="TEAMID"
-export APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx"
-
 bash scripts/build-dmg.sh
 ```
 
-Without these variables, build runs in dev mode (ad-hoc signing).
+Public releases must use Developer ID signing, notarization, and stapling:
+
+```bash
+RELEASE_NOTARIZE=1 bash scripts/build-dmg.sh
+bash scripts/publish-notarized-dmg.sh
+```
+
+Release defaults:
+
+- `DEVELOPER_ID_APP`
+- `NOTARY_PROFILE=localclaw-notary`
+- `NOTARY_TIMEOUT_SECONDS=900`
+- `NOTARY_POLL_SECONDS=15`
+
+The notary profile must be created once in Keychain:
+
+```bash
+xcrun notarytool store-credentials "localclaw-notary" \
+  --apple-id "<apple-id>" \
+  --team-id "<team-id>" \
+  --password "<app-specific-password>"
+```
+
+`publish-notarized-dmg.sh` validates the stapled DMG first, then calculates the manifest sha256 from that final stapled file.
 
 ## License API endpoint
 
