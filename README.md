@@ -32,6 +32,21 @@ No DMG or prebuilt binaries are committed here.
 swift run
 ```
 
+## Try an OpenClaw workflow after setup
+
+After LocalClaw reports OpenClaw ready, you can install regular OpenClaw plugins from Terminal. [TweetClaw](https://github.com/Xquik-dev/tweetclaw) is a practical X/Twitter workflow check because it exercises plugin install, optional tool allowlisting, local config, and approval prompts:
+
+```bash
+openclaw plugins install @xquik/tweetclaw
+openclaw config set tools.alsoAllow '["explore", "tweetclaw"]'
+```
+
+TweetClaw supports scrape tweets, search tweets, search tweet replies, follower export, user lookup, media upload, media download, direct messages, monitor tweets, webhooks, giveaway draws, and approval-gated post tweets or post tweet replies through Xquik.
+
+- GitHub: https://github.com/Xquik-dev/tweetclaw
+- npm: https://www.npmjs.com/package/@xquik/tweetclaw
+- ClawHub browsing page: https://clawhub.ai/plugins/@xquik/tweetclaw
+
 ## Run tests
 
 ```bash
