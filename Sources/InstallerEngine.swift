@@ -70,6 +70,159 @@ final class InstallerEngine: @unchecked Sendable {
     static let shellPathPrefix = #"export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"; "#
     static let minimumNodeVersion = "22.19.0"
 
+    static func firstJSONData(in output: String) -> Data? {
+        let bytes = Array(output.utf8)
+
+        for start in bytes.indices where bytes[start] == 0x7B || bytes[start] == 0x5B {
+            var stack: [UInt8] = []
+            var isInsideString = false
+            var isEscaping = false
+
+            for index in start..<bytes.count {
+                let byte = bytes[index]
+
+                if isInsideString {
+                    if isEscaping {
+                        isEscaping = false
+                    } else if byte == 0x5C {
+                        isEscaping = true
+                    } else if byte == 0x22 {
+                        isInsideString = false
+                    }
+                    continue
+                }
+
+                if byte == 0x22 {
+                    isInsideString = true
+                } else if byte == 0x7B {
+                    stack.append(0x7D)
+                } else if byte == 0x5B {
+                    stack.append(0x5D)
+                } else if byte == 0x7D || byte == 0x5D {
+                    guard stack.last == byte else { break }
+                    stack.removeLast()
+
+                    if stack.isEmpty {
+                        let data = Data(bytes[start...index])
+                        if (try? JSONSerialization.jsonObject(with: data)) != nil {
+                            return data
+                        }
+                        break
+                    }
+                }
+            }
+        }
+
+        return nil
+    }
+
+    static func firstJSONObject(in output: String) -> [String: Any]? {
+        guard let data = firstJSONData(in: output) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    static func firstJSONArray(in output: String) -> [[String: Any]]? {
+        guard let data = firstJSONData(in: output) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+    }
+
+    static func gatewayIsHealthy(statusOutput: String) -> Bool {
+        guard let root = firstJSONObject(in: statusOutput),
+              let rpc = root["rpc"] as? [String: Any],
+              rpc["ok"] as? Bool == true,
+              let health = root["health"] as? [String: Any],
+              health["healthy"] as? Bool == true else {
+            return false
+        }
+
+        if let service = root["service"] as? [String: Any],
+           let runtime = service["runtime"] as? [String: Any],
+           let status = runtime["status"] as? String {
+            return status.lowercased() == "running"
+        }
+
+        return true
+    }
+
+    static func officialPluginUpdateSpecs(from statusOutput: String) -> [String] {
+        guard let root = firstJSONObject(in: statusOutput),
+              let drift = root["pluginVersionDrift"] as? [String: Any],
+              let rows = drift["drifts"] as? [[String: Any]] else {
+            return []
+        }
+
+        return Array(Set(rows.compactMap { row -> String? in
+            guard row["source"] as? String == "npm",
+                  let packageName = row["packageName"] as? String,
+                  packageName.hasPrefix("@openclaw/") else {
+                return nil
+            }
+            return "\(packageName)@latest"
+        })).sorted()
+    }
+
+    static func legacyInstallRecordsAreCovered(legacyData: Data, registryOutput: String) -> Bool {
+        guard let legacyRoot = try? JSONSerialization.jsonObject(with: legacyData) as? [String: Any],
+              let legacyRecords = legacyRoot["installRecords"] as? [String: Any],
+              let registryRoot = firstJSONObject(in: registryOutput) else {
+            return false
+        }
+
+        if legacyRecords.isEmpty {
+            return true
+        }
+
+        let persisted = registryRoot["persisted"] as? [String: Any] ?? registryRoot
+        guard let currentRecords = persisted["installRecords"] as? [String: Any] else {
+            return false
+        }
+
+        for (identifier, rawLegacyRecord) in legacyRecords {
+            guard let legacyRecord = rawLegacyRecord as? [String: Any],
+                  let currentRecord = currentRecords[identifier] as? [String: Any],
+                  legacyRecord["source"] as? String == currentRecord["source"] as? String else {
+                return false
+            }
+
+            if legacyRecord["source"] as? String == "npm" {
+                let legacyName = npmPackageName(in: legacyRecord)
+                let currentName = npmPackageName(in: currentRecord)
+                guard !legacyName.isEmpty, legacyName == currentName else { return false }
+            }
+        }
+
+        return true
+    }
+
+    static func staleCodexBindingSidecarPaths(in doctorOutput: String) -> [String] {
+        let pattern = #"Left Codex binding sidecar in place because its session is owned by agent harness [^:\n]+:\s+([^\n]+\.jsonl\.codex-app-server\.json)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(doctorOutput.startIndex..., in: doctorOutput)
+
+        return Array(Set(regex.matches(in: doctorOutput, range: range).compactMap { match in
+            guard match.numberOfRanges > 1,
+                  let pathRange = Range(match.range(at: 1), in: doctorOutput) else {
+                return nil
+            }
+            return String(doctorOutput[pathRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        })).sorted()
+    }
+
+    private static func npmPackageName(in record: [String: Any]) -> String {
+        if let name = record["resolvedName"] as? String, !name.isEmpty { return name }
+        guard let spec = record["spec"] as? String, !spec.isEmpty else { return "" }
+
+        if spec.hasPrefix("@"), let slash = spec.firstIndex(of: "/") {
+            let searchStart = spec.index(after: slash)
+            if let versionSeparator = spec[searchStart...].firstIndex(of: "@") {
+                return String(spec[..<versionSeparator])
+            }
+            return spec
+        }
+
+        return spec.split(separator: "@", maxSplits: 1).first.map(String.init) ?? spec
+    }
+
     static func versionComponents(from value: String) -> [Int]? {
         guard let range = value.range(of: #"\d+(?:\.\d+){0,2}"#, options: .regularExpression) else {
             return nil
@@ -496,7 +649,7 @@ final class InstallerEngine: @unchecked Sendable {
 
     /// Install gateway service (LaunchAgent)
     func installGatewayService() -> StepResult {
-        let (code, out) = shell("openclaw gateway install")
+        let (code, out) = shell("openclaw gateway install --force")
         return code == 0
             ? StepResult(state: .ok, message: "Gateway service installed")
             : StepResult(state: .fail, message: out)
@@ -520,10 +673,161 @@ final class InstallerEngine: @unchecked Sendable {
 
     /// Run doctor repair
     func runDoctorRepair() -> StepResult {
+        runDoctorRepairDetailed().result
+    }
+
+    private func runDoctorRepairDetailed() -> (result: StepResult, output: String) {
         let (code, out) = shell("perl -e 'alarm 120; exec @ARGV' openclaw doctor --fix --yes --non-interactive 2>&1")
-        return code == 0
+        let result = code == 0
             ? StepResult(state: .ok, message: "Doctor repair completed")
             : StepResult(state: .fail, message: out)
+        return (result, out)
+    }
+
+    private func refreshOpenClawPluginRegistry() -> (result: StepResult, output: String) {
+        let (code, output) = shell("openclaw --no-color plugins registry --refresh --json 2>&1")
+        let result = code == 0
+            ? StepResult(state: .ok, message: "Plugin registry refreshed")
+            : StepResult(state: .fail, message: output)
+        return (result, output)
+    }
+
+    private func archiveLegacyPluginInstallIndexIfSafe(registryOutput: String) -> StepResult {
+        let fileManager = FileManager.default
+        let sourcePath = NSHomeDirectory() + "/.openclaw/plugins/installs.json"
+        guard fileManager.fileExists(atPath: sourcePath) else {
+            return StepResult(state: .skip, message: "No legacy plugin install index found")
+        }
+
+        guard let legacyData = fileManager.contents(atPath: sourcePath),
+              Self.legacyInstallRecordsAreCovered(legacyData: legacyData, registryOutput: registryOutput) else {
+            return StepResult(
+                state: .fail,
+                message: "Legacy plugin metadata could not be reconciled safely. The original file was left untouched."
+            )
+        }
+
+        var destinationPath = sourcePath + ".migrated"
+        var suffix = 2
+        while fileManager.fileExists(atPath: destinationPath) {
+            destinationPath = sourcePath + ".migrated.\(suffix)"
+            suffix += 1
+        }
+
+        do {
+            try fileManager.moveItem(atPath: sourcePath, toPath: destinationPath)
+            return StepResult(
+                state: .ok,
+                message: "Archived reconciled legacy plugin metadata as \(URL(fileURLWithPath: destinationPath).lastPathComponent)"
+            )
+        } catch {
+            return StepResult(state: .fail, message: "Could not archive legacy plugin metadata: \(error.localizedDescription)")
+        }
+    }
+
+    private func archiveStaleCodexBindingSidecars(from doctorOutput: String) -> StepResult {
+        let paths = Self.staleCodexBindingSidecarPaths(in: doctorOutput)
+        guard !paths.isEmpty else {
+            return StepResult(state: .skip, message: "No stale Codex binding sidecars found")
+        }
+
+        let fileManager = FileManager.default
+        let allowedRoot = URL(fileURLWithPath: NSHomeDirectory() + "/.openclaw/agents", isDirectory: true)
+            .resolvingSymlinksInPath().standardizedFileURL.path + "/"
+        var archivedNames: [String] = []
+
+        for rawPath in paths {
+            let sourceURL = URL(fileURLWithPath: rawPath).resolvingSymlinksInPath().standardizedFileURL
+            guard sourceURL.path.hasPrefix(allowedRoot),
+                  sourceURL.path.hasSuffix(".jsonl.codex-app-server.json"),
+                  fileManager.fileExists(atPath: sourceURL.path),
+                  let data = fileManager.contents(atPath: sourceURL.path),
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  root["sessionFile"] is String else {
+                return StepResult(state: .fail, message: "Refused to archive an invalid or unsafe Codex binding sidecar: \(rawPath)")
+            }
+
+            var destinationPath = sourceURL.path + ".migrated"
+            var suffix = 2
+            while fileManager.fileExists(atPath: destinationPath) {
+                destinationPath = sourceURL.path + ".migrated.\(suffix)"
+                suffix += 1
+            }
+
+            do {
+                try fileManager.moveItem(atPath: sourceURL.path, toPath: destinationPath)
+                archivedNames.append(sourceURL.lastPathComponent)
+            } catch {
+                return StepResult(state: .fail, message: "Could not archive stale Codex binding metadata: \(error.localizedDescription)")
+            }
+        }
+
+        return StepResult(state: .ok, message: "Archived \(archivedNames.count) stale Codex binding sidecar(s)")
+    }
+
+    private func updateDriftedOfficialPlugins() -> StepResult {
+        let (_, statusOutput) = shell("openclaw gateway status --json --timeout 5000 2>&1")
+        let updateSpecs = Self.officialPluginUpdateSpecs(from: statusOutput)
+        guard !updateSpecs.isEmpty else {
+            return StepResult(state: .skip, message: "Official OpenClaw plugins already match the runtime")
+        }
+
+        for spec in updateSpecs {
+            let escapedSpec = spec.replacingOccurrences(of: "'", with: "'\\''")
+            let (code, output) = shell("openclaw --no-color plugins update '\(escapedSpec)' 2>&1")
+            if code != 0 {
+                return StepResult(state: .fail, message: "Failed to update \(spec):\n\(output)")
+            }
+        }
+
+        return StepResult(state: .ok, message: "Updated \(updateSpecs.count) official OpenClaw plugin(s)")
+    }
+
+    func finalizeOpenClawRuntime() -> StepResult {
+        guard hasCommand("openclaw") else {
+            return StepResult(state: .fail, message: "OpenClaw CLI is not installed")
+        }
+
+        var doctor = runDoctorRepairDetailed()
+        if doctor.result.state == .fail { return doctor.result }
+
+        var registry = refreshOpenClawPluginRegistry()
+        if registry.result.state == .fail { return registry.result }
+
+        let legacyIndex = archiveLegacyPluginInstallIndexIfSafe(registryOutput: registry.output)
+        if legacyIndex.state == .fail { return legacyIndex }
+
+        if legacyIndex.state == .ok {
+            doctor = runDoctorRepairDetailed()
+            if doctor.result.state == .fail { return doctor.result }
+            registry = refreshOpenClawPluginRegistry()
+            if registry.result.state == .fail { return registry.result }
+        }
+
+        let staleBindings = archiveStaleCodexBindingSidecars(from: doctor.output)
+        if staleBindings.state == .fail { return staleBindings }
+        if staleBindings.state == .ok {
+            doctor = runDoctorRepairDetailed()
+            if doctor.result.state == .fail { return doctor.result }
+            registry = refreshOpenClawPluginRegistry()
+            if registry.result.state == .fail { return registry.result }
+        }
+
+        let pluginUpdate = updateDriftedOfficialPlugins()
+        if pluginUpdate.state == .fail { return pluginUpdate }
+
+        if pluginUpdate.state == .ok {
+            registry = refreshOpenClawPluginRegistry()
+            if registry.result.state == .fail { return registry.result }
+        }
+
+        let service = installGatewayService()
+        if service.state == .fail { return service }
+
+        let restart = restartGateway()
+        if restart.state == .fail { return restart }
+
+        return verifyOpenClawSetup()
     }
 
     /// Restart gateway
@@ -576,8 +880,27 @@ final class InstallerEngine: @unchecked Sendable {
 
     /// Get gateway status
     func getGatewayStatus() -> (isRunning: Bool, message: String) {
-        let (code, out) = shell("openclaw gateway status --no-color 2>&1 | head -5")
-        return (code == 0, out)
+        let (code, output) = shell("openclaw gateway status --json --require-rpc --timeout 5000 2>&1")
+        return (code == 0 && Self.gatewayIsHealthy(statusOutput: output), gatewayStatusSummary(from: output))
+    }
+
+    private func gatewayStatusSummary(from output: String) -> String {
+        guard let root = Self.firstJSONObject(in: output) else {
+            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "Gateway status unavailable" : String(trimmed.prefix(800))
+        }
+
+        let runtimeStatus = (((root["service"] as? [String: Any])?["runtime"] as? [String: Any])?["status"] as? String) ?? "unknown"
+        let rpc = root["rpc"] as? [String: Any]
+        if rpc?["ok"] as? Bool == true {
+            return "Gateway running and RPC healthy"
+        }
+
+        if let error = rpc?["error"] as? String, !error.isEmpty {
+            return "Gateway \(runtimeStatus); RPC failed: \(String(error.prefix(600)))"
+        }
+
+        return "Gateway \(runtimeStatus); RPC health check failed"
     }
 
     /// Get current model
@@ -832,13 +1155,21 @@ final class InstallerEngine: @unchecked Sendable {
             return StepResult(state: .fail, message: "OpenClaw CLI check failed")
         }
 
-        let (sCode, _) = shell("openclaw status --no-color")
-        if sCode != 0 {
-            return StepResult(state: .fail, message: "Gateway status check failed")
+        var lastOutput = ""
+        for attempt in 1...8 {
+            let (statusCode, statusOutput) = shell("openclaw gateway status --json --require-rpc --timeout 5000 2>&1")
+            lastOutput = statusOutput
+            if statusCode == 0 && Self.gatewayIsHealthy(statusOutput: statusOutput) {
+                let version = vOut.components(separatedBy: "\n").first ?? vOut
+                return StepResult(state: .ok, message: "OpenClaw ready (\(version)); gateway RPC healthy")
+            }
+
+            if attempt < 8 {
+                Thread.sleep(forTimeInterval: 1)
+            }
         }
 
-        let version = vOut.components(separatedBy: "\n").first ?? vOut
-        return StepResult(state: .ok, message: "OpenClaw ready (\(version))")
+        return StepResult(state: .fail, message: gatewayStatusSummary(from: lastOutput))
     }
 
     func repairOpenClawSetupQuiet() -> StepResult {
@@ -859,11 +1190,7 @@ final class InstallerEngine: @unchecked Sendable {
             return results
         }
 
-        let (dCode, dOut) = shell("perl -e 'alarm 120; exec @ARGV' openclaw doctor --fix --yes --non-interactive 2>&1")
-        results.append(StepResult(state: dCode == 0 ? .ok : .fail, message: dOut.isEmpty ? "Doctor completed" : dOut))
-
-        let (gCode, gOut) = shell("openclaw gateway status --no-color")
-        results.append(StepResult(state: gCode == 0 ? .ok : .fail, message: gOut.isEmpty ? "Gateway checked" : gOut))
+        results.append(finalizeOpenClawRuntime())
 
         return results
     }

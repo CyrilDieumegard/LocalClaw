@@ -2393,9 +2393,7 @@ final class InstallerViewModel: ObservableObject {
 
     nonisolated static func oauthUsageSnapshot(from output: String, providerHint: String = "openai-codex") -> OAuthUsageSnapshot? {
         let clean = stripANSI(output)
-        guard let start = clean.firstIndex(of: "{"),
-              let data = String(clean[start...]).data(using: .utf8),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        guard let root = InstallerEngine.firstJSONObject(in: clean) else { return nil }
 
         let usageRoot = root["usage"] as? [String: Any] ?? root
         guard let providers = usageRoot["providers"] as? [[String: Any]] else { return nil }
@@ -2827,7 +2825,7 @@ final class InstallerViewModel: ObservableObject {
         }
         Task.detached {
             let (code, output) = InstallerEngine().shell("openclaw models list --json 2>/dev/null")
-            guard code == 0, let data = output.data(using: .utf8) else {
+            guard code == 0, let data = InstallerEngine.firstJSONData(in: output) else {
                 await MainActor.run {
                     self.oauthModelsLive = []
                     self.append("OAuth model list unavailable")
@@ -3064,7 +3062,7 @@ final class InstallerViewModel: ObservableObject {
 
             await MainActor.run {
                 self.skillsIsLoading = false
-                guard code == 0, let data = output.data(using: .utf8) else {
+                guard code == 0, let data = InstallerEngine.firstJSONData(in: output) else {
                     self.skillsStatus = "Unable to load skills"
                     self.skillsLog = output.trimmingCharacters(in: .whitespacesAndNewlines)
                     return
@@ -3098,7 +3096,7 @@ final class InstallerViewModel: ObservableObject {
             let (code, output) = engine.shell("openclaw --no-color skills search --json --limit 12 \(safeQuery) 2>&1")
 
             await MainActor.run {
-                guard code == 0, let data = output.data(using: .utf8) else {
+                guard code == 0, let data = InstallerEngine.firstJSONData(in: output) else {
                     self.skillsStatus = "ClawHub search failed"
                     self.skillsLog = output.trimmingCharacters(in: .whitespacesAndNewlines)
                     return
@@ -3428,11 +3426,16 @@ final class InstallerViewModel: ObservableObject {
                 _ = await self.runStep(name: "Config") { engine.writeOpenClawConfig(gatewayToken: token) }
                 // Bug 6: Write model config
                 _ = await self.runStep(name: "Model Config") { engine.writeModelToConfig(modelIdentifier: modelId) }
-                // Install gateway service and create agent
-                _ = await self.runStep(name: "Gateway Service") { engine.installGatewayService() }
                 _ = await self.runStep(name: "Default Agent") { engine.createDefaultAgent() }
-                _ = await self.runStep(name: "Start Gateway") { engine.startGateway() }
-                _ = await self.runStep(name: "OpenClaw Check") { engine.verifyOpenClawSetup() }
+                let runtime = await self.runStep(name: "OpenClaw Check") { engine.finalizeOpenClawRuntime() }
+                if runtime.state == .fail {
+                    await MainActor.run {
+                        self.isRunning = false
+                        self.screen = .install
+                        self.append("Setup stopped because the OpenClaw gateway did not become healthy.")
+                    }
+                    return
+                }
             } else {
                 await MainActor.run {
                     self.statusOpenClaw = "SKIP"
@@ -3823,7 +3826,27 @@ final class InstallerViewModel: ObservableObject {
             _ = await self.runStep(name: "Homebrew") { engine.updateHomebrew() }
             _ = await self.runStep(name: "LM Studio") { engine.upgradeLMStudioIfInstalled() }
             _ = await self.runStep(name: "Node") { engine.upgradeNodeIfInstalled() }
-            _ = await self.runStep(name: "OpenClaw") { engine.updateOpenClawIfInstalled() }
+            let update = await self.runStep(name: "OpenClaw") { engine.updateOpenClawIfInstalled() }
+            if update.state == .fail {
+                await MainActor.run {
+                    self.isRunning = false
+                    self.refreshVersions()
+                    self.append("Update stopped because OpenClaw could not be updated.")
+                }
+                return
+            }
+
+            if engine.hasCommand("openclaw") {
+                let runtime = await self.runStep(name: "OpenClaw Check") { engine.finalizeOpenClawRuntime() }
+                if runtime.state == .fail {
+                    await MainActor.run {
+                        self.isRunning = false
+                        self.refreshVersions()
+                        self.append("Update stopped because the OpenClaw gateway did not become healthy.")
+                    }
+                    return
+                }
+            }
             await MainActor.run {
                 self.isRunning = false
                 self.refreshVersions()
@@ -3838,14 +3861,21 @@ final class InstallerViewModel: ObservableObject {
         append("Updating OpenClaw runtime")
         let engine = self.engine
         Task.detached {
-            _ = await self.runStep(name: "OpenClaw") { engine.updateOpenClawIfInstalled() }
-            _ = await self.runStep(name: "Gateway Service") { engine.installGatewayService() }
-            _ = await self.runStep(name: "Start Gateway") { engine.startGateway() }
-            _ = await self.runStep(name: "OpenClaw Check") { engine.verifyOpenClawSetup() }
+            let update = await self.runStep(name: "OpenClaw") { engine.updateOpenClawIfInstalled() }
+            if update.state == .fail {
+                await MainActor.run {
+                    self.isRunning = false
+                    self.refreshVersions()
+                    self.append("OpenClaw runtime update failed.")
+                }
+                return
+            }
+
+            let runtime = await self.runStep(name: "OpenClaw Check") { engine.finalizeOpenClawRuntime() }
             await MainActor.run {
                 self.isRunning = false
                 self.refreshVersions()
-                self.append("OpenClaw runtime update finished")
+                self.append(runtime.state == .ok ? "OpenClaw runtime update finished" : "OpenClaw runtime update failed health verification")
             }
         }
     }
@@ -4232,8 +4262,7 @@ final class InstallerViewModel: ObservableObject {
                 self.cronJobsIsLoading = false
 
                 guard result.0 == 0,
-                      let data = result.1.data(using: .utf8),
-                      let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                      let root = InstallerEngine.firstJSONObject(in: result.1) else {
                     self.cronJobsStatus = "Could not load cron jobs"
                     self.cronJobLogs += "\nFailed to load cron jobs: \(result.1.trimmingCharacters(in: .whitespacesAndNewlines))"
                     return
@@ -4833,8 +4862,7 @@ final class InstallerViewModel: ObservableObject {
                 self.agentsIsLoading = false
 
                 guard result.0 == 0,
-                      let data = result.1.data(using: .utf8),
-                      let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                      let rows = InstallerEngine.firstJSONArray(in: result.1) else {
                     self.agentsStatus = "Could not load agents"
                     self.agentLogs += "\nFailed to load agents: \(result.1.trimmingCharacters(in: .whitespacesAndNewlines))"
                     return
@@ -4977,8 +5005,7 @@ final class InstallerViewModel: ObservableObject {
 
                 let listRoot: [String: Any] = {
                     guard listResult.0 == 0,
-                          let listData = listResult.1.data(using: .utf8),
-                          let root = try? JSONSerialization.jsonObject(with: listData) as? [String: Any] else {
+                          let root = InstallerEngine.firstJSONObject(in: listResult.1) else {
                         return [:]
                     }
                     return root
@@ -4987,8 +5014,7 @@ final class InstallerViewModel: ObservableObject {
 
                 let statusRoot: [String: Any] = {
                     guard statusResult.0 == 0,
-                          let data = statusResult.1.data(using: .utf8),
-                          let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                          let root = InstallerEngine.firstJSONObject(in: statusResult.1) else {
                         return [:]
                     }
                     return root
@@ -9805,25 +9831,102 @@ final class InstallerViewModel: ObservableObject {
         lines.append("")
         lines.append("echo \"\"")
         lines.append("echo \"[7/7] Installing Gateway service and starting...\"")
-        lines.append("openclaw gateway stop 2>/dev/null || true")
-        lines.append("sleep 1")
-        lines.append("openclaw gateway uninstall 2>/dev/null || true")
-        lines.append("sleep 1")
-        lines.append("openclaw gateway install 2>&1")
-        lines.append("sleep 2")
-        lines.append("openclaw gateway start 2>&1 &")
-        lines.append("sleep 6")
+        lines.append("DOCTOR_LOG=/tmp/localclaw_doctor.log")
+        lines.append("if ! openclaw --no-color doctor --fix --yes --non-interactive > \"$DOCTOR_LOG\" 2>&1; then")
+        lines.append("    cat \"$DOCTOR_LOG\"")
+        lines.append("    echo \"  ✗ OpenClaw doctor repair failed\"")
+        lines.append("    echo \"service:FAIL\" >> /tmp/localclaw_status")
+        lines.append("    touch /tmp/localclaw_install_done")
+        lines.append("    exit 1")
+        lines.append("fi")
+        lines.append("cat \"$DOCTOR_LOG\"")
+        lines.append("REGISTRY_LOG=/tmp/localclaw_plugin_registry.json")
+        lines.append("if ! openclaw --no-color plugins registry --refresh --json > \"$REGISTRY_LOG\" 2>&1; then")
+        lines.append("    echo \"  ✗ OpenClaw plugin registry refresh failed\"")
+        lines.append("    echo \"service:FAIL\" >> /tmp/localclaw_status")
+        lines.append("    touch /tmp/localclaw_install_done")
+        lines.append("    exit 1")
+        lines.append("fi")
+        lines.append("if ! node <<'NODE'")
+        lines.append("const fs = require(\"fs\");")
+        lines.append("const path = require(\"path\");")
+        lines.append("const legacyPath = path.join(process.env.HOME, \".openclaw/plugins/installs.json\");")
+        lines.append("const output = fs.readFileSync(\"/tmp/localclaw_plugin_registry.json\", \"utf8\");")
+        lines.append("const jsonStart = output.indexOf(\"{\");")
+        lines.append("if (jsonStart < 0) throw new Error(\"Plugin registry JSON was not found\");")
+        lines.append("const registry = JSON.parse(output.slice(jsonStart));")
+        lines.append("function archive(sourcePath) {")
+        lines.append("  let migratedPath = `${sourcePath}.migrated`;")
+        lines.append("  let suffix = 2;")
+        lines.append("  while (fs.existsSync(migratedPath)) migratedPath = `${sourcePath}.migrated.${suffix++}`;")
+        lines.append("  fs.renameSync(sourcePath, migratedPath);")
+        lines.append("  return migratedPath;")
+        lines.append("}")
+        lines.append("if (fs.existsSync(legacyPath)) {")
+        lines.append("  const legacy = JSON.parse(fs.readFileSync(legacyPath, \"utf8\"));")
+        lines.append("  const oldRecords = legacy.installRecords || {};")
+        lines.append("  const currentRecords = (registry.persisted || registry).installRecords || {};")
+        lines.append("  const recordIds = Object.keys(oldRecords);")
+        lines.append("  for (const id of recordIds) {")
+        lines.append("    const oldRecord = oldRecords[id];")
+        lines.append("    const currentRecord = currentRecords[id];")
+        lines.append("    if (!currentRecord || oldRecord.source !== currentRecord.source) throw new Error(`Plugin metadata is not safely reconciled for ${id}`);")
+        lines.append("    if (oldRecord.source === \"npm\" && oldRecord.resolvedName !== currentRecord.resolvedName) throw new Error(`Plugin package identity changed for ${id}`);")
+        lines.append("  }")
+        lines.append("  const migratedPath = archive(legacyPath);")
+        lines.append("  console.log(`  ✓ Archived reconciled legacy plugin metadata: ${path.basename(migratedPath)}`);")
+        lines.append("}")
+        lines.append("const doctorOutput = fs.readFileSync(\"/tmp/localclaw_doctor.log\", \"utf8\");")
+        lines.append("const warning = /Left Codex binding sidecar in place because its session is owned by agent harness [^:\\n]+:\\s+([^\\n]+\\.jsonl\\.codex-app-server\\.json)/g;")
+        lines.append("const allowedRoot = path.resolve(process.env.HOME, \".openclaw/agents\") + path.sep;")
+        lines.append("for (const match of doctorOutput.matchAll(warning)) {")
+        lines.append("  const sourcePath = path.resolve(match[1].trim());")
+        lines.append("  if (!sourcePath.startsWith(allowedRoot) || !sourcePath.endsWith(\".jsonl.codex-app-server.json\")) throw new Error(`Unsafe Codex binding sidecar path: ${sourcePath}`);")
+        lines.append("  const sidecar = JSON.parse(fs.readFileSync(sourcePath, \"utf8\"));")
+        lines.append("  if (typeof sidecar.sessionFile !== \"string\") throw new Error(`Invalid Codex binding sidecar: ${sourcePath}`);")
+        lines.append("  archive(sourcePath);")
+        lines.append("  console.log(`  ✓ Archived stale Codex binding metadata: ${path.basename(sourcePath)}`);")
+        lines.append("}")
+        lines.append("NODE")
+        lines.append("then")
+        lines.append("    echo \"  ✗ Legacy plugin metadata could not be reconciled safely\"")
+        lines.append("    echo \"service:FAIL\" >> /tmp/localclaw_status")
+        lines.append("    touch /tmp/localclaw_install_done")
+        lines.append("    exit 1")
+        lines.append("fi")
+        lines.append("if ! openclaw --no-color doctor --fix --yes --non-interactive 2>&1; then")
+        lines.append("    echo \"  ✗ OpenClaw post-migration repair failed\"")
+        lines.append("    echo \"service:FAIL\" >> /tmp/localclaw_status")
+        lines.append("    touch /tmp/localclaw_install_done")
+        lines.append("    exit 1")
+        lines.append("fi")
+        lines.append("if ! openclaw gateway install --force 2>&1 || ! openclaw gateway restart 2>&1; then")
+        lines.append("    echo \"  ✗ Gateway service installation failed\"")
+        lines.append("    echo \"service:FAIL\" >> /tmp/localclaw_status")
+        lines.append("    touch /tmp/localclaw_install_done")
+        lines.append("    exit 1")
+        lines.append("fi")
         lines.append("")
         lines.append("echo \"\"")
         lines.append("echo \"→ Checking Gateway status...\"")
-        lines.append("STATUS=$(openclaw gateway status 2>&1)")
-        lines.append("echo \"  $STATUS\"")
-        lines.append("if echo \"$STATUS\" | grep -q -E \"(running|Online)\"; then")
+        lines.append("GATEWAY_READY=0")
+        lines.append("for attempt in 1 2 3 4 5 6 7 8; do")
+        lines.append("    if openclaw gateway status --json --require-rpc --timeout 5000 > /tmp/localclaw_gateway_status.json 2>&1; then")
+        lines.append("        GATEWAY_READY=1")
+        lines.append("        break")
+        lines.append("    fi")
+        lines.append("    sleep 1")
+        lines.append("done")
+        lines.append("if [ \"$GATEWAY_READY\" = \"1\" ]; then")
         lines.append("    echo \"  ✓ Gateway is running\"")
         lines.append("    echo \"  ✓ Dashboard: http://localhost:18789\"")
         lines.append("    echo \"service:OK\" >> /tmp/localclaw_status")
         lines.append("else")
         lines.append("    echo \"  ✗ Gateway failed to start\"")
+        lines.append("    cat /tmp/localclaw_gateway_status.json")
+        lines.append("    echo \"service:FAIL\" >> /tmp/localclaw_status")
+        lines.append("    touch /tmp/localclaw_install_done")
+        lines.append("    exit 1")
         lines.append("fi")
         lines.append("echo \"done\" >> /tmp/localclaw_status")
         lines.append("touch /tmp/localclaw_install_done")
@@ -9858,6 +9961,7 @@ final class InstallerViewModel: ObservableObject {
         installPollTask = Task { @MainActor [weak self] in
             guard let self else { return }
             var lastStatusCount = 0
+            var installationFailed = false
 
             while !Task.isCancelled {
                 if let statusContent = try? String(contentsOfFile: "/tmp/localclaw_status", encoding: .utf8) {
@@ -9871,6 +9975,7 @@ final class InstallerViewModel: ObservableObject {
                             if parts.count == 2 {
                                 let component = parts[0]
                                 let status = parts[1]
+                                if status == "FAIL" { installationFailed = true }
                                 self.append("[\(component)] \(status)")
 
                                 if component == "homebrew" { self.statusHomebrew = status }
@@ -9897,8 +10002,8 @@ final class InstallerViewModel: ObservableObject {
 
                     self.isRunning = false
                     self.refreshVersions()
-                    self.screen = .ready
-                    self.append("Installation completed!")
+                    self.screen = installationFailed ? .install : .ready
+                    self.append(installationFailed ? "Installation stopped before the gateway became healthy." : "Installation completed!")
                     break
                 }
 
@@ -9984,24 +10089,19 @@ final class InstallerViewModel: ObservableObject {
             // Bug 6: Write API key if provided
             let keyResult = engine.writeApiKeyToConfig(provider: authProvider, apiKey: apiKey == "kimi-free" ? "" : apiKey)
 
-            // Install gateway service and create agent
-            let gatewayServiceResult = engine.installGatewayService()
             let agentResult = engine.createDefaultAgent()
-            let startGatewayResult = engine.startGateway()
-
-            let repair = engine.repairOpenClawSetupQuiet()
-            let verify = engine.verifyOpenClawSetup()
+            let runtime = engine.finalizeOpenClawRuntime()
 
             await MainActor.run {
                 self.hasExistingOpenClawSetup = existing || cli.state == .ok
                 self.ocStepNode = node.state.rawValue
                 self.ocStepCli = cli.state.rawValue
-                self.ocStepRepair = repair.state.rawValue
-                self.ocStepVerify = verify.state.rawValue
+                self.ocStepRepair = runtime.state.rawValue
+                self.ocStepVerify = runtime.state.rawValue
 
                 self.statusNode = node.state.rawValue
                 self.statusOpenClaw = cli.state.rawValue
-                self.statusOpenClawCheck = verify.state.rawValue
+                self.statusOpenClawCheck = runtime.state.rawValue
 
                 self.append("[\(clt.state.rawValue)] Preflight - Xcode CLI Tools")
                 self.append("  \(clt.message)")
@@ -10021,19 +10121,13 @@ final class InstallerViewModel: ObservableObject {
                     self.append("[\(keyResult.state.rawValue)] Step 2d - Write API key")
                     self.append("  \(keyResult.message)")
                 }
-                self.append("[\(gatewayServiceResult.state.rawValue)] Step 2e - Install gateway service")
-                self.append("  \(gatewayServiceResult.message)")
                 self.append("[\(agentResult.state.rawValue)] Step 2f - Create default agent")
                 self.append("  \(agentResult.message)")
-                self.append("[\(startGatewayResult.state.rawValue)] Step 2g - Start gateway")
-                self.append("  \(startGatewayResult.message)")
-                self.append("[\(repair.state.rawValue)] Step 3 - Apply config changes")
-                self.append("  \(repair.message)")
-                self.append("[\(verify.state.rawValue)] Step 4 - Verify gateway")
-                self.append("  \(verify.message)")
+                self.append("[\(runtime.state.rawValue)] Step 3 - Repair, restart, and verify gateway")
+                self.append("  \(runtime.message)")
 
                 self.isRunning = false
-                self.screen = .ready
+                self.screen = runtime.state == .ok ? .ready : .install
             }
         }
     }

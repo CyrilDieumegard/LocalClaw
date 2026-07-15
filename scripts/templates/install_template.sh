@@ -98,25 +98,124 @@ echo "config:OK" >> /tmp/localclaw_status
 
 echo ""
 echo "[7/7] Installing Gateway service and starting..."
-openclaw gateway stop 2>/dev/null || true
-sleep 1
-openclaw gateway uninstall 2>/dev/null || true
-sleep 1
-openclaw gateway install 2>&1
-sleep 2
-openclaw gateway start 2>&1 &
-sleep 6
+DOCTOR_LOG=/tmp/localclaw_doctor.log
+if ! openclaw --no-color doctor --fix --yes --non-interactive > "$DOCTOR_LOG" 2>&1; then
+    cat "$DOCTOR_LOG"
+    echo "  ✗ OpenClaw doctor repair failed"
+    echo "service:FAIL" >> /tmp/localclaw_status
+    touch /tmp/localclaw_install_done
+    exit 1
+fi
+cat "$DOCTOR_LOG"
+
+REGISTRY_LOG=/tmp/localclaw_plugin_registry.json
+if ! openclaw --no-color plugins registry --refresh --json > "$REGISTRY_LOG" 2>&1; then
+    echo "  ✗ OpenClaw plugin registry refresh failed"
+    echo "service:FAIL" >> /tmp/localclaw_status
+    touch /tmp/localclaw_install_done
+    exit 1
+fi
+
+if ! node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+const legacyPath = path.join(process.env.HOME, ".openclaw/plugins/installs.json");
+const output = fs.readFileSync("/tmp/localclaw_plugin_registry.json", "utf8");
+const starts = [...output.matchAll(/[\[{]/g)].map(match => match.index);
+let registry = null;
+for (const start of starts) {
+  try {
+    registry = JSON.parse(output.slice(start));
+    break;
+  } catch {}
+}
+if (!registry) throw new Error("Plugin registry JSON was not found");
+
+function archive(sourcePath) {
+  let migratedPath = `${sourcePath}.migrated`;
+  let suffix = 2;
+  while (fs.existsSync(migratedPath)) migratedPath = `${sourcePath}.migrated.${suffix++}`;
+  fs.renameSync(sourcePath, migratedPath);
+  return migratedPath;
+}
+
+if (fs.existsSync(legacyPath)) {
+  const legacy = JSON.parse(fs.readFileSync(legacyPath, "utf8"));
+  const oldRecords = legacy.installRecords || {};
+  const currentRecords = (registry.persisted || registry).installRecords || {};
+  const recordIds = Object.keys(oldRecords);
+
+  for (const id of recordIds) {
+    const oldRecord = oldRecords[id];
+    const currentRecord = currentRecords[id];
+    if (!currentRecord || oldRecord.source !== currentRecord.source) {
+      throw new Error(`Plugin metadata is not safely reconciled for ${id}`);
+    }
+    if (oldRecord.source === "npm" && oldRecord.resolvedName !== currentRecord.resolvedName) {
+      throw new Error(`Plugin package identity changed for ${id}`);
+    }
+  }
+
+  const migratedPath = archive(legacyPath);
+  console.log(`  ✓ Archived reconciled legacy plugin metadata: ${path.basename(migratedPath)}`);
+}
+
+const doctorOutput = fs.readFileSync("/tmp/localclaw_doctor.log", "utf8");
+const warning = /Left Codex binding sidecar in place because its session is owned by agent harness [^:\n]+:\s+([^\n]+\.jsonl\.codex-app-server\.json)/g;
+const allowedRoot = path.resolve(process.env.HOME, ".openclaw/agents") + path.sep;
+for (const match of doctorOutput.matchAll(warning)) {
+  const sourcePath = path.resolve(match[1].trim());
+  if (!sourcePath.startsWith(allowedRoot) || !sourcePath.endsWith(".jsonl.codex-app-server.json")) {
+    throw new Error(`Unsafe Codex binding sidecar path: ${sourcePath}`);
+  }
+  const sidecar = JSON.parse(fs.readFileSync(sourcePath, "utf8"));
+  if (typeof sidecar.sessionFile !== "string") throw new Error(`Invalid Codex binding sidecar: ${sourcePath}`);
+  archive(sourcePath);
+  console.log(`  ✓ Archived stale Codex binding metadata: ${path.basename(sourcePath)}`);
+}
+NODE
+then
+    echo "  ✗ Legacy plugin metadata could not be reconciled safely"
+    echo "service:FAIL" >> /tmp/localclaw_status
+    touch /tmp/localclaw_install_done
+    exit 1
+fi
+
+if ! openclaw --no-color doctor --fix --yes --non-interactive 2>&1; then
+    echo "  ✗ OpenClaw post-migration repair failed"
+    echo "service:FAIL" >> /tmp/localclaw_status
+    touch /tmp/localclaw_install_done
+    exit 1
+fi
+
+if ! openclaw gateway install --force 2>&1 || ! openclaw gateway restart 2>&1; then
+    echo "  ✗ Gateway service installation failed"
+    echo "service:FAIL" >> /tmp/localclaw_status
+    touch /tmp/localclaw_install_done
+    exit 1
+fi
 
 echo ""
 echo "→ Checking Gateway status..."
-STATUS=$(openclaw gateway status 2>&1)
-echo "  $STATUS"
-if echo "$STATUS" | grep -q -E "(running|Online)"; then
+GATEWAY_READY=0
+for attempt in 1 2 3 4 5 6 7 8; do
+    if openclaw gateway status --json --require-rpc --timeout 5000 > /tmp/localclaw_gateway_status.json 2>&1; then
+        GATEWAY_READY=1
+        break
+    fi
+    sleep 1
+done
+
+if [ "$GATEWAY_READY" = "1" ]; then
     echo "  ✓ Gateway is running"
     echo "  ✓ Dashboard: http://localhost:18789"
     echo "service:OK" >> /tmp/localclaw_status
 else
     echo "  ✗ Gateway failed to start"
+    cat /tmp/localclaw_gateway_status.json
+    echo "service:FAIL" >> /tmp/localclaw_status
+    touch /tmp/localclaw_install_done
+    exit 1
 fi
 
 echo "done" >> /tmp/localclaw_status

@@ -60,6 +60,105 @@ struct InstallerEngineTests {
         #expect(InstallerEngine.shellPathPrefix.contains("$HOME/.local/bin"))
     }
 
+    @Test func jsonExtractorSkipsOpenClawWarningsBeforeObjects() throws {
+        let output = """
+        [state-migrations] Legacy state migration warnings:
+        - Left plugin metadata in place
+        {"rpc":{"ok":true},"health":{"healthy":true}}
+        """
+
+        let root = try #require(InstallerEngine.firstJSONObject(in: output))
+        let rpc = try #require(root["rpc"] as? [String: Any])
+
+        #expect(rpc["ok"] as? Bool == true)
+    }
+
+    @Test func jsonExtractorSupportsWarningPrefixedArrays() throws {
+        let output = """
+        [state-migrations] warning
+        [{"id":"main"},{"id":"localagent"}]
+        """
+
+        let rows = try #require(InstallerEngine.firstJSONArray(in: output))
+
+        #expect(rows.count == 2)
+        #expect(rows.first?["id"] as? String == "main")
+    }
+
+    @Test func gatewayHealthRequiresRunningRuntimeAndRPC() {
+        let healthy = """
+        {"service":{"runtime":{"status":"running"}},"rpc":{"ok":true},"health":{"healthy":true}}
+        """
+        let stopped = """
+        {"service":{"runtime":{"status":"stopped"}},"rpc":{"ok":false},"health":{"healthy":false}}
+        """
+
+        #expect(InstallerEngine.gatewayIsHealthy(statusOutput: healthy))
+        #expect(!InstallerEngine.gatewayIsHealthy(statusOutput: stopped))
+    }
+
+    @Test func pluginDriftOnlyUpdatesOfficialOpenClawPackages() {
+        let output = """
+        {
+          "pluginVersionDrift": {
+            "drifts": [
+              {"source":"npm","packageName":"@openclaw/codex"},
+              {"source":"npm","packageName":"third-party/plugin"},
+              {"source":"path","packageName":"@openclaw/whatsapp"}
+            ]
+          }
+        }
+        """
+
+        #expect(InstallerEngine.officialPluginUpdateSpecs(from: output) == ["@openclaw/codex@latest"])
+    }
+
+    @Test func legacyPluginIndexMustBeCoveredBeforeArchiving() throws {
+        let legacy = """
+        {
+          "installRecords": {
+            "codex": {"source":"npm","resolvedName":"@openclaw/codex","version":"2026.5.12"},
+            "whatsapp": {"source":"path","sourcePath":"/old/whatsapp"}
+          }
+        }
+        """.data(using: .utf8)!
+        let coveredRegistry = """
+        [state-migrations] warning
+        {
+          "persisted": {
+            "installRecords": {
+              "codex": {"source":"npm","resolvedName":"@openclaw/codex","version":"2026.7.1"},
+              "whatsapp": {"source":"path","sourcePath":"/new/whatsapp"}
+            }
+          }
+        }
+        """
+        let incompleteRegistry = """
+        {"persisted":{"installRecords":{"codex":{"source":"npm","resolvedName":"@openclaw/codex"}}}}
+        """
+
+        #expect(InstallerEngine.legacyInstallRecordsAreCovered(legacyData: legacy, registryOutput: coveredRegistry))
+        #expect(!InstallerEngine.legacyInstallRecordsAreCovered(legacyData: legacy, registryOutput: incompleteRegistry))
+    }
+
+    @Test func emptyLegacyPluginIndexIsSafeToArchive() {
+        let legacy = #"{"installRecords":{}}"#.data(using: .utf8)!
+        let registry = #"{"persisted":{"installRecords":{}}}"#
+
+        #expect(InstallerEngine.legacyInstallRecordsAreCovered(legacyData: legacy, registryOutput: registry))
+    }
+
+    @Test func staleCodexSidecarsComeOnlyFromExplicitForeignHarnessWarnings() {
+        let output = """
+        - Left Codex binding sidecar in place because its session is owned by agent harness pi: /Users/test/.openclaw/agents/main/sessions/chat.jsonl.codex-app-server.json
+        - Left Codex binding sidecar in place because its binding is invalid: /Users/test/.openclaw/agents/main/sessions/unsafe.jsonl.codex-app-server.json
+        """
+
+        #expect(InstallerEngine.staleCodexBindingSidecarPaths(in: output) == [
+            "/Users/test/.openclaw/agents/main/sessions/chat.jsonl.codex-app-server.json"
+        ])
+    }
+
     @Test func nodeVersionSupportMatchesOpenClawRequirement() {
         #expect(!InstallerEngine.isNodeVersionSupported("v22.18.0"))
         #expect(InstallerEngine.isNodeVersionSupported("v22.19.0"))
