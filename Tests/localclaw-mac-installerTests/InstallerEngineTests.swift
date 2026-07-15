@@ -86,15 +86,19 @@ struct InstallerEngineTests {
     }
 
     @Test func gatewayHealthRequiresRunningRuntimeAndRPC() {
-        let healthy = """
-        {"service":{"runtime":{"status":"running"}},"rpc":{"ok":true},"health":{"healthy":true}}
+        let healthyWithoutOptionalHealthBlock = """
+        {"service":{"runtime":{"status":"running"}},"rpc":{"ok":true}}
         """
         let stopped = """
         {"service":{"runtime":{"status":"stopped"}},"rpc":{"ok":false},"health":{"healthy":false}}
         """
+        let explicitlyUnhealthy = """
+        {"service":{"runtime":{"status":"running"}},"rpc":{"ok":true},"health":{"healthy":false}}
+        """
 
-        #expect(InstallerEngine.gatewayIsHealthy(statusOutput: healthy))
+        #expect(InstallerEngine.gatewayIsHealthy(statusOutput: healthyWithoutOptionalHealthBlock))
         #expect(!InstallerEngine.gatewayIsHealthy(statusOutput: stopped))
+        #expect(!InstallerEngine.gatewayIsHealthy(statusOutput: explicitlyUnhealthy))
     }
 
     @Test func pluginDriftOnlyUpdatesOfficialOpenClawPackages() {

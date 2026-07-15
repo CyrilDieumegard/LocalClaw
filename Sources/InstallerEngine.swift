@@ -130,15 +130,16 @@ final class InstallerEngine: @unchecked Sendable {
         guard let root = firstJSONObject(in: statusOutput),
               let rpc = root["rpc"] as? [String: Any],
               rpc["ok"] as? Bool == true,
-              let health = root["health"] as? [String: Any],
-              health["healthy"] as? Bool == true else {
+              let service = root["service"] as? [String: Any],
+              let runtime = service["runtime"] as? [String: Any],
+              let status = runtime["status"] as? String,
+              status.lowercased() == "running" else {
             return false
         }
 
-        if let service = root["service"] as? [String: Any],
-           let runtime = service["runtime"] as? [String: Any],
-           let status = runtime["status"] as? String {
-            return status.lowercased() == "running"
+        if let health = root["health"] as? [String: Any],
+           health["healthy"] as? Bool == false {
+            return false
         }
 
         return true
