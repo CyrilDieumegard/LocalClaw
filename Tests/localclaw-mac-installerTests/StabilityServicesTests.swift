@@ -123,4 +123,16 @@ struct StabilityServicesTests {
         #expect(decoded.durationLabel == "4.2s")
         #expect(decoded.destination == "Telegram")
     }
+
+    @Test func chatRecoveryClassifiesCommonOpenClawFailures() {
+        let missingModule = "GatewayClientRequestError: Cannot find module '/opt/homebrew/lib/node_modules/openclaw/dist/exec-defaults-old.js'; code=ERR_MODULE_NOT_FOUND"
+        #expect(ChatRecoveryPlan.classify(error: missingModule).kind == .runtimeFiles)
+        #expect(ChatRecoveryPlan.classify(error: "Gateway closed with 1006 abnormal closure").kind == .gateway)
+        #expect(ChatRecoveryPlan.classify(error: "EmbeddedAttemptSessionTakeoverError: session file changed while prompt lock was released").kind == .session)
+        #expect(ChatRecoveryPlan.classify(error: "Invalid API key, status 401").kind == .authentication)
+        #expect(ChatRecoveryPlan.classify(error: "GatewayClientRequestError: Invalid API key, status 401").kind == .authentication)
+        #expect(ChatRecoveryPlan.classify(error: "LM Studio model is not loaded").kind == .localModel)
+        #expect(ChatRecoveryPlan.classify(error: "Request timed out after 540 seconds").kind == .timeout)
+        #expect(ChatRecoveryPlan.classify(error: "Unexpected internal failure").kind == .unknown)
+    }
 }

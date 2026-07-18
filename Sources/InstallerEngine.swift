@@ -993,6 +993,68 @@ final class InstallerEngine: @unchecked Sendable {
             : StepResult(state: .fail, message: out)
     }
 
+    func recoverOpenClawRuntime(
+        errorText: String,
+        allowPackageReinstall: Bool,
+        forcePackageReinstall: Bool = false
+    ) -> StepResult {
+        guard hasCommand("openclaw") else {
+            return StepResult(state: .fail, message: "OpenClaw CLI is not installed")
+        }
+
+        let service = installGatewayService()
+        let restart = restartGateway()
+        let firstVerification = verifyOpenClawSetup()
+        if firstVerification.state == .ok && !forcePackageReinstall {
+            return StepResult(state: .ok, message: "OpenClaw Gateway refreshed and verified")
+        }
+
+        let cleanError = errorText.lowercased()
+        let packageLooksIncomplete = cleanError.contains("err_module_not_found") ||
+            (cleanError.contains("cannot find module") && cleanError.contains("openclaw/dist"))
+        guard allowPackageReinstall && packageLooksIncomplete else {
+            let serviceDetail = service.state == .fail ? " Service: \(service.message)" : ""
+            let restartDetail = restart.state == .fail ? " Restart: \(restart.message)" : ""
+            return StepResult(
+                state: .fail,
+                message: "Gateway recovery did not restore RPC health. \(firstVerification.message)\(serviceDetail)\(restartDetail)"
+            )
+        }
+
+        let node = installNodeIfNeeded()
+        if node.state == .fail {
+            return StepResult(state: .fail, message: "Node repair failed before OpenClaw reinstall. \(node.message)")
+        }
+
+        let (_, npmRootOutput) = shell("npm root -g")
+        let packageURL = URL(fileURLWithPath: npmRootOutput.trimmingCharacters(in: .whitespacesAndNewlines))
+            .appendingPathComponent("openclaw/package.json")
+        let installedVersion: String? = {
+            guard let data = try? Data(contentsOf: packageURL),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let version = json["version"] as? String,
+                  version.range(of: #"^[0-9A-Za-z._+-]+$"#, options: .regularExpression) != nil else {
+                return nil
+            }
+            return version
+        }()
+        let packageSpec = installedVersion.map { "openclaw@\($0)" } ?? "openclaw@latest"
+        let (installCode, installOutput) = shell("npm i -g '\(packageSpec)' --force 2>&1")
+        guard installCode == 0 else {
+            return StepResult(state: .fail, message: "OpenClaw package reinstall failed. \(installOutput)")
+        }
+
+        let refreshedService = installGatewayService()
+        guard refreshedService.state != .fail else { return refreshedService }
+        let refreshedRestart = restartGateway()
+        guard refreshedRestart.state != .fail else { return refreshedRestart }
+
+        let finalVerification = verifyOpenClawSetup()
+        return finalVerification.state == .ok
+            ? StepResult(state: .ok, message: "OpenClaw package, Gateway service, and RPC health repaired")
+            : StepResult(state: .fail, message: "OpenClaw was reinstalled, but verification still failed. \(finalVerification.message)")
+    }
+
     /// Change model
     func changeModel(_ modelId: String) -> StepResult {
         // Write model to config directly

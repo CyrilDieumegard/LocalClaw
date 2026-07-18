@@ -1119,6 +1119,7 @@ final class InstallerViewModel: ObservableObject {
     }
     @Published var chatIsSending = false
     @Published var chatStatus = "Ready"
+    @Published var chatRecoveryMessageID: UUID?
     @Published var selectedChatModel = ""
     @Published var selectedChatResponseMode: ChatResponseMode = .cloud {
         didSet {
@@ -7469,7 +7470,7 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func shouldHideChatMessage(_ message: ChatMessage) -> Bool {
-        guard message.role != "user" else { return false }
+        guard message.role != "user", message.role != "error" else { return false }
         if chatCleanViewEnabled, chatToolOption(for: message) != nil {
             return true
         }
@@ -7515,19 +7516,100 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
-    func retryChatMessage(_ message: ChatMessage) {
+    func retryChatMessage(_ message: ChatMessage, useDeveloperSession: Bool = false) {
         guard !chatIsSending else { return }
+        var messages = useDeveloperSession ? developerChatMessages : chatMessages
         if message.role == "assistant" || message.role == "error" {
-            chatMessages.removeAll { $0.id == message.id }
-            guard let lastUser = chatMessages.last(where: { $0.role == "user" }) else { return }
-            chatInput = lastUser.text
-            chatImagePath = lastUser.imagePath ?? ""
-            chatMessages.removeAll { $0.id == lastUser.id }
-            sendChatMessage()
+            messages.removeAll { $0.id == message.id }
+            guard let lastUser = messages.last(where: { $0.role == "user" }) else { return }
+            messages.removeAll { $0.id == lastUser.id }
+            if useDeveloperSession {
+                developerChatMessages = messages
+                developerInput = lastUser.text
+                developerImagePath = lastUser.imagePath ?? ""
+                sendDeveloperChatMessage()
+            } else {
+                chatMessages = messages
+                chatInput = lastUser.text
+                chatImagePath = lastUser.imagePath ?? ""
+                sendChatMessage()
+            }
         } else {
-            chatInput = message.text
-            chatImagePath = message.imagePath ?? ""
+            if useDeveloperSession {
+                developerInput = message.text
+                developerImagePath = message.imagePath ?? ""
+            } else {
+                chatInput = message.text
+                chatImagePath = message.imagePath ?? ""
+            }
         }
+    }
+
+    func chatRecoveryPlan(for message: ChatMessage) -> ChatRecoveryPlan? {
+        guard message.role == "error" else { return nil }
+        return ChatRecoveryPlan.classify(error: message.text)
+    }
+
+    func chatRecoveryIsRunning(for message: ChatMessage) -> Bool {
+        chatRecoveryMessageID == message.id
+    }
+
+    func performChatRecovery(for message: ChatMessage, useDeveloperSession: Bool = false) {
+        guard !chatIsSending, let plan = chatRecoveryPlan(for: message) else { return }
+
+        switch plan.kind {
+        case .authentication, .localModel:
+            chatStatus = "Open Models to finish recovery"
+            screen = .models
+        case .session:
+            chatGatewayPrepared = false
+            retryChatMessage(message, useDeveloperSession: useDeveloperSession)
+        case .timeout:
+            retryChatMessage(message, useDeveloperSession: useDeveloperSession)
+        case .runtimeFiles, .gateway, .unknown:
+            chatRecoveryMessageID = message.id
+            chatIsSending = true
+            chatStatus = "Recovering OpenClaw..."
+            let failureText = message.text
+            if plan.kind == .runtimeFiles {
+                _ = createRecoveryPoint(reason: "Before OpenClaw runtime recovery")
+            }
+
+            Task.detached {
+                let repair = InstallerEngine().recoverOpenClawRuntime(
+                    errorText: failureText,
+                    allowPackageReinstall: plan.kind == .runtimeFiles
+                )
+                await MainActor.run {
+                    guard self.chatRecoveryMessageID == message.id else { return }
+                    self.chatRecoveryMessageID = nil
+                    self.chatIsSending = false
+                    self.chatGatewayPrepared = false
+                    self.healthLogs += "\nChat recovery: [\(repair.state.rawValue)] \(SecretRedactor.redactConfigText(repair.message))\n"
+                    if repair.state == .ok {
+                        self.chatStatus = "Retrying..."
+                        self.retryChatMessage(message, useDeveloperSession: useDeveloperSession)
+                    } else {
+                        self.chatStatus = "Recovery needs attention"
+                        let recoveryMessage = ChatMessage(
+                            role: "assistant",
+                            text: "Automatic recovery could not finish. Open Help to run diagnostics or export a redacted support report. Your configuration and chat history were kept unchanged."
+                        )
+                        if useDeveloperSession {
+                            self.developerChatMessages.append(recoveryMessage)
+                        } else {
+                            self.chatMessages.append(recoveryMessage)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    func openChatRecoveryHelp(for message: ChatMessage) {
+        screen = .healthCenter
+        runHealthCheck()
+        healthLogs += "\nLatest chat error:\n\(SecretRedactor.redactConfigText(message.text))\n"
     }
 
     func editChatMessage(_ message: ChatMessage) {
@@ -7906,6 +7988,7 @@ final class InstallerViewModel: ObservableObject {
                 }
             }
             var repairedPlugin = false
+            var automaticRecoveryNote: String?
             if result.0 != 0 && Self.isBrokenGlobalWhatsAppPluginError(result.1) {
                 let repair = engine.disableBrokenGlobalPlugin(id: "whatsapp")
                 repairedPlugin = repair.state == .ok
@@ -7927,6 +8010,82 @@ final class InstallerViewModel: ObservableObject {
                         Task { @MainActor in
                             if self.activeChatRequestID == requestID {
                                 self.activeChatProcess = process
+                            }
+                        }
+                    }
+                }
+            }
+            if result.0 != 0 {
+                let recoveryKind = ChatRecoveryPlan.classify(error: result.1).kind
+                if recoveryKind == .runtimeFiles || recoveryKind == .gateway {
+                    await MainActor.run {
+                        if self.activeChatRequestID == requestID {
+                            self.chatStatus = recoveryKind == .runtimeFiles
+                                ? "Refreshing OpenClaw runtime..."
+                                : "Restarting OpenClaw Gateway..."
+                            if recoveryKind == .runtimeFiles {
+                                _ = self.createRecoveryPoint(reason: "Before automatic chat recovery")
+                            }
+                        }
+                    }
+
+                    let initialFailure = result.1
+                    let serviceRepair = engine.recoverOpenClawRuntime(
+                        errorText: initialFailure,
+                        allowPackageReinstall: false
+                    )
+                    if serviceRepair.state == .ok {
+                        result = Self.openClawAgentCancellable(
+                            sessionID: runtimeSessionID,
+                            message: agentText,
+                            model: modelOverride,
+                            thinking: agentThinking,
+                            agentTimeout: agentTimeout,
+                            currentDirectory: useDeveloperSession ? developerWorkdir : nil,
+                            timeoutSeconds: wallClockTimeout
+                        ) { process in
+                            Task { @MainActor in
+                                if self.activeChatRequestID == requestID {
+                                    self.activeChatProcess = process
+                                }
+                            }
+                        }
+                        if result.0 == 0 {
+                            automaticRecoveryNote = "OpenClaw stopped responding. LocalClaw refreshed the Gateway and retried automatically."
+                        }
+                    }
+
+                    let runtimeStillIncomplete = recoveryKind == .runtimeFiles &&
+                        (serviceRepair.state == .fail || (result.0 != 0 && ChatRecoveryPlan.classify(error: result.1).kind == .runtimeFiles))
+                    if runtimeStillIncomplete {
+                        await MainActor.run {
+                            if self.activeChatRequestID == requestID {
+                                self.chatStatus = "Repairing OpenClaw package..."
+                            }
+                        }
+                        let packageRepair = engine.recoverOpenClawRuntime(
+                            errorText: result.1,
+                            allowPackageReinstall: true,
+                            forcePackageReinstall: true
+                        )
+                        if packageRepair.state == .ok {
+                            result = Self.openClawAgentCancellable(
+                                sessionID: runtimeSessionID,
+                                message: agentText,
+                                model: modelOverride,
+                                thinking: agentThinking,
+                                agentTimeout: agentTimeout,
+                                currentDirectory: useDeveloperSession ? developerWorkdir : nil,
+                                timeoutSeconds: wallClockTimeout
+                            ) { process in
+                                Task { @MainActor in
+                                    if self.activeChatRequestID == requestID {
+                                        self.activeChatProcess = process
+                                    }
+                                }
+                            }
+                            if result.0 == 0 {
+                                automaticRecoveryNote = "LocalClaw repaired the OpenClaw runtime and retried automatically."
                             }
                         }
                     }
@@ -7954,6 +8113,10 @@ final class InstallerViewModel: ObservableObject {
                 }
                 if repairedPlugin && result.0 == 0 {
                     let repairMessage = ChatMessage(role: "assistant", text: "I found and disabled an outdated global WhatsApp plugin that was blocking OpenClaw, then retried automatically.", modelName: responseModel)
+                    if useDeveloperSession { self.developerChatMessages.append(repairMessage) } else { self.chatMessages.append(repairMessage) }
+                }
+                if let automaticRecoveryNote, result.0 == 0 {
+                    let repairMessage = ChatMessage(role: "assistant", text: automaticRecoveryNote, modelName: "LocalClaw")
                     if useDeveloperSession { self.developerChatMessages.append(repairMessage) } else { self.chatMessages.append(repairMessage) }
                 }
                 let role = (result.0 == 0 || knownDiagnostic != nil) ? "assistant" : "error"
@@ -13346,6 +13509,58 @@ struct ContentView: View {
             .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
     }
 
+    @ViewBuilder
+    private func chatRecoveryContent(_ message: InstallerViewModel.ChatMessage, useDeveloperSession: Bool) -> some View {
+        if let plan = vm.chatRecoveryPlan(for: message) {
+            VStack(alignment: .leading, spacing: 10) {
+                Label(plan.title, systemImage: plan.systemImage)
+                    .font(AppFont.bodySemi(14))
+                    .foregroundStyle(Color(NSColor.systemRed))
+                Text(plan.explanation)
+                    .font(AppFont.body(12))
+                    .foregroundStyle(UI.text)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 8) {
+                    Button {
+                        vm.performChatRecovery(for: message, useDeveloperSession: useDeveloperSession)
+                    } label: {
+                        if vm.chatRecoveryIsRunning(for: message) {
+                            HStack(spacing: 7) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Recovering...")
+                            }
+                        } else {
+                            Label(plan.primaryActionLabel, systemImage: plan.systemImage)
+                        }
+                    }
+                    .buttonStyle(CompactChatButton(primary: true))
+                    .disabled(vm.chatIsSending)
+
+                    Button {
+                        vm.openChatRecoveryHelp(for: message)
+                    } label: {
+                        Label("Open Help", systemImage: "cross.case.fill")
+                    }
+                    .buttonStyle(CompactChatButton(primary: false))
+                    .disabled(vm.chatRecoveryIsRunning(for: message))
+                }
+
+                DisclosureGroup("Technical details") {
+                    Text(SecretRedactor.redactConfigText(message.text))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(UI.muted)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 5)
+                }
+                .font(AppFont.bodySemi(10))
+                .foregroundStyle(UI.muted)
+            }
+        }
+    }
+
     private func developerChatBubble(_ message: InstallerViewModel.ChatMessage) -> some View {
         let isUser = message.role == "user"
         let isError = message.role == "error"
@@ -13374,11 +13589,15 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
             }
-            Text(message.text)
-                .font(AppFont.body(13))
-                .foregroundStyle(UI.text)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
+            if isError {
+                chatRecoveryContent(message, useDeveloperSession: true)
+            } else {
+                Text(message.text)
+                    .font(AppFont.body(13))
+                    .foregroundStyle(UI.text)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let metadata = message.metadata, !metadata.isEmpty {
                 Text(metadata)
                     .font(.system(size: 10, design: .monospaced))
@@ -14375,11 +14594,15 @@ struct ContentView: View {
                     .disabled(vm.chatIsSending)
                     .help("Message actions")
                 }
-                renderedChatText(message.text)
-                    .font(AppFont.body(14))
-                    .foregroundStyle(isError ? Color(NSColor.systemRed) : UI.text)
-                    .lineSpacing(3)
-                    .textSelection(.enabled)
+                if isError {
+                    chatRecoveryContent(message, useDeveloperSession: false)
+                } else {
+                    renderedChatText(message.text)
+                        .font(AppFont.body(14))
+                        .foregroundStyle(UI.text)
+                        .lineSpacing(3)
+                        .textSelection(.enabled)
+                }
                 if let imagePath = message.imagePath, !imagePath.isEmpty {
                     chatMessageImage(path: imagePath)
                 }
