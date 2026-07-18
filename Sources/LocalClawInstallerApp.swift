@@ -993,6 +993,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var ram: String = ""
     @Published var machineDetails: String = ""
     @Published var recommendation: String = ""
+    @Published var detectedHardwareProfile = HardwareProfile(chip: "Apple Silicon", memoryGB: 16, isAppleSilicon: true)
 
     @Published var selectedModel: String = ""
     @Published var inferenceMode: InferenceMode = .cloud
@@ -1168,6 +1169,9 @@ final class InstallerViewModel: ObservableObject {
         didSet { UserDefaults.standard.set(developerFreshContextEnabled, forKey: Self.developerFreshContextDefaultsKey) }
     }
     private var developerPreviewProcess: Process?
+    var developerPreviewIsRunning: Bool {
+        developerPreviewProcess?.isRunning == true
+    }
     private var chatGatewayPrepared = false
     private var activeChatProcess: Process?
     private var activeChatRequestID: UUID?
@@ -1242,7 +1246,10 @@ final class InstallerViewModel: ObservableObject {
     @Published var cronRunHistory: [String: [CronRunInfo]] = [:]
     @Published var cronJobsStatus: String = "Not loaded"
     @Published var cronJobsIsLoading = false
+    @Published var automationReadinessIsLoading = false
     @Published var cronJobLogs: String = ""
+    @Published var cronSearchQuery = ""
+    @Published var cronListFilter = "All"
     @Published var showCronJobCreator = false
     @Published var cronEditingJobID = ""
     @Published var cronCreateName = ""
@@ -1331,6 +1338,9 @@ final class InstallerViewModel: ObservableObject {
     @Published var kanbanSchedulingCardIDs: Set<String> = []
     var kanbanAutomationSyncEnabled = true
     @Published var kanbanStatus = "Ready"
+    @Published var kanbanSearchQuery = ""
+    @Published var kanbanListFilter = "All"
+    @Published var kanbanHideCompleted = false
     @Published var healthLogs: String = ""
     @Published var healthStatus: String = "Unknown"
     @Published var usageLogs: String = ""
@@ -1346,7 +1356,7 @@ final class InstallerViewModel: ObservableObject {
     }
     @Published var modelsApplyStatus: String = ""
     @Published var modelsApplyInProgress: Bool = false
-    @Published var modelsRecommendationFilter: String = "Balanced"
+    @Published var modelsRecommendationFilter: LocalModelWorkload = .automatic
     @Published var modeSwitchInProgress: Bool = false
     @Published var modeSwitchStatus: String = ""
 
@@ -1810,22 +1820,23 @@ final class InstallerViewModel: ObservableObject {
 
     private var localModelCandidates: [LocalModelCandidate] {
         [
-            LocalModelCandidate(name: "Gemma 4 E4B Q4_K_M", query: "gemma-4-e4b@q4_k_m", providerId: "google/gemma-4-e4b", family: "google", summary: "Compact multimodal reasoning", size: "5 GB", context: "128K", badges: []),
-            LocalModelCandidate(name: "Gemma 4 26B-A4B Q4_K_M", query: "gemma-4-26b-a4b@q4_k_m", providerId: "google/gemma-4-26b-a4b", family: "google", summary: "Fast MoE with long context", size: "16.9 GB", context: "256K", badges: ["High Performance"]),
-            LocalModelCandidate(name: "Gemma 4 31B Q4_K_M", query: "gemma-4-31b@q4_k_m", providerId: "google/gemma-4-31b", family: "google", summary: "Top-tier dense reasoning", size: "19 GB", context: "256K", badges: ["High Performance"]),
-            LocalModelCandidate(name: "Qwen 3.5 35B-A3B Q4_K_M", query: "qwen3.5-35b-a3b@q4_k_m", providerId: "qwen3.5-35b-a3b", family: "qwen", summary: "High quality reasoning", size: "22 GB", context: "256K", badges: ["High Performance", "May be slow"]),
-            LocalModelCandidate(name: "Qwen 3.5 27B Q4_K_M", query: "qwen3.5-27b@q4_k_m", providerId: "qwen3.5-27b", family: "qwen", summary: "Next-gen dense reasoning", size: "17.6 GB", context: "256K", badges: ["New"]),
-            LocalModelCandidate(name: "Qwen 3.5 9B Q4_K_M", query: "qwen3.5-9b@q4_k_m", providerId: "qwen3.5-9b", family: "qwen", summary: "Balanced performance", size: "5.3 GB", context: "256K", badges: []),
-            LocalModelCandidate(name: "Qwen 3.5 4B Q4_K_M", query: "qwen3.5-4b@q4_k_m", providerId: "qwen3.5-4b", family: "qwen", summary: "Quality-size sweet spot", size: "2.7 GB", context: "256K", badges: []),
-            LocalModelCandidate(name: "Qwen 3.5 2B Q4_K_M", query: "qwen3.5-2b@q4_k_m", providerId: "qwen3.5-2b", family: "qwen", summary: "Fast lightweight reasoning", size: "1.7 GB", context: "256K", badges: []),
-            LocalModelCandidate(name: "Qwen 3.5 0.8B Q4_K_M", query: "qwen3.5-0.8b@q4_k_m", providerId: "qwen3.5-0.8b", family: "qwen", summary: "Smallest local fallback", size: "0.8 GB", context: "256K", badges: []),
-            LocalModelCandidate(name: "Qwen 3 14B Q4_K_M", query: "qwen-3-14b@q4_k_m", providerId: "qwen3-14b", family: "qwen", summary: "Older strong reasoning model", size: "8.9 GB", context: "128K", badges: []),
-            LocalModelCandidate(name: "Qwen 3 8B Q4_K_M", query: "qwen-3-8b@q4_k_m", providerId: "qwen3-8b", family: "qwen", summary: "Reliable compact coder", size: "5 GB", context: "128K", badges: []),
-            LocalModelCandidate(name: "Nemotron 3 Nano 4B Q4_K_M", query: "nemotron-3-nano-4b@q4_k_m", providerId: "nvidia/nemotron-3-nano-4b", family: "nvidia", summary: "Edge-optimized hybrid reasoning", size: "4.2 GB", context: "256K", badges: []),
-            LocalModelCandidate(name: "Nemotron 3 Nano 30B-A3B Q4_K_M", query: "nemotron-3-nano-30b-a3b@q4_k_m", providerId: "nvidia/nemotron-3-nano-30b-a3b", family: "nvidia", summary: "High-quality MoE reasoning", size: "24.6 GB", context: "1M", badges: ["May be slow"]),
-            LocalModelCandidate(name: "GLM 4.7 Flash 30B Q4_K_M", query: "glm-4.7-flash-30b@q4_k_m", providerId: "zai/glm-4.7-flash-30b", family: "zai", summary: "Lightweight deployment", size: "19 GB", context: "128K", badges: []),
-            LocalModelCandidate(name: "DeepSeek R1 14B Q4_K_M", query: "deepseek-r1-distill-qwen-14b@q4_k_m", providerId: "deepseek-r1-distill-qwen-14b", family: "deepseek", summary: "Reasoning fallback", size: "8.9 GB", context: "128K", badges: []),
-            LocalModelCandidate(name: "Llama 3.3 8B Q4_K_M", query: "llama-3.3-8b-instruct@q4_k_m", providerId: "llama-3.3-8b-instruct", family: "meta", summary: "General-purpose fallback", size: "5 GB", context: "128K", badges: [])
+            LocalModelCandidate(name: "Gemma 4 E2B Q4_K_M", query: "gemma-4-e2b@q4_k_m", providerId: "google/gemma-4-e2b", family: "google", summary: "Small multimodal model for low-memory Macs", fileSizeGB: 3.4, maxContextK: 128, qualityScore: 3.3, codingScore: 3.4, reasoningScore: 3.2, speedScore: 4.9, toolUseScore: 3.8, multimodal: true, badges: ["Low RAM"]),
+            LocalModelCandidate(name: "Gemma 4 E4B Q4_K_M", query: "gemma-4-e4b@q4_k_m", providerId: "google/gemma-4-e4b", family: "google", summary: "Compact multimodal reasoning", fileSizeGB: 5.0, maxContextK: 128, qualityScore: 3.9, codingScore: 4.0, reasoningScore: 3.9, speedScore: 4.5, toolUseScore: 4.2, multimodal: true, badges: []),
+            LocalModelCandidate(name: "Gemma 4 26B-A4B Q4_K_M", query: "gemma-4-26b-a4b@q4_k_m", providerId: "google/gemma-4-26b-a4b", family: "google", summary: "Efficient MoE for coding and reasoning", fileSizeGB: 16.9, maxContextK: 256, qualityScore: 4.7, codingScore: 4.5, reasoningScore: 4.7, speedScore: 3.8, toolUseScore: 4.5, multimodal: true, badges: ["High Performance"]),
+            LocalModelCandidate(name: "Gemma 4 31B Q4_K_M", query: "gemma-4-31b@q4_k_m", providerId: "google/gemma-4-31b", family: "google", summary: "Top-tier dense reasoning", fileSizeGB: 19.0, maxContextK: 256, qualityScore: 4.9, codingScore: 4.8, reasoningScore: 4.9, speedScore: 2.8, toolUseScore: 4.6, multimodal: true, badges: ["High Performance", "May be slow"]),
+            LocalModelCandidate(name: "Qwen 3.5 35B-A3B Q4_K_M", query: "qwen3.5-35b-a3b@q4_k_m", providerId: "qwen3.5-35b-a3b", family: "qwen", summary: "High-quality agentic reasoning", fileSizeGB: 22.0, maxContextK: 256, qualityScore: 4.9, codingScore: 4.9, reasoningScore: 4.9, speedScore: 3.2, toolUseScore: 4.9, multimodal: true, badges: ["High Performance", "May be slow"]),
+            LocalModelCandidate(name: "Qwen 3.5 27B Q4_K_M", query: "qwen3.5-27b@q4_k_m", providerId: "qwen3.5-27b", family: "qwen", summary: "Dense coding and reasoning model", fileSizeGB: 17.6, maxContextK: 256, qualityScore: 4.7, codingScore: 4.8, reasoningScore: 4.7, speedScore: 3.4, toolUseScore: 4.8, multimodal: true, badges: ["High Performance"]),
+            LocalModelCandidate(name: "Qwen 3.5 9B Q4_K_M", query: "qwen3.5-9b@q4_k_m", providerId: "qwen3.5-9b", family: "qwen", summary: "Best balance for agents and coding", fileSizeGB: 5.3, maxContextK: 256, qualityScore: 4.3, codingScore: 4.7, reasoningScore: 4.4, speedScore: 4.2, toolUseScore: 4.7, multimodal: true, badges: []),
+            LocalModelCandidate(name: "Qwen 3.5 4B Q4_K_M", query: "qwen3.5-4b@q4_k_m", providerId: "qwen3.5-4b", family: "qwen", summary: "Quality-size sweet spot", fileSizeGB: 2.7, maxContextK: 256, qualityScore: 3.6, codingScore: 4.0, reasoningScore: 3.6, speedScore: 4.8, toolUseScore: 4.2, multimodal: true, badges: []),
+            LocalModelCandidate(name: "Qwen 3.5 2B Q4_K_M", query: "qwen3.5-2b@q4_k_m", providerId: "qwen3.5-2b", family: "qwen", summary: "Fast lightweight assistant", fileSizeGB: 1.7, maxContextK: 256, qualityScore: 3.1, codingScore: 3.4, reasoningScore: 3.0, speedScore: 5.0, toolUseScore: 3.7, multimodal: true, badges: ["Low RAM"]),
+            LocalModelCandidate(name: "Qwen 3.5 0.8B Q4_K_M", query: "qwen3.5-0.8b@q4_k_m", providerId: "qwen3.5-0.8b", family: "qwen", summary: "Smallest local fallback", fileSizeGB: 0.8, maxContextK: 256, qualityScore: 2.4, codingScore: 2.5, reasoningScore: 2.2, speedScore: 5.0, toolUseScore: 2.8, multimodal: true, badges: ["Low RAM"]),
+            LocalModelCandidate(name: "Qwen 3 14B Q4_K_M", query: "qwen-3-14b@q4_k_m", providerId: "qwen3-14b", family: "qwen", summary: "Established reasoning model", fileSizeGB: 8.9, maxContextK: 128, qualityScore: 3.8, codingScore: 4.2, reasoningScore: 4.0, speedScore: 3.4, toolUseScore: 4.0, multimodal: false, badges: ["Legacy"]),
+            LocalModelCandidate(name: "Qwen 3 8B Q4_K_M", query: "qwen-3-8b@q4_k_m", providerId: "qwen3-8b", family: "qwen", summary: "Reliable compact coder", fileSizeGB: 5.0, maxContextK: 128, qualityScore: 3.5, codingScore: 4.1, reasoningScore: 3.6, speedScore: 4.0, toolUseScore: 3.9, multimodal: false, badges: ["Legacy"]),
+            LocalModelCandidate(name: "Nemotron 3 Nano 4B Q4_K_M", query: "nemotron-3-nano-4b@q4_k_m", providerId: "nvidia/nemotron-3-nano-4b", family: "nvidia", summary: "Efficient reasoning and tool use", fileSizeGB: 4.2, maxContextK: 256, qualityScore: 3.9, codingScore: 4.0, reasoningScore: 4.1, speedScore: 4.4, toolUseScore: 4.3, multimodal: false, badges: []),
+            LocalModelCandidate(name: "Nemotron 3 Nano 30B-A3B Q4_K_M", query: "nemotron-3-nano-30b-a3b@q4_k_m", providerId: "nvidia/nemotron-3-nano-30b-a3b", family: "nvidia", summary: "Long-context MoE reasoning", fileSizeGB: 24.6, maxContextK: 1_000, qualityScore: 4.8, codingScore: 4.6, reasoningScore: 4.9, speedScore: 3.6, toolUseScore: 4.8, multimodal: false, badges: ["Long Context", "May be slow"]),
+            LocalModelCandidate(name: "GLM 4.7 Flash 30B Q4_K_M", query: "glm-4.7-flash-30b@q4_k_m", providerId: "zai/glm-4.7-flash-30b", family: "zai", summary: "Agentic coding and reasoning", fileSizeGB: 19.0, maxContextK: 128, qualityScore: 4.4, codingScore: 4.5, reasoningScore: 4.5, speedScore: 3.8, toolUseScore: 4.6, multimodal: false, badges: []),
+            LocalModelCandidate(name: "DeepSeek R1 14B Q4_K_M", query: "deepseek-r1-distill-qwen-14b@q4_k_m", providerId: "deepseek-r1-distill-qwen-14b", family: "deepseek", summary: "Reasoning-focused fallback", fileSizeGB: 8.9, maxContextK: 128, qualityScore: 3.9, codingScore: 3.8, reasoningScore: 4.4, speedScore: 3.2, toolUseScore: 3.4, multimodal: false, badges: ["Legacy"]),
+            LocalModelCandidate(name: "Llama 3.3 8B Q4_K_M", query: "llama-3.3-8b-instruct@q4_k_m", providerId: "llama-3.3-8b-instruct", family: "meta", summary: "General-purpose fallback", fileSizeGB: 5.0, maxContextK: 128, qualityScore: 3.4, codingScore: 3.3, reasoningScore: 3.5, speedScore: 4.1, toolUseScore: 3.5, multimodal: false, badges: ["Legacy"])
         ]
     }
 
@@ -1856,20 +1867,54 @@ final class InstallerViewModel: ObservableObject {
         let sha256: String?
     }
 
-    struct LocalModelCandidate: Identifiable, Hashable {
+    struct LocalModelCandidate: Identifiable, Hashable, Sendable {
         var id: String { name }
         let name: String
         let query: String
         let providerId: String
         let family: String
         let summary: String
-        let size: String
-        let context: String
+        let fileSizeGB: Double
+        let maxContextK: Int
+        let qualityScore: Double
+        let codingScore: Double
+        let reasoningScore: Double
+        let speedScore: Double
+        let toolUseScore: Double
+        let multimodal: Bool
         let badges: [String]
+
+        var size: String {
+            fileSizeGB.rounded() == fileSizeGB ? "\(Int(fileSizeGB)) GB" : "\(fileSizeGB) GB"
+        }
+
+        var context: String {
+            maxContextK >= 1_000 ? "\(maxContextK / 1_000)M" : "\(maxContextK)K"
+        }
 
         var detail: String {
             "\(summary) · \(size) · \(context)"
         }
+
+        var scoringInput: LocalModelScoringInput {
+            LocalModelScoringInput(
+                name: name,
+                fileSizeGB: fileSizeGB,
+                maxContextK: maxContextK,
+                quality: qualityScore,
+                coding: codingScore,
+                reasoning: reasoningScore,
+                speed: speedScore,
+                toolUse: toolUseScore,
+                multimodal: multimodal
+            )
+        }
+    }
+
+    struct LocalModelRecommendation: Identifiable, Sendable {
+        var id: String { model.id }
+        let model: LocalModelCandidate
+        let match: LocalModelMatch
     }
 
     private var licenseEndpoint: String {
@@ -2019,8 +2064,14 @@ final class InstallerViewModel: ObservableObject {
 
         chip = profile.chip
         ram = "\(profile.memoryGB) GB"
+        detectedHardwareProfile = profile
         refreshMachineDetails()
-        recommendation = "\(reco.model) \(reco.quant)"
+        let smartRecommendation = engine.rankLocalModels(
+            localModelCandidates.map(\.scoringInput),
+            for: profile,
+            workload: .automatic
+        ).first?.model.name
+        recommendation = smartRecommendation ?? "\(reco.model) \(reco.quant)"
         selectedModel = recommendation
 
         statusHomebrew = engine.hasCommand("brew") ? "SKIP" : "PENDING"
@@ -2237,6 +2288,18 @@ final class InstallerViewModel: ObservableObject {
         machineOpenclawMB = usage.openclawMemoryMB
         machineNodeMB = usage.nodeMemoryMB
         topProcesses = engine.topProcesses(limit: 10)
+    }
+
+    func refreshAutomationReadiness() {
+        guard !automationReadinessIsLoading else { return }
+        automationReadinessIsLoading = true
+        Task.detached {
+            let status = InstallerEngine().getGatewayStatus()
+            await MainActor.run {
+                self.gatewayIsRunning = status.isRunning
+                self.automationReadinessIsLoading = false
+            }
+        }
     }
 
     func refreshHomeDashboard() {
@@ -2579,20 +2642,83 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
-    func recommendedLocalModels(filter: String) -> [LocalModelCandidate] {
-        switch filter {
-        case "Fast":
-            return localModelCatalog.filter { $0.size.contains("0.8") || $0.size.contains("1.7") || $0.size.contains("2.7") || $0.size.contains("4.2") || $0.summary.lowercased().contains("fast") }
-        case "Low RAM":
-            return localModelCatalog.filter { $0.size.contains("0.8") || $0.size.contains("1.7") || $0.size.contains("2.7") || $0.size.contains("4.2") || $0.size.contains("5 GB") }
-        case "Long context":
-            return localModelCatalog.filter { $0.context.contains("256") || $0.context.contains("1M") }
-        case "Coding":
-            return localModelCatalog.filter { $0.name.lowercased().contains("qwen") || $0.summary.lowercased().contains("coder") || $0.name.lowercased().contains("deepseek") }
-        case "Best quality":
-            return localModelCatalog.filter { $0.badges.contains("High Performance") || $0.summary.lowercased().contains("quality") || $0.summary.lowercased().contains("top-tier") }
-        default:
-            return localModelCatalog.filter { $0.name.contains("Qwen 3.5 9B") || $0.name.contains("Gemma 4 E4B") || $0.name.contains("Nemotron 3 Nano 4B") || $0.name.contains("Llama 3.3 8B") }
+    func recommendedLocalModels(workload: LocalModelWorkload) -> [LocalModelRecommendation] {
+        let byName = Dictionary(uniqueKeysWithValues: localModelCatalog.map { ($0.name, $0) })
+        return engine.rankLocalModels(
+            localModelCatalog.map(\.scoringInput),
+            for: detectedHardwareProfile,
+            workload: workload
+        ).compactMap { match in
+            guard let candidate = byName[match.model.name] else { return nil }
+            return LocalModelRecommendation(model: candidate, match: match)
+        }
+    }
+
+    var localModelAdvisorSummary: String {
+        let reserve = max(4, Int((Double(detectedHardwareProfile.memoryGB) * 0.20).rounded()))
+        if !detectedHardwareProfile.isAppleSilicon {
+            return "\(detectedHardwareProfile.chip) · LM Studio requires Apple Silicon on macOS"
+        }
+        return "\(detectedHardwareProfile.chip) · \(detectedHardwareProfile.memoryGB) GB unified memory · keeps about \(reserve) GB for macOS"
+    }
+
+    func installedLocalModelID(for model: LocalModelCandidate) -> String? {
+        let direct = localModelMatch(model.providerId, in: localLMStudioModels)
+        if !direct.isEmpty { return direct }
+        let baseQuery = model.query.split(separator: "@").first.map(String.init) ?? model.providerId
+        let queryMatch = localModelMatch(baseQuery, in: localLMStudioModels)
+        return queryMatch.isEmpty ? nil : queryMatch
+    }
+
+    func selectOrDownloadLocalModel(_ recommendation: LocalModelRecommendation) {
+        let model = recommendation.model
+        selectedModel = model.name
+
+        if let installed = installedLocalModelID(for: model) {
+            selectInferenceModeFromUser(.local)
+            selectedLocalLMStudioModel = installed
+            modelsApplyStatus = "Selected \(model.name). Click Apply selected model to activate it."
+            return
+        }
+
+        guard recommendation.match.fit != .tooLarge else {
+            modelsApplyStatus = "This model is too large for this Mac. Choose a model marked Fits or Great fit."
+            return
+        }
+        guard recommendation.match.fit != .unsupported else {
+            modelsApplyStatus = "LM Studio currently requires Apple Silicon on macOS. Use Cloud or OAuth on this Mac."
+            return
+        }
+        guard !modelsApplyInProgress else { return }
+
+        modelsApplyInProgress = true
+        modelsApplyStatus = "Downloading \(model.name) with LM Studio..."
+        let query = model.query
+        let modelName = model.name
+        let providerID = model.providerId
+        Task.detached {
+            let result = InstallerEngine().installModelStreaming(query) { line in
+                let update = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !update.isEmpty else { return }
+                Task { @MainActor in
+                    self.modelsApplyStatus = update
+                }
+            }
+            await MainActor.run {
+                self.modelsApplyInProgress = false
+                guard result.state == .ok || result.state == .skip else {
+                    self.modelsApplyStatus = result.message.isEmpty ? "Model download failed." : result.message
+                    return
+                }
+                self.refreshLocalLMStudioModels()
+                self.selectedModel = modelName
+                self.selectInferenceModeFromUser(.local)
+                self.selectedLocalLMStudioModel = self.localModelMatch(providerID, in: self.localLMStudioModels)
+                if self.selectedLocalLMStudioModel.isEmpty {
+                    self.selectedLocalLMStudioModel = providerID
+                }
+                self.modelsApplyStatus = "Downloaded \(modelName). Click Apply selected model to activate it."
+            }
         }
     }
 
@@ -11061,13 +11187,13 @@ struct ContentView: View {
             sidebarButton("Updates", icon: "arrow.clockwise", isActive: vm.screen == .updates) { vm.screen = .updates }
             sidebarButton("Control Center", icon: "slider.horizontal.3", isActive: vm.screen == .commandCenter) { vm.screen = .commandCenter }
             sidebarButton("OpenClaw Chat", icon: "message.badge.waveform", isActive: vm.screen == .chat) { vm.screen = .chat }
-            sidebarButton("Developer", icon: "curlybraces.square", isActive: vm.screen == .developer, isBeta: true) { vm.screen = .developer }
+            sidebarButton("Developer", icon: "curlybraces.square", isActive: vm.screen == .developer) { vm.screen = .developer }
             sidebarButton("Models", icon: "cpu", isActive: vm.screen == .models) { vm.screen = .models }
             sidebarButton("Skills", icon: "wand.and.stars", isActive: vm.screen == .skills) { vm.screen = .skills }
             sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup) { vm.screen = .channelSetup }
             sidebarButton("Agents", icon: "person.2.wave.2", isActive: vm.screen == .agents) { vm.screen = .agents }
-            sidebarButton("Cron Jobs", icon: "calendar.badge.clock", isActive: vm.screen == .cronJobs, isBeta: true) { vm.screen = .cronJobs }
-            sidebarButton("Kanban", icon: "rectangle.3.group", isActive: vm.screen == .kanban, isBeta: true) { vm.screen = .kanban }
+            sidebarButton("Cron Jobs", icon: "calendar.badge.clock", isActive: vm.screen == .cronJobs) { vm.screen = .cronJobs }
+            sidebarButton("Kanban", icon: "rectangle.3.group", isActive: vm.screen == .kanban) { vm.screen = .kanban }
             sidebarButton("Help", icon: "cross.case", isActive: vm.screen == .healthCenter) { vm.screen = .healthCenter }
             sidebarButton("Uninstall", icon: "trash", isActive: vm.screen == .uninstallCenter) { vm.screen = .uninstallCenter }
 
@@ -11148,7 +11274,7 @@ struct ContentView: View {
         return version.hasPrefix("v") ? version : "v\(version)"
     }
 
-    private func sidebarButton(_ title: String, icon: String, isActive: Bool, isBeta: Bool = false, action: @escaping () -> Void) -> some View {
+    private func sidebarButton(_ title: String, icon: String, isActive: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: icon)
@@ -11156,9 +11282,6 @@ struct ContentView: View {
                 Text(title)
                     .font(AppFont.bodySemi(13))
                 Spacer()
-                if isBeta {
-                    betaBadge(isActive: isActive)
-                }
             }
             .foregroundStyle(isActive ? .white : UI.text)
             .padding(.horizontal, 10)
@@ -11166,22 +11289,6 @@ struct ContentView: View {
             .background(RoundedRectangle(cornerRadius: 9).fill(isActive ? UI.accent : UI.cardSoft))
         }
         .buttonStyle(.plain)
-    }
-
-    private func betaBadge(isActive: Bool) -> some View {
-        HStack(spacing: 5) {
-            Circle()
-                .fill(isActive ? Color.white.opacity(0.9) : Color(NSColor.systemBlue))
-                .frame(width: 6, height: 6)
-            Text("BETA")
-                .font(.system(size: 9, weight: .bold, design: .rounded))
-                .foregroundStyle(isActive ? .white : Color(NSColor.systemBlue))
-        }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
-        .background(RoundedRectangle(cornerRadius: 3).fill(isActive ? Color.white.opacity(0.13) : Color(NSColor.systemBlue).opacity(0.08)))
-        .overlay(RoundedRectangle(cornerRadius: 3).stroke(isActive ? Color.white.opacity(0.35) : Color(NSColor.systemBlue), lineWidth: 1))
-        .help("Beta section: this area is still evolving and may contain bugs.")
     }
 
     var license: some View {
@@ -11960,20 +12067,39 @@ struct ContentView: View {
                             Text("Developer")
                                 .font(AppFont.heading(28))
                                 .foregroundStyle(UI.text)
-                            Text("Build with OpenClaw: chat-driven coding on the left, live app preview and project context on the right.")
+                            Text("Describe the change, inspect the workspace, review source control, and preview the result.")
                                 .font(AppFont.body(13))
                                 .foregroundStyle(UI.muted)
                         }
                         Spacer()
                         developerActiveProjectPill
-                        developerToolbarButton(vm.developerProjectsPanelVisible ? "Hide projects" : "Show projects", icon: vm.developerProjectsPanelVisible ? "sidebar.left" : "sidebar.left") {
-                            vm.developerProjectsPanelVisible.toggle()
+                        Menu {
+                            Button(vm.developerProjectsPanelVisible ? "Hide projects" : "Show projects") {
+                                vm.developerProjectsPanelVisible.toggle()
+                            }
+                            Divider()
+                            Button("New project") { vm.developerNewApp() }
+                            Button("Open project") { vm.developerChooseFolder() }
+                            Button("Sync project folder") { vm.syncDeveloperProjectFolder() }
+                        } label: {
+                            Label("Workspace", systemImage: "folder.badge.gearshape")
                         }
-                        developerToolbarButton("New app", icon: "plus.square.on.square") { vm.developerNewApp() }
-                        developerToolbarButton("Open app", icon: "folder") { vm.developerChooseFolder() }
-                        developerToolbarButton("Sync folder", icon: "folder.badge.gearshape") { vm.syncDeveloperProjectFolder() }
-                        developerToolbarButton("Run preview", icon: "play.fill", primary: true) { vm.developerRunPreview() }
+                        .buttonStyle(CompactChatButton(primary: false))
+
+                        developerToolbarButton(
+                            vm.developerPreviewIsRunning ? "Stop preview" : "Run preview",
+                            icon: vm.developerPreviewIsRunning ? "stop.fill" : "play.fill",
+                            primary: true
+                        ) {
+                            if vm.developerPreviewIsRunning {
+                                vm.developerStopPreview()
+                            } else {
+                                vm.developerRunPreview()
+                            }
+                        }
                     }
+
+                    developerWorkspaceStatusBar
 
                     HStack(alignment: .top, spacing: 14) {
                         if vm.developerProjectsPanelVisible {
@@ -12006,6 +12132,77 @@ struct ContentView: View {
         } message: {
             Text("This removes \"\(vm.developerProjectDeleteCandidateName)\" from LocalClaw's Developer list. The project folder and files are not deleted.")
         }
+    }
+
+    private var developerWorkspaceStatusBar: some View {
+        HStack(spacing: 8) {
+            developerWorkspaceStatusItem(
+                title: "Workspace",
+                value: vm.developerProjectName,
+                icon: "folder.fill",
+                tint: UI.accent
+            ) {
+                vm.developerProjectsPanelVisible = true
+            }
+            developerWorkspaceStatusItem(
+                title: "Source control",
+                value: vm.developerGitStatus.isRepository ? (vm.developerGitStatus.branch.isEmpty ? "Repository" : vm.developerGitStatus.branch) : "Connect GitHub",
+                icon: "arrow.triangle.branch",
+                tint: vm.developerGitStatus.isRepository ? Color(NSColor.systemGreen) : Color(NSColor.systemOrange)
+            ) {
+                vm.developerActiveTab = "github"
+                vm.refreshDeveloperGitStatus()
+            }
+            developerWorkspaceStatusItem(
+                title: "Changes",
+                value: vm.developerGitStatus.isRepository ? (vm.developerGitStatus.isClean ? "Clean" : "\(vm.developerGitStatus.changedFiles.count) files") : "Not tracked",
+                icon: vm.developerGitStatus.isClean ? "checkmark.circle.fill" : "circle.dashed",
+                tint: vm.developerGitStatus.isClean ? Color(NSColor.systemGreen) : Color(NSColor.systemOrange)
+            ) {
+                vm.developerActiveTab = "github"
+            }
+            developerWorkspaceStatusItem(
+                title: "Preview",
+                value: vm.developerPreviewIsRunning ? "Running" : "Stopped",
+                icon: vm.developerPreviewIsRunning ? "play.circle.fill" : "stop.circle",
+                tint: vm.developerPreviewIsRunning ? Color(NSColor.systemGreen) : UI.muted
+            ) {
+                vm.developerActiveTab = "preview"
+            }
+        }
+    }
+
+    private func developerWorkspaceStatusItem(
+        title: String,
+        value: String,
+        icon: String,
+        tint: Color,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 9) {
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(AppFont.body(9))
+                        .foregroundStyle(UI.muted)
+                    Text(value)
+                        .font(AppFont.bodySemi(11))
+                        .foregroundStyle(UI.text)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .background(RoundedRectangle(cornerRadius: 9).fill(UI.cardSoft))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(UI.lineSoft, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
     }
 
     private var developerActiveProjectPill: some View {
@@ -12291,14 +12488,43 @@ struct ContentView: View {
             HStack(spacing: 10) {
                 developerTab("Preview", icon: "eye.fill", id: "preview")
                 developerTab("Files", icon: "doc.text", id: "files")
-                developerTab("GitHub", icon: "arrow.triangle.branch", id: "github")
-                developerTab("Database", icon: "cylinder.split.1x2", id: "database")
-                developerTab("Deploy", icon: "icloud.and.arrow.up", id: "deploy")
-                developerTab("Logs", icon: "terminal", id: "logs")
+                developerTab("Git", icon: "arrow.triangle.branch", id: "github")
+                Menu {
+                    Button("Database") { vm.developerActiveTab = "database" }
+                    Button("Deploy") { vm.developerActiveTab = "deploy" }
+                    Button("Logs") { vm.developerActiveTab = "logs" }
+                } label: {
+                    Label("Tools", systemImage: "ellipsis.circle")
+                        .font(AppFont.bodySemi(12))
+                        .foregroundStyle(developerSecondaryTabIsActive ? UI.accent : UI.text)
+                        .lineLimit(1)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(developerSecondaryTabIsActive ? UI.card : Color.clear))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
                 Spacer()
-                developerIconButton("arrow.clockwise") { vm.developerRefreshPreview() }
-                developerIconButton("rectangle.on.rectangle") { vm.developerCopyPreviewURL() }
-                developerIconButton("arrow.up.right.square") { vm.developerOpenExternalPreview() }
+                if vm.developerActiveTab == "preview" {
+                    developerIconButton("arrow.clockwise") { vm.developerRefreshPreview() }
+                        .help("Refresh preview")
+                    Menu {
+                        Button("Copy preview URL") { vm.developerCopyPreviewURL() }
+                        Button("Open in browser") { vm.developerOpenExternalPreview() }
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(UI.muted)
+                            .frame(width: 30, height: 30)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("Preview actions")
+                } else if vm.developerActiveTab == "github" {
+                    developerIconButton("arrow.clockwise") { vm.refreshDeveloperGitStatus() }
+                        .help("Refresh source control")
+                }
             }
             .padding(10)
             .background(UI.cardSoft)
@@ -12308,6 +12534,10 @@ struct ContentView: View {
         .background(RoundedRectangle(cornerRadius: 16).fill(UI.card))
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private var developerSecondaryTabIsActive: Bool {
+        ["database", "deploy", "logs"].contains(vm.developerActiveTab)
     }
 
     @ViewBuilder
@@ -12359,11 +12589,16 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
                     .onSubmit { vm.developerRefreshPreview() }
-                developerToolbarButton("Run", icon: "play.fill") { vm.developerRunPreview() }
-                developerToolbarButton("Stop", icon: "stop.fill") { vm.developerStopPreview() }
-                developerToolbarButton("Desktop", icon: "desktopcomputer") { vm.developerPreviewDevice = "desktop" }
-                developerToolbarButton("Mobile", icon: "iphone") { vm.developerPreviewDevice = "mobile" }
-                developerToolbarButton("Open", icon: "arrow.up.right.square") { vm.developerOpenExternalPreview() }
+                developerIconButton("play.fill") { vm.developerRunPreview() }
+                    .help("Run preview")
+                developerIconButton("stop.fill") { vm.developerStopPreview() }
+                    .help("Stop preview")
+                developerIconButton("desktopcomputer") { vm.developerPreviewDevice = "desktop" }
+                    .help("Desktop preview")
+                developerIconButton("iphone") { vm.developerPreviewDevice = "mobile" }
+                    .help("Mobile preview")
+                developerIconButton("arrow.up.right.square") { vm.developerOpenExternalPreview() }
+                    .help("Open in browser")
             }
             .padding(10)
             .background(UI.card)
@@ -12384,18 +12619,42 @@ struct ContentView: View {
             .padding(.bottom, 10)
             .background(UI.card)
 
-            HStack {
-                if vm.developerPreviewDevice == "mobile" { Spacer(minLength: 0) }
-                DeveloperWebPreview(urlString: vm.developerPreviewURL)
-                    .id(vm.developerPreviewRefreshID)
-                    .frame(width: vm.developerPreviewDevice == "mobile" ? 390 : nil)
-                    .background(Color.black)
-                    .overlay(RoundedRectangle(cornerRadius: vm.developerPreviewDevice == "mobile" ? 18 : 0).stroke(vm.developerPreviewDevice == "mobile" ? UI.lineSoft : Color.clear, lineWidth: 1))
-                    .clipShape(RoundedRectangle(cornerRadius: vm.developerPreviewDevice == "mobile" ? 18 : 0))
-                if vm.developerPreviewDevice == "mobile" { Spacer(minLength: 0) }
+            if vm.developerPreviewIsRunning {
+                HStack {
+                    if vm.developerPreviewDevice == "mobile" { Spacer(minLength: 0) }
+                    DeveloperWebPreview(urlString: vm.developerPreviewURL)
+                        .id(vm.developerPreviewRefreshID)
+                        .frame(width: vm.developerPreviewDevice == "mobile" ? 390 : nil)
+                        .background(Color.black)
+                        .overlay(RoundedRectangle(cornerRadius: vm.developerPreviewDevice == "mobile" ? 18 : 0).stroke(vm.developerPreviewDevice == "mobile" ? UI.lineSoft : Color.clear, lineWidth: 1))
+                        .clipShape(RoundedRectangle(cornerRadius: vm.developerPreviewDevice == "mobile" ? 18 : 0))
+                    if vm.developerPreviewDevice == "mobile" { Spacer(minLength: 0) }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.black.opacity(vm.developerPreviewDevice == "mobile" ? 0.08 : 0))
+            } else {
+                VStack(spacing: 14) {
+                    Image(systemName: "play.rectangle")
+                        .font(.system(size: 34, weight: .semibold))
+                        .foregroundStyle(UI.muted)
+                    Text("Preview is stopped")
+                        .font(AppFont.bodySemi(17))
+                        .foregroundStyle(UI.text)
+                    Text("Run the project to see generated code here. LocalClaw uses the existing project scripts and keeps the preview inside this workspace.")
+                        .font(AppFont.body(12))
+                        .foregroundStyle(UI.muted)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 460)
+                    Button {
+                        vm.developerRunPreview()
+                    } label: {
+                        Label("Run preview", systemImage: "play.fill")
+                    }
+                    .buttonStyle(CTAButton(primary: true))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(UI.cardSoft.opacity(0.45))
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color.black.opacity(vm.developerPreviewDevice == "mobile" ? 0.08 : 0))
         }
     }
 
@@ -12423,6 +12682,8 @@ struct ContentView: View {
             Label(title, systemImage: icon)
                 .font(AppFont.bodySemi(12))
                 .foregroundStyle(active ? UI.accent : UI.text)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
                 .background(RoundedRectangle(cornerRadius: 8).fill(active ? UI.card : Color.clear))
@@ -12505,8 +12766,8 @@ struct ContentView: View {
     private var developerGitHubPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             developerPanelHeader(
-                title: "GitHub",
-                subtitle: vm.developerGitStatus.isRepository ? (vm.developerGitStatus.repoSlug.isEmpty ? vm.developerGitStatus.remoteURL : vm.developerGitStatus.repoSlug) : "Connect a GitHub repository by opening a git project folder.",
+                title: "Source Control",
+                subtitle: vm.developerGitStatus.isRepository ? (vm.developerGitStatus.repoSlug.isEmpty ? vm.developerGitStatus.remoteURL : vm.developerGitStatus.repoSlug) : "Connect GitHub, clone a repository, or create one for this workspace.",
                 icon: "arrow.triangle.branch",
                 actionTitle: vm.developerGitIsRefreshing ? "Checking..." : "Refresh",
                 action: { vm.refreshDeveloperGitStatus() }
@@ -15431,6 +15692,55 @@ struct ContentView: View {
             .overlay(RoundedRectangle(cornerRadius: 999).stroke(color.opacity(0.25), lineWidth: 1))
     }
 
+    private var filteredCronJobs: [InstallerViewModel.CronJobInfo] {
+        let query = vm.cronSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return vm.cronJobs.filter { job in
+            let matchesSearch = query.isEmpty || [
+                job.name,
+                job.description ?? "",
+                job.agentID ?? "",
+                job.message,
+                job.deliveryChannel ?? "",
+                job.deliveryTo ?? ""
+            ].joined(separator: " ").lowercased().contains(query)
+            guard matchesSearch else { return false }
+            switch vm.cronListFilter {
+            case "Active": return job.enabled
+            case "Paused": return !job.enabled
+            case "Issues": return cronJobHasIssue(job)
+            default: return true
+            }
+        }
+    }
+
+    private func cronJobHasIssue(_ job: InstallerViewModel.CronJobInfo) -> Bool {
+        if let agentID = job.agentID, !agentID.isEmpty,
+           !vm.agentsIsLoading,
+           !vm.agents.contains(where: { $0.id == agentID }) {
+            return true
+        }
+        if job.deliveryMode == "channel" {
+            guard let channelID = job.deliveryChannel, !channelID.isEmpty,
+                  let channel = vm.channels.first(where: { $0.id.caseInsensitiveCompare(channelID) == .orderedSame }),
+                  channel.isActive else {
+                return true
+            }
+            if (job.deliveryTo ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return true
+            }
+        }
+        return false
+    }
+
+    private var cronReadinessIssues: [String] {
+        var issues: [String] = []
+        if !vm.gatewayIsRunning { issues.append("OpenClaw Gateway is offline") }
+        if !vm.agentsIsLoading, vm.agents.isEmpty { issues.append("No agent is available") }
+        let affected = vm.cronJobs.filter { $0.enabled && cronJobHasIssue($0) }.count
+        if affected > 0 { issues.append("\(affected) active job\(affected == 1 ? "" : "s") need attention") }
+        return issues
+    }
+
     var cronJobsCenter: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
@@ -15465,10 +15775,44 @@ struct ContentView: View {
                 cronMetricCard("Scheduled", value: "\(vm.cronJobs.filter { $0.nextRun != nil || $0.scheduleLabel != "Schedule" }.count)", icon: "clock.fill", tint: Color(NSColor.systemBlue))
             }
 
+            automationReadinessPanel(
+                title: "Automation readiness",
+                issues: cronReadinessIssues,
+                isChecking: vm.automationReadinessIsLoading || vm.cronJobsIsLoading || vm.agentsIsLoading || vm.channelsIsLoading
+            )
+
+            HStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(UI.muted)
+                    TextField("Search jobs, agents, or destinations", text: $vm.cronSearchQuery)
+                        .textFieldStyle(.plain)
+                        .font(AppFont.body(12))
+                }
+                .padding(.horizontal, 11)
+                .frame(maxWidth: .infinity, minHeight: 36)
+                .background(RoundedRectangle(cornerRadius: 9).fill(UI.cardSoft))
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(UI.lineSoft, lineWidth: 1))
+
+                Picker("Job filter", selection: $vm.cronListFilter) {
+                    ForEach(["All", "Active", "Paused", "Issues"], id: \.self) { filter in
+                        Text(filter).tag(filter)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 340)
+
+                Text("\(filteredCronJobs.count) shown")
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(UI.muted)
+                    .frame(minWidth: 70, alignment: .trailing)
+            }
+
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
-                    if vm.cronJobs.isEmpty {
-                        Text(vm.cronJobsIsLoading ? "Checking cron jobs..." : "No cron jobs configured yet.")
+                    if filteredCronJobs.isEmpty {
+                        Text(vm.cronJobsIsLoading ? "Checking cron jobs..." : (vm.cronJobs.isEmpty ? "No cron jobs configured yet." : "No jobs match the current search and filter."))
                             .font(AppFont.body(12))
                             .foregroundStyle(UI.muted)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -15479,7 +15823,7 @@ struct ContentView: View {
                             .font(AppFont.bodySemi(13))
                             .foregroundStyle(UI.muted)
                             .padding(.horizontal, 2)
-                        ForEach(vm.cronJobs) { job in
+                        ForEach(filteredCronJobs) { job in
                             cronJobRow(job)
                         }
                     }
@@ -15513,13 +15857,51 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
         .onAppear {
+            vm.refreshAutomationReadiness()
             if vm.cronJobsStatus == "Not loaded" {
                 vm.refreshCronJobs()
             }
             if vm.agentsStatus == "Not loaded" || vm.agents.isEmpty {
                 vm.refreshAgents()
             }
+            if vm.channelsStatus == "Not loaded" || vm.channels.isEmpty {
+                vm.refreshChannels()
+            }
         }
+    }
+
+    private func automationReadinessPanel(title: String, issues: [String], isChecking: Bool) -> some View {
+        let ready = !isChecking && issues.isEmpty
+        let tint = ready ? Color(NSColor.systemGreen) : (isChecking ? Color(NSColor.systemBlue) : Color(NSColor.systemOrange))
+        return HStack(spacing: 10) {
+            Image(systemName: isChecking ? "arrow.triangle.2.circlepath" : (ready ? "checkmark.shield.fill" : "exclamationmark.triangle.fill"))
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(UI.text)
+                Text(isChecking ? "Checking Gateway, agents, and delivery channels..." : (ready ? "Gateway, agents, and delivery channels are ready." : issues.joined(separator: " · ")))
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            if !ready && !isChecking {
+                Button("Check again") {
+                    vm.refreshAutomationReadiness()
+                    vm.refreshAgents()
+                    vm.refreshChannels()
+                    vm.refreshCronJobs(silent: true)
+                }
+                .buttonStyle(CompactGhostButton())
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, minHeight: 50)
+        .background(RoundedRectangle(cornerRadius: 10).fill(tint.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(tint.opacity(0.32), lineWidth: 1))
     }
 
     private func cronMetricCard(_ title: String, value: String, icon: String, tint: Color) -> some View {
@@ -16144,22 +16526,61 @@ struct ContentView: View {
             .overlay(RoundedRectangle(cornerRadius: 999).stroke(color.opacity(0.25), lineWidth: 1))
     }
 
+    private func filteredKanbanCards(for column: InstallerViewModel.KanbanColumn) -> [InstallerViewModel.KanbanCard] {
+        if vm.kanbanHideCompleted && column.id == "done" { return [] }
+        let query = vm.kanbanSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return column.cards.filter { card in
+            let matchesSearch = query.isEmpty || [
+                card.title,
+                card.detail,
+                card.priority,
+                card.agentID,
+                card.deliveryChannel,
+                card.deliveryTo
+            ].joined(separator: " ").lowercased().contains(query)
+            guard matchesSearch else { return false }
+            switch vm.kanbanListFilter {
+            case "Active": return column.id == "doing" || column.id == "review" || vm.kanbanRunningCardIDs.contains(card.id)
+            case "Scheduled": return !card.cronJobID.isEmpty
+            case "Issues": return kanbanCardHasIssue(card)
+            default: return true
+            }
+        }
+    }
+
+    private func kanbanCardHasIssue(_ card: InstallerViewModel.KanbanCard) -> Bool {
+        if !vm.agentsIsLoading, !vm.agents.contains(where: { $0.id == card.agentID }) {
+            return true
+        }
+        if card.cronEnabled && card.cronJobID.isEmpty {
+            return true
+        }
+        if card.deliveryMode == "channel" {
+            guard !card.deliveryTo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let channel = vm.channels.first(where: { $0.id.caseInsensitiveCompare(card.deliveryChannel) == .orderedSame }),
+                  channel.isActive else {
+                return true
+            }
+        }
+        return false
+    }
+
+    private var kanbanReadinessIssues: [String] {
+        var issues: [String] = []
+        if !vm.gatewayIsRunning { issues.append("OpenClaw Gateway is offline") }
+        if !vm.agentsIsLoading, vm.agents.isEmpty { issues.append("No agent is available") }
+        let affected = vm.kanbanCards.filter(kanbanCardHasIssue).count
+        if affected > 0 { issues.append("\(affected) task\(affected == 1 ? "" : "s") need attention") }
+        return issues
+    }
+
     var kanbanCenter: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 10) {
-                        Text("KANBAN")
-                            .font(AppFont.heading(28))
-                            .foregroundStyle(UI.text)
-                        Text("BETA")
-                            .font(AppFont.bodySemi(10))
-                            .foregroundStyle(UI.accent)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(RoundedRectangle(cornerRadius: 999).fill(UI.accent.opacity(0.12)))
-                            .overlay(RoundedRectangle(cornerRadius: 999).stroke(UI.accent.opacity(0.35), lineWidth: 1))
-                    }
+                    Text("KANBAN")
+                        .font(AppFont.heading(28))
+                        .foregroundStyle(UI.text)
                     Text("Plan work in classic Kanban stages. A card does not run until you start it or create a Cron Job.")
                         .font(AppFont.body(13))
                         .foregroundStyle(UI.muted)
@@ -16172,9 +16593,14 @@ struct ContentView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .background(RoundedRectangle(cornerRadius: 999).fill(UI.cardSoft))
-                Button("Refresh Agents") { vm.refreshAgents() }
+                Button("Refresh") {
+                    vm.refreshAutomationReadiness()
+                    vm.refreshAgents()
+                    vm.refreshChannels()
+                    if vm.hasScheduledKanbanAutomation { vm.refreshCronJobs(silent: true) }
+                }
                     .buttonStyle(CTAButton(primary: false))
-                    .disabled(vm.agentsIsLoading)
+                    .disabled(vm.agentsIsLoading || vm.channelsIsLoading || vm.automationReadinessIsLoading)
                 Button("New Task") { vm.beginCreateKanbanCard() }
                     .buttonStyle(CTAButton(primary: true))
             }
@@ -16184,6 +16610,41 @@ struct ContentView: View {
                 kanbanMetricCard("In progress", value: "\(vm.kanbanColumns.first { $0.id == "doing" }?.cards.count ?? 0)", icon: "bolt.fill", tint: Color(NSColor.systemOrange))
                 kanbanMetricCard("Agents", value: "\(max(vm.agents.count, 1))", icon: "person.2.fill", tint: Color(NSColor.systemBlue))
                 kanbanMetricCard("Schedulable", value: "\(vm.kanbanCards.filter { $0.cronEnabled }.count)", icon: "calendar.badge.clock", tint: Color(NSColor.systemGreen))
+            }
+
+            automationReadinessPanel(
+                title: "Board readiness",
+                issues: kanbanReadinessIssues,
+                isChecking: vm.automationReadinessIsLoading || vm.agentsIsLoading || vm.channelsIsLoading || vm.cronJobsIsLoading
+            )
+
+            HStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(UI.muted)
+                    TextField("Search tasks, agents, or destinations", text: $vm.kanbanSearchQuery)
+                        .textFieldStyle(.plain)
+                        .font(AppFont.body(12))
+                }
+                .padding(.horizontal, 11)
+                .frame(maxWidth: .infinity, minHeight: 36)
+                .background(RoundedRectangle(cornerRadius: 9).fill(UI.cardSoft))
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(UI.lineSoft, lineWidth: 1))
+
+                Picker("Task filter", selection: $vm.kanbanListFilter) {
+                    ForEach(["All", "Active", "Scheduled", "Issues"], id: \.self) { filter in
+                        Text(filter).tag(filter)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 360)
+
+                Toggle("Hide completed", isOn: $vm.kanbanHideCompleted)
+                    .toggleStyle(.checkbox)
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(UI.muted)
+                    .fixedSize()
             }
 
             HStack(alignment: .top, spacing: 10) {
@@ -16199,8 +16660,12 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
         .onAppear {
+            vm.refreshAutomationReadiness()
             if vm.agentsStatus == "Not loaded" || vm.agents.isEmpty {
                 vm.refreshAgents()
+            }
+            if vm.channelsStatus == "Not loaded" || vm.channels.isEmpty {
+                vm.refreshChannels()
             }
             if vm.hasScheduledKanbanAutomation {
                 vm.refreshCronJobs(silent: true)
@@ -16210,6 +16675,7 @@ struct ContentView: View {
 
     private func kanbanColumn(_ column: InstallerViewModel.KanbanColumn) -> some View {
         let tint = kanbanColor(column.colorName)
+        let cards = filteredKanbanCards(for: column)
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: column.icon)
@@ -16219,7 +16685,7 @@ struct ContentView: View {
                     .font(AppFont.bodySemi(14))
                     .foregroundStyle(UI.text)
                 Spacer()
-                Text("\(column.cards.count)")
+                Text("\(cards.count)")
                     .font(AppFont.bodySemi(11))
                     .foregroundStyle(UI.muted)
                     .padding(.horizontal, 7)
@@ -16233,7 +16699,7 @@ struct ContentView: View {
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
-                    if column.cards.isEmpty {
+                    if cards.isEmpty && column.cards.isEmpty && vm.kanbanSearchQuery.isEmpty && vm.kanbanListFilter == "All" && !(vm.kanbanHideCompleted && column.id == "done") {
                         Button {
                             vm.beginCreateKanbanCard(columnID: column.id)
                         } label: {
@@ -16248,8 +16714,18 @@ struct ContentView: View {
                             .background(RoundedRectangle(cornerRadius: 10).fill(UI.card.opacity(0.55)))
                         }
                         .buttonStyle(.plain)
+                    } else if cards.isEmpty {
+                        VStack(spacing: 6) {
+                            Image(systemName: vm.kanbanHideCompleted && column.id == "done" ? "eye.slash" : "line.3.horizontal.decrease.circle")
+                                .font(.system(size: 18, weight: .semibold))
+                            Text(vm.kanbanHideCompleted && column.id == "done" ? "Completed tasks hidden" : "No matching tasks")
+                                .font(AppFont.bodySemi(11))
+                        }
+                        .foregroundStyle(UI.muted)
+                        .frame(maxWidth: .infinity, minHeight: 72)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(UI.card.opacity(0.45)))
                     } else {
-                        ForEach(column.cards) { card in
+                        ForEach(cards) { card in
                             kanbanCard(card, columnID: column.id)
                         }
                     }
@@ -17678,51 +18154,110 @@ struct ContentView: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("Recommended local models").font(AppFont.bodySemi(15)).foregroundStyle(UI.text)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Smart local advisor").font(AppFont.bodySemi(15)).foregroundStyle(UI.text)
+                        Text("Ranks models by workload, memory fit, speed, and tool use.")
+                            .font(AppFont.body(10))
+                            .foregroundStyle(UI.muted)
+                    }
                     Spacer()
-                    Picker("Filter", selection: $vm.modelsRecommendationFilter) {
-                        ForEach(["Balanced", "Fast", "Low RAM", "Long context", "Coding", "Best quality"], id: \.self) { filter in
-                            Text(filter).tag(filter)
+                    Picker("Best for", selection: $vm.modelsRecommendationFilter) {
+                        ForEach(LocalModelWorkload.allCases) { workload in
+                            Text(workload.rawValue).tag(workload)
                         }
                     }
                     .pickerStyle(.menu)
-                    .frame(width: 150)
+                    .frame(width: 175)
                 }
-                ForEach(vm.recommendedLocalModels(filter: vm.modelsRecommendationFilter).prefix(4)) { model in
-                    Button {
-                        vm.inferenceMode = .local
-                        vm.selectInferenceModeFromUser(.local)
-                        vm.selectedLocalLMStudioModel = vm.localProviderModelIds[model.name] ?? model.providerId
-                        if !vm.localLMStudioModels.contains(vm.selectedLocalLMStudioModel),
-                           let match = vm.localLMStudioModels.first(where: { $0.contains(model.providerId) || $0.contains(model.query.split(separator: "@").first.map(String.init) ?? model.providerId) }) {
-                            vm.selectedLocalLMStudioModel = match
-                        }
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: model.family == "qwen" ? "q.square.fill" : "cpu.fill")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(UI.accent)
-                                .frame(width: 24)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(model.name).font(AppFont.bodySemi(12)).foregroundStyle(UI.text).lineLimit(1)
-                                Text("\(model.summary) · \(model.size) · \(model.context)").font(AppFont.body(10)).foregroundStyle(UI.muted).lineLimit(1)
-                            }
-                            Spacer()
-                            Text("Select")
-                                .font(AppFont.bodySemi(10))
-                                .foregroundStyle(UI.accent)
-                        }
-                        .padding(9)
-                        .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
-                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
-                    }
-                    .buttonStyle(.plain)
+                Text(vm.localModelAdvisorSummary)
+                    .font(AppFont.body(10))
+                    .foregroundStyle(vm.detectedHardwareProfile.isAppleSilicon ? UI.muted : Color(NSColor.systemOrange))
+                    .fixedSize(horizontal: false, vertical: true)
+
+                let recommendations = Array(vm.recommendedLocalModels(workload: vm.modelsRecommendationFilter).prefix(4))
+                ForEach(Array(recommendations.enumerated()), id: \.element.id) { index, recommendation in
+                    localModelRecommendationRow(recommendation, rank: index + 1)
                 }
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
+        }
+    }
+
+    private func localModelRecommendationRow(_ recommendation: InstallerViewModel.LocalModelRecommendation, rank: Int) -> some View {
+        let model = recommendation.model
+        let match = recommendation.match
+        let installed = vm.installedLocalModelID(for: model) != nil
+        let fitColor = localModelFitColor(match.fit)
+        let actionLabel = installed ? "Use" : "Download \(model.size)"
+
+        return Button {
+            vm.selectOrDownloadLocalModel(recommendation)
+        } label: {
+            HStack(alignment: .center, spacing: 10) {
+                modelFamilyMark(model.family)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 6) {
+                        Text(model.name)
+                            .font(AppFont.bodySemi(12))
+                            .foregroundStyle(UI.text)
+                            .lineLimit(1)
+                        if rank == 1 {
+                            modelAdvisorBadge("Best match", color: Color(NSColor.systemGreen))
+                        }
+                        modelAdvisorBadge(match.fit.rawValue, color: fitColor)
+                        if installed {
+                            modelAdvisorBadge("Installed", color: Color(NSColor.systemBlue))
+                        }
+                    }
+                    Text("\(model.summary) · \(match.score)% match · \(match.targetContextK)K working context")
+                        .font(AppFont.body(10))
+                        .foregroundStyle(UI.muted)
+                        .lineLimit(1)
+                    Text(match.rationale)
+                        .font(AppFont.body(10))
+                        .foregroundStyle(UI.muted)
+                        .lineLimit(2)
+                }
+
+                Spacer(minLength: 8)
+
+                Text(actionLabel)
+                    .font(AppFont.bodySemi(10))
+                    .foregroundStyle(match.fit == .tooLarge || match.fit == .unsupported ? UI.muted : UI.accent)
+                    .lineLimit(1)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(UI.cardSoft))
+            }
+            .padding(9)
+            .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(rank == 1 ? Color(NSColor.systemGreen).opacity(0.30) : UI.lineSoft, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(vm.modelsApplyInProgress || match.fit == .tooLarge || match.fit == .unsupported)
+        .help(match.rationale)
+    }
+
+    private func modelAdvisorBadge(_ title: String, color: Color) -> some View {
+        Text(title)
+            .font(AppFont.bodySemi(9))
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(color.opacity(0.10)))
+    }
+
+    private func localModelFitColor(_ fit: LocalModelFit) -> Color {
+        switch fit {
+        case .great: return Color(NSColor.systemGreen)
+        case .good: return Color(NSColor.systemBlue)
+        case .tight: return Color(NSColor.systemOrange)
+        case .tooLarge, .unsupported: return Color(NSColor.systemRed)
         }
     }
 

@@ -8,16 +8,59 @@ enum InstallState: String {
     case fail = "FAIL"
 }
 
-struct HardwareProfile {
+struct HardwareProfile: Equatable, Sendable {
     let chip: String
     let memoryGB: Int
     let isAppleSilicon: Bool
 }
 
-struct Recommendation {
+struct Recommendation: Equatable, Sendable {
     let tier: String
     let model: String
     let quant: String
+    let rationale: String
+}
+
+enum LocalModelWorkload: String, CaseIterable, Identifiable, Sendable {
+    case automatic = "Automatic"
+    case general = "General"
+    case coding = "Coding"
+    case reasoning = "Reasoning"
+    case longContext = "Long context"
+    case fast = "Fast replies"
+
+    var id: String { rawValue }
+}
+
+enum LocalModelFit: String, Sendable {
+    case great = "Great fit"
+    case good = "Fits"
+    case tight = "Tight fit"
+    case tooLarge = "Too large"
+    case unsupported = "Apple Silicon required"
+}
+
+struct LocalModelScoringInput: Identifiable, Equatable, Sendable {
+    var id: String { name }
+    let name: String
+    let fileSizeGB: Double
+    let maxContextK: Int
+    let quality: Double
+    let coding: Double
+    let reasoning: Double
+    let speed: Double
+    let toolUse: Double
+    let multimodal: Bool
+}
+
+struct LocalModelMatch: Identifiable, Equatable, Sendable {
+    var id: String { model.id }
+    let model: LocalModelScoringInput
+    let score: Int
+    let fit: LocalModelFit
+    let estimatedWorkingMemoryGB: Double
+    let estimatedHeadroomGB: Double
+    let targetContextK: Int
     let rationale: String
 }
 
@@ -294,30 +337,141 @@ final class InstallerEngine: @unchecked Sendable {
         return HardwareProfile(chip: chip, memoryGB: memGB, isAppleSilicon: isAppleSilicon)
     }
 
-    func recommend(for profile: HardwareProfile) -> Recommendation {
-        // Match the local picker to a simple fast/balanced/power ladder.
-        // Keep Intel on the safer end because swap pressure hurts the install flow.
-        if !profile.isAppleSilicon {
-            switch profile.memoryGB {
-            case ..<24:
-                return Recommendation(tier: "Starter", model: "Nemotron 3 Nano 4B", quant: "Q4_K_M", rationale: "Safer pick for Intel Macs and low-RAM machines")
-            case 24..<48:
-                return Recommendation(tier: "Balanced", model: "Qwen 3.5 4B", quant: "Q4_K_M", rationale: "Good balance when memory is tighter")
-            default:
-                return Recommendation(tier: "Power", model: "Qwen 3.5 9B", quant: "Q4_K_M", rationale: "Best quality/speed tradeoff on Intel with enough RAM")
-            }
+    func rankLocalModels(
+        _ models: [LocalModelScoringInput],
+        for profile: HardwareProfile,
+        workload: LocalModelWorkload
+    ) -> [LocalModelMatch] {
+        let targetContextK: Int
+        switch workload {
+        case .automatic:
+            targetContextK = profile.memoryGB <= 16 ? 8 : (profile.memoryGB <= 32 ? 16 : 32)
+        case .general:
+            targetContextK = 16
+        case .coding, .reasoning:
+            targetContextK = 32
+        case .longContext:
+            targetContextK = 128
+        case .fast:
+            targetContextK = 8
         }
 
-        switch profile.memoryGB {
-        case ..<12:
-            return Recommendation(tier: "Starter", model: "Nemotron 3 Nano 4B", quant: "Q4_K_M", rationale: "Fastest start on 8-11 GB")
-        case 12..<24:
-            return Recommendation(tier: "Balanced", model: "Qwen 3.5 4B", quant: "Q4_K_M", rationale: "AtomicBot-style sweet spot for 12-23 GB Macs")
-        case 24..<48:
-            return Recommendation(tier: "Power", model: "Qwen 3.5 9B", quant: "Q4_K_M", rationale: "Best default on 24-47 GB Macs")
-        default:
-            return Recommendation(tier: "Ultra", model: "Qwen 3.5 35B-A3B", quant: "Q4_K_M", rationale: "High-quality pick for Mac Studio-class memory")
+        let systemReserveGB = max(4.0, Double(profile.memoryGB) * 0.20)
+        let usableMemoryGB = max(1.0, Double(profile.memoryGB) - systemReserveGB)
+
+        return models.map { model in
+            let contextK = min(model.maxContextK, targetContextK)
+            let contextScale = 0.45 + min(model.fileSizeGB / 30.0, 1.0) * 0.45
+            let contextMemoryGB = (Double(contextK) / 32.0) * contextScale
+            let estimatedMemoryGB = model.fileSizeGB * 1.15 + contextMemoryGB + (model.multimodal ? 0.45 : 0)
+            let headroomGB = usableMemoryGB - estimatedMemoryGB
+
+            let fit: LocalModelFit
+            if !profile.isAppleSilicon {
+                fit = .unsupported
+            } else if estimatedMemoryGB <= usableMemoryGB * 0.72 {
+                fit = .great
+            } else if estimatedMemoryGB <= usableMemoryGB {
+                fit = .good
+            } else if estimatedMemoryGB <= Double(profile.memoryGB) * 0.90 {
+                fit = .tight
+            } else {
+                fit = .tooLarge
+            }
+
+            let contextScore = min(5.0, max(1.0, 1.0 + log2(Double(max(model.maxContextK, 16)) / 16.0)))
+            let capabilityScore: Double
+            switch workload {
+            case .automatic:
+                capabilityScore = model.quality * 0.25 + model.coding * 0.20 + model.reasoning * 0.20 + model.speed * 0.20 + model.toolUse * 0.15
+            case .general:
+                capabilityScore = model.quality * 0.45 + model.coding * 0.10 + model.reasoning * 0.15 + model.speed * 0.20 + model.toolUse * 0.10
+            case .coding:
+                capabilityScore = model.quality * 0.10 + model.coding * 0.50 + model.reasoning * 0.15 + model.speed * 0.10 + model.toolUse * 0.15
+            case .reasoning:
+                capabilityScore = model.quality * 0.10 + model.coding * 0.10 + model.reasoning * 0.55 + model.speed * 0.10 + model.toolUse * 0.15
+            case .longContext:
+                capabilityScore = model.quality * 0.15 + model.coding * 0.10 + model.reasoning * 0.15 + model.speed * 0.05 + model.toolUse * 0.10 + contextScore * 0.45
+            case .fast:
+                capabilityScore = model.quality * 0.15 + model.coding * 0.10 + model.reasoning * 0.10 + model.speed * 0.55 + model.toolUse * 0.10
+            }
+
+            let fitAdjustment: Double
+            switch fit {
+            case .great: fitAdjustment = 12
+            case .good: fitAdjustment = 6
+            case .tight: fitAdjustment = -12
+            case .tooLarge: fitAdjustment = -60
+            case .unsupported: fitAdjustment = -100
+            }
+            let memoryEfficiency = min(1.0, max(-1.0, headroomGB / usableMemoryGB)) * 8.0
+            let score = max(0, min(100, Int((capabilityScore * 17.0 + fitAdjustment + memoryEfficiency).rounded())))
+
+            let rationale: String
+            switch fit {
+            case .great, .good:
+                rationale = "\(workload.rawValue) focus with about \(Self.oneDecimal(estimatedMemoryGB)) GB working memory and \(Self.oneDecimal(max(0, headroomGB))) GB estimated headroom."
+            case .tight:
+                rationale = "Strong capability, but it may use swap with only \(Self.oneDecimal(max(0, headroomGB))) GB estimated headroom."
+            case .tooLarge:
+                rationale = "Needs about \(Self.oneDecimal(estimatedMemoryGB)) GB working memory; choose a smaller model for this Mac."
+            case .unsupported:
+                rationale = "LM Studio currently requires Apple Silicon on macOS. Use Cloud or OAuth on this Mac."
+            }
+
+            return LocalModelMatch(
+                model: model,
+                score: score,
+                fit: fit,
+                estimatedWorkingMemoryGB: estimatedMemoryGB,
+                estimatedHeadroomGB: headroomGB,
+                targetContextK: contextK,
+                rationale: rationale
+            )
         }
+        .sorted {
+            if $0.score != $1.score { return $0.score > $1.score }
+            if $0.fit != $1.fit {
+                return Self.fitRank($0.fit) > Self.fitRank($1.fit)
+            }
+            return $0.model.fileSizeGB < $1.model.fileSizeGB
+        }
+    }
+
+    func recommend(for profile: HardwareProfile) -> Recommendation {
+        let candidates = [
+            LocalModelScoringInput(name: "Qwen 3.5 2B", fileSizeGB: 1.7, maxContextK: 256, quality: 3.0, coding: 3.2, reasoning: 2.9, speed: 5.0, toolUse: 3.5, multimodal: true),
+            LocalModelScoringInput(name: "Qwen 3.5 4B", fileSizeGB: 2.7, maxContextK: 256, quality: 3.6, coding: 3.9, reasoning: 3.6, speed: 4.8, toolUse: 4.1, multimodal: true),
+            LocalModelScoringInput(name: "Nemotron 3 Nano 4B", fileSizeGB: 4.2, maxContextK: 256, quality: 3.9, coding: 4.0, reasoning: 4.1, speed: 4.4, toolUse: 4.2, multimodal: false),
+            LocalModelScoringInput(name: "Qwen 3.5 9B", fileSizeGB: 5.3, maxContextK: 256, quality: 4.3, coding: 4.6, reasoning: 4.4, speed: 4.2, toolUse: 4.6, multimodal: true),
+            LocalModelScoringInput(name: "Gemma 4 26B-A4B", fileSizeGB: 16.9, maxContextK: 256, quality: 4.7, coding: 4.5, reasoning: 4.7, speed: 3.8, toolUse: 4.5, multimodal: true),
+            LocalModelScoringInput(name: "Qwen 3.5 35B-A3B", fileSizeGB: 22.0, maxContextK: 256, quality: 4.9, coding: 4.8, reasoning: 4.9, speed: 3.2, toolUse: 4.8, multimodal: true)
+        ]
+        guard let best = rankLocalModels(candidates, for: profile, workload: .automatic).first else {
+            return Recommendation(tier: "Starter", model: "Qwen 3.5 2B", quant: "Q4_K_M", rationale: "Small local fallback.")
+        }
+        let tier: String
+        switch profile.memoryGB {
+        case ..<12: tier = "Starter"
+        case 12..<24: tier = "Balanced"
+        case 24..<48: tier = "Power"
+        default: tier = "Ultra"
+        }
+        return Recommendation(tier: tier, model: best.model.name, quant: "Q4_K_M", rationale: best.rationale)
+    }
+
+    private static func fitRank(_ fit: LocalModelFit) -> Int {
+        switch fit {
+        case .great: return 4
+        case .good: return 3
+        case .tight: return 2
+        case .tooLarge: return 1
+        case .unsupported: return 0
+        }
+    }
+
+    private static func oneDecimal(_ value: Double) -> String {
+        String(format: "%.1f", value)
     }
 
     func hasCommand(_ name: String) -> Bool {

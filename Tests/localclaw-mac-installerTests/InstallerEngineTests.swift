@@ -9,7 +9,7 @@ struct InstallerEngineTests {
 
         let reco = engine.recommend(for: profile)
 
-        #expect(reco.model == "Nemotron 3 Nano 4B")
+        #expect(reco.model == "Qwen 3.5 2B")
         #expect(reco.quant == "Q4_K_M")
     }
 
@@ -20,7 +20,7 @@ struct InstallerEngineTests {
         let reco = engine.recommend(for: profile)
 
         #expect(reco.tier == "Balanced")
-        #expect(reco.model == "Qwen 3.5 4B")
+        #expect(reco.model == "Qwen 3.5 9B")
         #expect(reco.quant == "Q4_K_M")
     }
 
@@ -32,7 +32,7 @@ struct InstallerEngineTests {
 
         #expect(reco.tier == "Power")
         #expect(reco.model == "Qwen 3.5 9B")
-        #expect(reco.rationale.contains("24-47 GB"))
+        #expect(reco.rationale.contains("working memory"))
         #expect(reco.quant == "Q4_K_M")
     }
 
@@ -43,8 +43,57 @@ struct InstallerEngineTests {
         let reco = engine.recommend(for: profile)
 
         #expect(reco.tier == "Ultra")
-        #expect(reco.model == "Qwen 3.5 35B-A3B")
+        #expect(reco.model == "Qwen 3.5 9B")
         #expect(reco.quant == "Q4_K_M")
+    }
+
+    @Test func localModelRankingChangesWithWorkload() throws {
+        let engine = InstallerEngine()
+        let profile = HardwareProfile(chip: "Apple M3", memoryGB: 24, isAppleSilicon: true)
+        let models = [
+            LocalModelScoringInput(name: "Code specialist", fileSizeGB: 3, maxContextK: 128, quality: 3.5, coding: 5, reasoning: 2.5, speed: 3.5, toolUse: 4.5, multimodal: false),
+            LocalModelScoringInput(name: "Reasoning specialist", fileSizeGB: 3, maxContextK: 128, quality: 3.5, coding: 2.5, reasoning: 5, speed: 3.5, toolUse: 4, multimodal: false)
+        ]
+
+        let coding = try #require(engine.rankLocalModels(models, for: profile, workload: .coding).first)
+        let reasoning = try #require(engine.rankLocalModels(models, for: profile, workload: .reasoning).first)
+
+        #expect(coding.model.name == "Code specialist")
+        #expect(reasoning.model.name == "Reasoning specialist")
+    }
+
+    @Test func localModelRankingRejectsModelsWithoutMemoryHeadroom() throws {
+        let engine = InstallerEngine()
+        let profile = HardwareProfile(chip: "Apple M2", memoryGB: 16, isAppleSilicon: true)
+        let oversized = LocalModelScoringInput(name: "Oversized", fileSizeGB: 22, maxContextK: 256, quality: 5, coding: 5, reasoning: 5, speed: 3, toolUse: 5, multimodal: true)
+
+        let match = try #require(engine.rankLocalModels([oversized], for: profile, workload: .automatic).first)
+
+        #expect(match.fit == .tooLarge)
+        #expect(match.estimatedHeadroomGB < 0)
+    }
+
+    @Test func localModelRankingExplainsUnsupportedIntelMacs() throws {
+        let engine = InstallerEngine()
+        let profile = HardwareProfile(chip: "Intel Core i9", memoryGB: 32, isAppleSilicon: false)
+        let model = LocalModelScoringInput(name: "Small", fileSizeGB: 2, maxContextK: 128, quality: 3, coding: 3, reasoning: 3, speed: 5, toolUse: 3, multimodal: false)
+
+        let match = try #require(engine.rankLocalModels([model], for: profile, workload: .automatic).first)
+
+        #expect(match.fit == .unsupported)
+        #expect(match.rationale.contains("Apple Silicon"))
+    }
+
+    @Test func longContextWorkloadBudgetsForLargerContext() throws {
+        let engine = InstallerEngine()
+        let profile = HardwareProfile(chip: "Apple M4", memoryGB: 64, isAppleSilicon: true)
+        let model = LocalModelScoringInput(name: "Long context", fileSizeGB: 5, maxContextK: 256, quality: 4, coding: 4, reasoning: 4, speed: 4, toolUse: 4, multimodal: false)
+
+        let automatic = try #require(engine.rankLocalModels([model], for: profile, workload: .automatic).first)
+        let longContext = try #require(engine.rankLocalModels([model], for: profile, workload: .longContext).first)
+
+        #expect(longContext.targetContextK == 128)
+        #expect(longContext.estimatedWorkingMemoryGB > automatic.estimatedWorkingMemoryGB)
     }
 
     @Test func versionInfoFallbackWhenCommandMissing() {
