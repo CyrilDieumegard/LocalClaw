@@ -1102,6 +1102,7 @@ struct AdvancedCommandCenterView: View {
         var id: String { rawValue }
     }
 
+    @ObservedObject var appViewModel: InstallerViewModel
     @StateObject private var viewModel = CommandCenterViewModel()
     @State private var leftPanelWidth: CGFloat = 320
     @State private var showSettings = false
@@ -1135,6 +1136,7 @@ struct AdvancedCommandCenterView: View {
             }
         }
         .onAppear {
+            appViewModel.refreshRuntimeSnapshot()
             viewModel.addLog(.info, "Monitoring is off by default. Click Start Monitoring when you want live resource checks.")
         }
         .onDisappear {
@@ -1221,7 +1223,6 @@ struct AdvancedCommandCenterView: View {
             HStack {
                 Label("HEALTH CHECK", systemImage: "checklist.checked")
                     .font(AppFont.heading(10))
-                    .kerning(0.6)
                     .foregroundStyle(UI.accent)
                 Spacer()
                 Text(viewModel.healthCheckSummary)
@@ -1281,6 +1282,15 @@ struct AdvancedCommandCenterView: View {
         return UI.muted
     }
 
+    private var runtimeHealthColor: Color {
+        switch appViewModel.runtimeSnapshot.health {
+        case .checking: return UI.muted
+        case .ready: return Color(NSColor.systemGreen)
+        case .attention: return Color(NSColor.systemOrange)
+        case .blocked: return Color(NSColor.systemRed)
+        }
+    }
+
     private func healthCheckRow(_ item: CommandCenterViewModel.HealthCheckItem) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: item.state.icon)
@@ -1321,24 +1331,23 @@ struct AdvancedCommandCenterView: View {
             HStack {
                 Text("SYSTEM HEALTH")
                     .font(AppFont.heading(10))
-                    .kerning(0.6)
                     .foregroundStyle(UI.accent)
                 Spacer()
-                Text(viewModel.gatewayStatus == .online ? "Ready" : "Needs check")
+                Text(appViewModel.runtimeSnapshot.health.rawValue)
                     .font(AppFont.bodySemi(10))
-                    .foregroundStyle(viewModel.gatewayStatus == .online ? .green : .orange)
+                    .foregroundStyle(runtimeHealthColor)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(RoundedRectangle(cornerRadius: 999).fill(UI.card))
             }
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                healthTile("Gateway", value: viewModel.gatewayStatus.rawValue, icon: viewModel.gatewayStatus.icon, color: viewModel.gatewayStatus.color)
-                healthTile("LLM mode", value: viewModel.inferenceModeSelection.rawValue, icon: "switch.2", color: UI.accent)
+                healthTile("Gateway", value: appViewModel.runtimeSnapshot.gatewayReady ? "Online" : "Offline", icon: appViewModel.runtimeSnapshot.gatewayReady ? "checkmark.circle.fill" : "xmark.circle.fill", color: appViewModel.runtimeSnapshot.gatewayReady ? .green : .red)
+                healthTile("LLM route", value: appViewModel.runtimeSnapshot.route.rawValue, icon: "switch.2", color: UI.accent)
                 healthTile("Monitor", value: viewModel.isMonitoring ? "Active" : "Off", icon: viewModel.isMonitoring ? "waveform" : "waveform.slash", color: viewModel.isMonitoring ? .green : UI.muted)
-                healthTile("Active model", value: viewModel.inferenceModeSelection == .local ? "LM Studio" : shortModelName(viewModel.selectedModel), icon: "cpu.fill", color: .blue)
-                healthTile("OpenClaw", value: viewModel.systemInfo.openclawVersion, icon: "terminal", color: .green)
-                healthTile("Port", value: viewModel.systemInfo.gatewayPort, icon: "network", color: .purple)
+                healthTile("Active model", value: appViewModel.runtimeSnapshot.modelID, icon: "cpu.fill", color: appViewModel.runtimeSnapshot.modelReady ? .blue : .orange)
+                healthTile("OpenClaw", value: appViewModel.runtimeSnapshot.openClawVersion, icon: "terminal", color: appViewModel.runtimeSnapshot.openClawInstalled ? .green : .red)
+                healthTile("Authentication", value: appViewModel.runtimeSnapshot.authLabel, icon: "key.fill", color: appViewModel.runtimeSnapshot.authReady ? .green : .orange)
             }
         }
         .padding(12)
@@ -1351,21 +1360,25 @@ struct AdvancedCommandCenterView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("NEXT ACTIONS")
                 .font(AppFont.heading(10))
-                .kerning(0.6)
                 .foregroundStyle(UI.accent)
 
             Button(action: {
-                workspaceTab = .operations
-                rightTab = .logs
-                viewModel.repairOpenClawConnection()
+                if appViewModel.runtimeSnapshot.health == .blocked {
+                    workspaceTab = .operations
+                    rightTab = .logs
+                    viewModel.repairOpenClawConnection()
+                } else {
+                    appViewModel.refreshRuntimeSnapshot()
+                    viewModel.runHealthCheck()
+                }
             }) {
                 HStack(spacing: 10) {
-                    Image(systemName: "wrench.and.screwdriver.fill")
+                    Image(systemName: appViewModel.runtimeSnapshot.health == .blocked ? "wrench.and.screwdriver.fill" : "checkmark.shield.fill")
                         .font(.system(size: 16, weight: .semibold))
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Repair OpenClaw Connection")
+                        Text(appViewModel.runtimeSnapshot.health == .blocked ? "Repair OpenClaw Connection" : "Verify Runtime Now")
                             .font(AppFont.bodySemi(14))
-                        Text("Fix Gateway, restart service, and reopen dashboard")
+                        Text(appViewModel.runtimeSnapshot.health == .blocked ? "Fix Gateway, restart service, and reopen dashboard" : appViewModel.runtimeSnapshot.routeLine)
                             .font(AppFont.body(11))
                             .foregroundStyle(.white.opacity(0.82))
                     }
@@ -1377,8 +1390,8 @@ struct AdvancedCommandCenterView: View {
                 .padding(12)
                 .frame(maxWidth: .infinity)
                 .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.orange)
+                        RoundedRectangle(cornerRadius: 8)
+                        .fill(appViewModel.runtimeSnapshot.health == .blocked ? Color.orange : UI.accent)
                 )
             }
             .buttonStyle(.plain)
@@ -1404,7 +1417,6 @@ struct AdvancedCommandCenterView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("SUPPORT REPORT")
                 .font(AppFont.heading(10))
-                .kerning(0.6)
                 .foregroundStyle(UI.accent)
 
             Text("Create a clean diagnostic report without exposing secrets. Use this when a customer sends a screenshot or says LocalClaw is stuck.")
@@ -1435,7 +1447,6 @@ struct AdvancedCommandCenterView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("MONITORING")
                 .font(AppFont.heading(10))
-                .kerning(0.6)
                 .foregroundStyle(UI.accent)
 
             Text("Live CPU, memory, swap, and heavy process checks stay off by default.")
@@ -1461,7 +1472,6 @@ struct AdvancedCommandCenterView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("OBSERVABILITY")
                 .font(AppFont.heading(10))
-                .kerning(0.6)
                 .foregroundStyle(UI.accent)
 
             HStack(spacing: 8) {
@@ -1483,7 +1493,6 @@ struct AdvancedCommandCenterView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("STATUS")
                 .font(AppFont.heading(10))
-                .kerning(0.6)
                 .foregroundStyle(UI.accent)
             
             HStack(spacing: 12) {
@@ -1527,7 +1536,6 @@ struct AdvancedCommandCenterView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("ACTIONS")
                 .font(AppFont.heading(10))
-                .kerning(0.6)
                 .foregroundStyle(UI.accent)
 
             Text("Quick actions")
@@ -1674,7 +1682,6 @@ struct AdvancedCommandCenterView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("SYSTEM")
                 .font(AppFont.heading(10))
-                .kerning(0.6)
                 .foregroundStyle(UI.accent)
             
             VStack(alignment: .leading, spacing: 6) {
@@ -1797,7 +1804,6 @@ struct AdvancedCommandCenterView: View {
                 HStack {
                     Text("RESOURCE DASHBOARD")
                         .font(AppFont.heading(12))
-                        .kerning(0.6)
                         .foregroundStyle(UI.accent)
                     Spacer()
                     Button(action: { viewModel.copyResourceReportToClipboard() }) {

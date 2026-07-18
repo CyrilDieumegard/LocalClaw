@@ -1,19 +1,22 @@
 # Roadmap
 
-## V1 Launch blockers
-- [x] Core installer engine
-- [x] SwiftUI wizard UI
-- [x] Live logs
-- [x] Build script for `.app` + `.dmg`
-- [x] Automated smoke checks (`scripts/release-check.sh`)
-- [x] Unit tests baseline (`swift test`)
-- [ ] Production signing (Developer ID)
-- [ ] Apple notarization + stapling
-- [ ] License key validation (checkout to app binding)
-- [ ] Support playbook (known failures + fixes)
+## Current focus: stability
 
-## V1.1
-- [ ] Resume/retry by step
-- [ ] Better rollback on partial failures
-- [ ] Crash reporting opt-in (privacy-safe)
-- [ ] Analytics opt-in for conversion funnel
+- [x] Developer ID signing, Apple notarization, and stapling
+- [x] License activation bound to a Mac
+- [x] Public DMG manifest with post-stapling SHA-256
+- [x] In-app update path for existing customers
+- [x] Canonical runtime health across product sections
+- [x] Private restore points before repair and update operations
+- [x] Redacted support bundle export
+- [x] Persistent Cron and Kanban execution receipts
+- [x] Hardware-aware local model ranking
+- [x] Validated remote model catalog with an offline fallback
+- [ ] Prove the complete new-customer matrix on a clean Apple Silicon Mac
+- [ ] Prove the complete existing-customer update matrix from the oldest supported build
+- [ ] Finish keyboard and VoiceOver checks on every primary workflow
+- [ ] Add privacy-safe crash reporting only if customer support data justifies it
+
+## Product rule
+
+No new major section is planned until activation, installation, updates, all three runtime routes, channels, and automations pass the release matrix consistently.

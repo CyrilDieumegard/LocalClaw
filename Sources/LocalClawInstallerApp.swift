@@ -564,8 +564,14 @@ final class InstallerViewModel: ObservableObject {
         var runtimeLabel: String {
             guard let model, !model.isEmpty else { return "Runtime unknown" }
             if model.hasPrefix("lmstudio/") { return "Local LLM" }
-            if model.hasPrefix("openrouter/") { return "Cloud LLM" }
-            if model.hasPrefix("openai/") || model.hasPrefix("google-gemini-cli/") { return "OAuth LLM" }
+            if model.hasPrefix("openai-codex/") || model.hasPrefix("google-gemini-cli/") { return "OAuth LLM" }
+            if model.hasPrefix("openrouter/")
+                || model.hasPrefix("openai/")
+                || model.hasPrefix("anthropic/")
+                || model.hasPrefix("google/")
+                || model.hasPrefix("x-ai/") {
+                return "Cloud LLM"
+            }
             return "Custom runtime"
         }
 
@@ -1070,6 +1076,8 @@ final class InstallerViewModel: ObservableObject {
 
     @Published var chatInput = ""
     @Published var chatImagePath = ""
+    @Published var developerInput = ""
+    @Published var developerImagePath = ""
     @Published var chatProjects: [ChatProject] = [] {
         didSet { persistChatProjects() }
     }
@@ -1099,11 +1107,15 @@ final class InstallerViewModel: ObservableObject {
         guard let projectID = activeChatProjectID else { return nil }
         return chatProjects.first { $0.id == projectID }
     }
+    var normalChatSessions: [ChatSession] {
+        chatSessions.filter { !$0.id.hasPrefix("localclaw-developer-chat-") }
+    }
     var activeChatSessionID: String {
-        if !selectedChatSessionID.isEmpty, chatSessions.contains(where: { $0.id == selectedChatSessionID }) {
+        if !selectedChatSessionID.isEmpty,
+           chatSessions.contains(where: { $0.id == selectedChatSessionID && !$0.id.hasPrefix("localclaw-developer-chat-") }) {
             return selectedChatSessionID
         }
-        return chatSessions.first?.id ?? "localclaw-ui-chat"
+        return normalChatSessions.first?.id ?? "localclaw-ui-chat"
     }
     @Published var chatIsSending = false
     @Published var chatStatus = "Ready"
@@ -1248,6 +1260,9 @@ final class InstallerViewModel: ObservableObject {
     @Published var cronJobsIsLoading = false
     @Published var automationReadinessIsLoading = false
     @Published var cronJobLogs: String = ""
+    @Published var automationReceipts: [AutomationReceipt] = AutomationReceiptStore.load() {
+        didSet { AutomationReceiptStore.save(automationReceipts) }
+    }
     @Published var cronSearchQuery = ""
     @Published var cronListFilter = "All"
     @Published var showCronJobCreator = false
@@ -1343,6 +1358,11 @@ final class InstallerViewModel: ObservableObject {
     @Published var kanbanHideCompleted = false
     @Published var healthLogs: String = ""
     @Published var healthStatus: String = "Unknown"
+    @Published var runtimeSnapshot: RuntimeSnapshot = .checking
+    @Published var runtimeSnapshotIsRefreshing = false
+    @Published var recoveryPoints: [RecoveryPoint] = []
+    @Published var recoveryStatus = "No recovery point created yet"
+    @Published var supportReportPath = ""
     @Published var usageLogs: String = ""
     @Published var estimatedMonthlyTokensM: Double = 2.0
     @Published var estimatedMonthlyCostUSD: Double = 0
@@ -1806,19 +1826,23 @@ final class InstallerViewModel: ObservableObject {
     var statusConfig: String = "PENDING"
     var statusService: String = "PENDING"
 
+    @Published var remoteLocalModelCandidates: [LocalModelCandidate] = []
+    @Published var localModelCatalogStatus = "Built-in catalog"
+    @Published var localModelCatalogIsRefreshing = false
+
     var modelOptions: [String] {
-        localModelCandidates.map(\.name)
+        localModelCatalog.map(\.name)
     }
 
     var localModelCatalog: [LocalModelCandidate] {
-        localModelCandidates
+        remoteLocalModelCandidates.isEmpty ? builtInLocalModelCandidates : remoteLocalModelCandidates
     }
 
     func localModelCandidate(named name: String) -> LocalModelCandidate? {
-        localModelCandidates.first { $0.name == name }
+        localModelCatalog.first { $0.name == name }
     }
 
-    private var localModelCandidates: [LocalModelCandidate] {
+    private var builtInLocalModelCandidates: [LocalModelCandidate] {
         [
             LocalModelCandidate(name: "Gemma 4 E2B Q4_K_M", query: "gemma-4-e2b@q4_k_m", providerId: "google/gemma-4-e2b", family: "google", summary: "Small multimodal model for low-memory Macs", fileSizeGB: 3.4, maxContextK: 128, qualityScore: 3.3, codingScore: 3.4, reasoningScore: 3.2, speedScore: 4.9, toolUseScore: 3.8, multimodal: true, badges: ["Low RAM"]),
             LocalModelCandidate(name: "Gemma 4 E4B Q4_K_M", query: "gemma-4-e4b@q4_k_m", providerId: "google/gemma-4-e4b", family: "google", summary: "Compact multimodal reasoning", fileSizeGB: 5.0, maxContextK: 128, qualityScore: 3.9, codingScore: 4.0, reasoningScore: 3.9, speedScore: 4.5, toolUseScore: 4.2, multimodal: true, badges: []),
@@ -1841,14 +1865,17 @@ final class InstallerViewModel: ObservableObject {
     }
 
     var modelQueries: [String: String] {
-        Dictionary(uniqueKeysWithValues: localModelCandidates.map { ($0.name, $0.query) })
+        Dictionary(uniqueKeysWithValues: localModelCatalog.map { ($0.name, $0.query) })
     }
 
     var localProviderModelIds: [String: String] {
-        Dictionary(uniqueKeysWithValues: localModelCandidates.map { ($0.name, $0.providerId) })
+        Dictionary(uniqueKeysWithValues: localModelCatalog.map { ($0.name, $0.providerId) })
     }
 
     private let engine = InstallerEngine()
+    private let runtimeSnapshotResolver = RuntimeSnapshotResolver()
+    private let recoveryService = RecoveryService()
+    private let localModelCatalogService = LocalModelCatalogService()
 
     private struct LocalLicenseRecord: Codable {
         let email: String
@@ -1867,7 +1894,7 @@ final class InstallerViewModel: ObservableObject {
         let sha256: String?
     }
 
-    struct LocalModelCandidate: Identifiable, Hashable, Sendable {
+    struct LocalModelCandidate: Identifiable, Hashable, Codable, Sendable {
         var id: String { name }
         let name: String
         let query: String
@@ -2065,14 +2092,16 @@ final class InstallerViewModel: ObservableObject {
         chip = profile.chip
         ram = "\(profile.memoryGB) GB"
         detectedHardwareProfile = profile
+        loadCachedLocalModelCatalog()
         refreshMachineDetails()
         let smartRecommendation = engine.rankLocalModels(
-            localModelCandidates.map(\.scoringInput),
+            localModelCatalog.map(\.scoringInput),
             for: profile,
             workload: .automatic
         ).first?.model.name
         recommendation = smartRecommendation ?? "\(reco.model) \(reco.quant)"
         selectedModel = recommendation
+        refreshLocalModelCatalog()
 
         statusHomebrew = engine.hasCommand("brew") ? "SKIP" : "PENDING"
         statusLMStudio = engine.hasLMStudioApp() ? "SKIP" : "PENDING"
@@ -2097,6 +2126,8 @@ final class InstallerViewModel: ObservableObject {
         refreshOpenRouterModels()
         refreshLocalClawBuildLabel()
         refreshVersions()
+        refreshRuntimeSnapshot()
+        refreshRecoveryPoints()
 
         // Auto-detect existing token from config
         loadTokenFromConfig()
@@ -2251,6 +2282,47 @@ final class InstallerViewModel: ObservableObject {
         gatewayToken = token
     }
 
+    private func loadCachedLocalModelCatalog() {
+        guard let document = localModelCatalogService.cached() else { return }
+        remoteLocalModelCandidates = document.models
+        localModelCatalogStatus = "Catalog v\(document.catalogVersion) · cached \(Self.shortDateTime(document.generatedAt))"
+    }
+
+    func refreshLocalModelCatalog() {
+        guard !localModelCatalogIsRefreshing else { return }
+        localModelCatalogIsRefreshing = true
+        let service = localModelCatalogService
+        Task {
+            do {
+                let document = try await service.fetch()
+                applyLocalModelCatalog(document)
+            } catch {
+                if remoteLocalModelCandidates.isEmpty {
+                    localModelCatalogStatus = "Built-in catalog · offline fallback"
+                } else {
+                    localModelCatalogStatus += " · offline"
+                }
+            }
+            localModelCatalogIsRefreshing = false
+        }
+    }
+
+    private func applyLocalModelCatalog(_ document: LocalModelCatalogDocument) {
+        let previousRecommendation = recommendation
+        remoteLocalModelCandidates = document.models
+        localModelCatalogStatus = "Catalog v\(document.catalogVersion) · updated \(Self.shortDateTime(document.generatedAt))"
+        if let ranked = engine.rankLocalModels(
+            document.models.map(\.scoringInput),
+            for: detectedHardwareProfile,
+            workload: modelsRecommendationFilter
+        ).first?.model.name {
+            recommendation = ranked
+            if selectedModel.isEmpty || selectedModel == previousRecommendation {
+                selectedModel = ranked
+            }
+        }
+    }
+
     func installHomebrewWithUserConsent() {
         showHomebrewPrompt = false
         append("Installing Homebrew with administrator privileges...")
@@ -2288,6 +2360,7 @@ final class InstallerViewModel: ObservableObject {
         machineOpenclawMB = usage.openclawMemoryMB
         machineNodeMB = usage.nodeMemoryMB
         topProcesses = engine.topProcesses(limit: 10)
+        refreshRuntimeSnapshot()
     }
 
     func refreshAutomationReadiness() {
@@ -2314,7 +2387,41 @@ final class InstallerViewModel: ObservableObject {
         if channelsStatus == "Not loaded" { refreshChannels() }
         if skillsStatus == "Not loaded" { refreshSkills() }
         if cronJobsStatus == "Not loaded" { refreshCronJobs() }
+        refreshRuntimeSnapshot()
         isRefreshingHome = false
+    }
+
+    func refreshRuntimeSnapshot() {
+        guard !runtimeSnapshotIsRefreshing else { return }
+        runtimeSnapshotIsRefreshing = true
+        let connectedChannels = channels.filter(\.isActive).count
+        let resolver = runtimeSnapshotResolver
+        Task.detached {
+            let snapshot = resolver.capture(connectedChannels: connectedChannels)
+            await MainActor.run {
+                self.applyRuntimeSnapshot(snapshot)
+            }
+        }
+    }
+
+    private func applyRuntimeSnapshot(_ snapshot: RuntimeSnapshot) {
+        runtimeSnapshot = snapshot
+        gatewayIsRunning = snapshot.gatewayReady
+        currentModel = snapshot.modelID
+        switch snapshot.health {
+        case .checking:
+            healthStatus = "Checking"
+        case .ready:
+            healthStatus = "Healthy"
+        case .attention:
+            healthStatus = "Warning"
+        case .blocked:
+            healthStatus = "Critical"
+        }
+        if snapshot.route == .cloud || snapshot.route == .oauth || snapshot.route == .custom {
+            cloudProviderAuthConfigured = snapshot.authReady
+        }
+        runtimeSnapshotIsRefreshing = false
     }
 
     func refreshMachineUsageSnapshot() {
@@ -2377,6 +2484,7 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func runDoctor() {
+        _ = createRecoveryPoint(reason: "Before doctor repair")
         controlCenterLogs = "Running doctor repair...\n"
         let result = engine.runDoctorRepair()
         controlCenterLogs += "[\(result.state.rawValue)] \(result.message)\n"
@@ -3477,6 +3585,9 @@ final class InstallerViewModel: ObservableObject {
 
     func runInstall() {
         if isRunning { return }
+        if hasExistingOpenClawSetup {
+            _ = createRecoveryPoint(reason: "Before installation")
+        }
         isRunning = true
         screen = .install
 
@@ -3695,6 +3806,8 @@ final class InstallerViewModel: ObservableObject {
             updateLocalClaw()
             return
         }
+
+        _ = createRecoveryPoint(reason: "Before LocalClaw update")
 
         isRunning = true
         installerUpdateStatus = "Downloading update..."
@@ -3945,6 +4058,7 @@ final class InstallerViewModel: ObservableObject {
             updateLocalClawFromDMG()
             return
         }
+        _ = createRecoveryPoint(reason: "Before full update")
         isRunning = true
         append("Running update all")
         let engine = self.engine
@@ -3983,6 +4097,7 @@ final class InstallerViewModel: ObservableObject {
 
     func updateOpenClawRuntime() {
         if isRunning { return }
+        _ = createRecoveryPoint(reason: "Before OpenClaw update")
         isRunning = true
         append("Updating OpenClaw runtime")
         let engine = self.engine
@@ -4943,12 +5058,25 @@ final class InstallerViewModel: ObservableObject {
 
     func runCronJobNow(_ jobID: String) {
         cronJobLogs = cronJobLogs.isEmpty ? "Running cron job \(jobID)..." : cronJobLogs + "\nRunning cron job \(jobID)..."
+        let job = cronJobs.first { $0.id == jobID }
+        let agentID = job?.agentID ?? "main"
+        let modelID = agents.first { $0.id == agentID }?.model
+        let receiptID = beginAutomationReceipt(
+            source: .cron,
+            sourceID: jobID,
+            title: job?.name ?? jobID,
+            agentID: agentID,
+            modelID: modelID,
+            destination: job?.deliveryLabel ?? job?.deliveryChannel
+        )
         let quotedID = Self.shellSingleQuote(jobID)
         Task.detached {
             let engine = InstallerEngine()
             let result = engine.shell("openclaw --no-color cron run \(quotedID) 2>&1")
             await MainActor.run {
-                self.cronJobLogs += "\n\(result.1.trimmingCharacters(in: .whitespacesAndNewlines))"
+                let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.cronJobLogs += "\n\(output)"
+                self.finishAutomationReceipt(receiptID, succeeded: result.0 == 0, output: output)
                 self.refreshCronRunHistory(jobID: jobID)
                 self.refreshCronJobs()
             }
@@ -5227,6 +5355,7 @@ final class InstallerViewModel: ObservableObject {
                 let configuredCount = self.channels.filter { $0.configured }.count
                 self.channelsStatus = "\(activeCount) active · \(configuredCount) configured · \(self.channels.count) available"
                 self.channelSetupLogs += "\nChannel inventory refreshed."
+                self.refreshRuntimeSnapshot()
             }
         }
     }
@@ -6089,16 +6218,16 @@ final class InstallerViewModel: ObservableObject {
         let usage = engine.getSystemUsage()
         healthLogs += String(format: "CPU: %.1f%% | RAM: %.1f/%.1f GB | Swap: %.2f/%.2f GB\n", usage.cpuPercent, usage.memoryUsedGB, usage.memoryTotalGB, usage.swapUsedGB, usage.swapTotalGB)
 
-        if verify.state == .ok && gateway.isRunning && usage.swapUsedGB < 2 {
-            healthStatus = "Healthy"
-        } else if usage.swapUsedGB >= 4 || verify.state == .fail {
-            healthStatus = "Critical"
-        } else {
-            healthStatus = "Warning"
+        let snapshot = runtimeSnapshotResolver.capture(connectedChannels: channels.filter(\.isActive).count)
+        applyRuntimeSnapshot(snapshot)
+        healthLogs += "Runtime: \(snapshot.health.rawValue)\n"
+        for issue in snapshot.issues {
+            healthLogs += "\(issue.severity == .blocking ? "BLOCKED" : "WARNING"): \(issue.title) - \(issue.detail)\n"
         }
     }
 
     func runQuickRepair() {
+        _ = createRecoveryPoint(reason: "Before quick repair")
         healthLogs += "\nRunning quick repair...\n"
         let doctor = engine.runDoctorRepair()
         healthLogs += "Doctor: [\(doctor.state.rawValue)] \(doctor.message)\n"
@@ -6108,11 +6237,83 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func backupOpenClawConfig() {
-        let ts = Int(Date().timeIntervalSince1970)
-        let src = NSHomeDirectory() + "/.openclaw/openclaw.json"
-        let dst = NSHomeDirectory() + "/.openclaw/openclaw.backup.\(ts).json"
-        let result = engine.shell("[ -f '\(src)' ] && cp '\(src)' '\(dst)' && echo '\(dst)' || echo 'missing config'")
-        healthLogs += "Backup: \(result.1)\n"
+        _ = createRecoveryPoint(reason: "Manual backup")
+    }
+
+    @discardableResult
+    func createRecoveryPoint(reason: String) -> RecoveryPoint? {
+        do {
+            let point = try recoveryService.createSnapshot(reason: reason)
+            refreshRecoveryPoints()
+            recoveryStatus = point.files.isEmpty
+                ? "Recovery point created, but no existing configuration was found"
+                : "Recovery point created with \(point.files.count) file\(point.files.count == 1 ? "" : "s")"
+            healthLogs += "Recovery: \(point.directoryPath)\n"
+            return point
+        } catch {
+            recoveryStatus = "Recovery point failed: \(error.localizedDescription)"
+            healthLogs += "Recovery failed: \(error.localizedDescription)\n"
+            return nil
+        }
+    }
+
+    func refreshRecoveryPoints() {
+        recoveryPoints = recoveryService.listSnapshots()
+        if let latest = recoveryPoints.first {
+            recoveryStatus = "Latest: \(latest.reason) · \(Self.shortDateTime(latest.createdAt))"
+        }
+    }
+
+    func restoreLatestRecoveryPoint() {
+        guard let point = recoveryPoints.first else {
+            recoveryStatus = "No recovery point is available"
+            return
+        }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Restore this recovery point?"
+        alert.informativeText = "LocalClaw will replace the saved OpenClaw configuration and authentication profile with the snapshot from \(Self.shortDateTime(point.createdAt))."
+        alert.addButton(withTitle: "Restore")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        do {
+            try recoveryService.restore(point)
+            _ = engine.restartGateway()
+            recoveryStatus = "Recovery point restored"
+            refreshRuntimeSnapshot()
+        } catch {
+            recoveryStatus = "Restore failed: \(error.localizedDescription)"
+        }
+    }
+
+    func exportSupportReport() {
+        do {
+            let url = try recoveryService.createSupportReport(
+                snapshot: runtimeSnapshot,
+                appVersion: installerCurrentVersion,
+                appBuild: installerBuildNumber,
+                logs: [healthLogs, controlCenterLogs, channelSetupLogs, cronJobLogs]
+            )
+            supportReportPath = url.path
+            recoveryStatus = "Support report saved to Downloads"
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } catch {
+            recoveryStatus = "Support report failed: \(error.localizedDescription)"
+        }
+    }
+
+    func openRecoveryFolder() {
+        try? FileManager.default.createDirectory(at: recoveryService.recoveryRoot, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(recoveryService.recoveryRoot)
+    }
+
+    nonisolated private static func shortDateTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
     }
 
     func copyHealthReport() {
@@ -6158,7 +6359,7 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func openOpenClawChat() {
-        if selectedChatSessionID.isEmpty, let first = chatSessions.first?.id {
+        if selectedChatSessionID.isEmpty, let first = normalChatSessions.first?.id {
             selectedChatSessionID = first
         }
         screen = .chat
@@ -6172,8 +6373,11 @@ final class InstallerViewModel: ObservableObject {
            !decoded.isEmpty {
             chatSessions = decoded.sorted { $0.updatedAt > $1.updatedAt }
         }
+        if normalChatSessions.isEmpty {
+            chatSessions.append(ChatSession.fresh(title: "Main setup"))
+        }
         let savedID = UserDefaults.standard.string(forKey: Self.selectedChatSessionDefaultsKey) ?? ""
-        selectedChatSessionID = chatSessions.contains(where: { $0.id == savedID }) ? savedID : (chatSessions.first?.id ?? "")
+        selectedChatSessionID = normalChatSessions.contains(where: { $0.id == savedID }) ? savedID : (normalChatSessions.first?.id ?? "")
     }
 
     func persistChatSessions() {
@@ -6469,9 +6673,18 @@ final class InstallerViewModel: ObservableObject {
         }
         kanbanRunningCardIDs.insert(cardID)
         kanbanStatus = "Running \(card.title) with \(card.agentID.isEmpty ? "main" : card.agentID)..."
+        let resolvedAgentID = card.agentID.isEmpty ? "main" : card.agentID
+        let receiptID = beginAutomationReceipt(
+            source: .kanban,
+            sourceID: cardID,
+            title: card.title,
+            agentID: resolvedAgentID,
+            modelID: agents.first { $0.id == resolvedAgentID }?.model,
+            destination: kanbanReceiptDestination(for: card)
+        )
 
         let command = Self.kanbanRunCommand(
-            agentID: card.agentID.isEmpty ? "main" : card.agentID,
+            agentID: resolvedAgentID,
             message: message,
             deliveryMode: card.deliveryMode,
             deliveryChannel: card.deliveryChannel,
@@ -6485,6 +6698,7 @@ final class InstallerViewModel: ObservableObject {
             let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
             await MainActor.run {
                 self.kanbanRunningCardIDs.remove(cardID)
+                self.finishAutomationReceipt(receiptID, succeeded: result.0 == 0, output: output)
                 if result.0 == 0 {
                     self.moveKanbanCardToReviewIfPossible(cardID)
                     self.kanbanStatus = "Run finished. Review the result."
@@ -6493,6 +6707,53 @@ final class InstallerViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    func latestAutomationReceipt(source: AutomationReceipt.Source, sourceID: String? = nil) -> AutomationReceipt? {
+        automationReceipts.first { receipt in
+            receipt.source == source && (sourceID == nil || receipt.sourceID == sourceID)
+        }
+    }
+
+    private func beginAutomationReceipt(
+        source: AutomationReceipt.Source,
+        sourceID: String,
+        title: String,
+        agentID: String?,
+        modelID: String?,
+        destination: String?
+    ) -> UUID {
+        let receipt = AutomationReceipt(
+            source: source,
+            sourceID: sourceID,
+            title: title,
+            agentID: agentID,
+            modelID: modelID,
+            destination: destination
+        )
+        automationReceipts.insert(receipt, at: 0)
+        if automationReceipts.count > 100 {
+            automationReceipts = Array(automationReceipts.prefix(100))
+        }
+        return receipt.id
+    }
+
+    private func finishAutomationReceipt(_ id: UUID, succeeded: Bool, output: String) {
+        guard let index = automationReceipts.firstIndex(where: { $0.id == id }) else { return }
+        let cleanOutput = SecretRedactor.redactConfigText(output)
+        automationReceipts[index].finishedAt = Date()
+        automationReceipts[index].status = succeeded ? .succeeded : .failed
+        if succeeded {
+            automationReceipts[index].summary = cleanOutput.isEmpty ? "Completed without console output" : String(cleanOutput.prefix(600))
+        } else {
+            automationReceipts[index].error = cleanOutput.isEmpty ? "OpenClaw returned an error without details" : String(cleanOutput.prefix(600))
+        }
+    }
+
+    private func kanbanReceiptDestination(for card: KanbanCard) -> String? {
+        if card.deliveryMode == "none" || card.deliveryChannel == "none" { return "No delivery" }
+        if card.deliveryMode == "last" || card.deliveryChannel == "last" { return "Last used channel" }
+        return card.deliveryTo.isEmpty ? card.deliveryChannel : "\(card.deliveryChannel): \(card.deliveryTo)"
     }
 
     nonisolated static func kanbanRunCommand(
@@ -6929,7 +7190,7 @@ final class InstallerViewModel: ObservableObject {
 
     func newChatSession() {
         var session = ChatSession.fresh()
-        session.title = "Discussion \(chatSessions.count + 1)"
+        session.title = "Discussion \(normalChatSessions.count + 1)"
         chatSessions.insert(session, at: 0)
         selectedChatSessionID = session.id
         chatInput = ""
@@ -6955,11 +7216,11 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func chatSessions(in project: ChatProject) -> [ChatSession] {
-        chatSessions.filter { $0.projectID == project.id }.sorted { $0.updatedAt > $1.updatedAt }
+        normalChatSessions.filter { $0.projectID == project.id }.sorted { $0.updatedAt > $1.updatedAt }
     }
 
     var unfiledChatSessions: [ChatSession] {
-        chatSessions.filter { session in
+        normalChatSessions.filter { session in
             guard let projectID = session.projectID, !projectID.isEmpty else { return true }
             return !chatProjects.contains { $0.id == projectID }
         }
@@ -7379,13 +7640,15 @@ final class InstallerViewModel: ObservableObject {
 
     func deleteSelectedChatSession() {
         let id = activeChatSessionID
-        guard chatSessions.count > 1 else {
-            chatSessions = [ChatSession.fresh(title: "Main setup")]
-            selectedChatSessionID = chatSessions[0].id
+        guard normalChatSessions.count > 1 else {
+            chatSessions.removeAll { !$0.id.hasPrefix("localclaw-developer-chat-") }
+            let session = ChatSession.fresh(title: "Main setup")
+            chatSessions.append(session)
+            selectedChatSessionID = session.id
             return
         }
         chatSessions.removeAll { $0.id == id }
-        selectedChatSessionID = chatSessions.first?.id ?? ""
+        selectedChatSessionID = normalChatSessions.first?.id ?? ""
     }
 
     func renameSelectedChatSession(from firstUserMessage: String) {
@@ -7408,12 +7671,19 @@ final class InstallerViewModel: ObservableObject {
     }
 
     private func sendChatMessage(sessionID: String, useDeveloperSession: Bool) {
-        let text = chatInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        let imagePath = chatImagePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawInput = useDeveloperSession ? developerInput : chatInput
+        let rawImagePath = useDeveloperSession ? developerImagePath : chatImagePath
+        let text = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let imagePath = rawImagePath.trimmingCharacters(in: .whitespacesAndNewlines)
         if (text.isEmpty && imagePath.isEmpty) || chatIsSending { return }
 
-        chatInput = ""
-        chatImagePath = ""
+        if useDeveloperSession {
+            developerInput = ""
+            developerImagePath = ""
+        } else {
+            chatInput = ""
+            chatImagePath = ""
+        }
         chatStopRequested = false
         let requestID = UUID()
         activeChatRequestID = requestID
@@ -8264,7 +8534,7 @@ final class InstallerViewModel: ObservableObject {
         developerProjectName = Self.nextDeveloperProjectName(in: baseURL)
         syncDeveloperProjectFolder(moveExistingProject: false)
         rememberDeveloperProject(name: developerProjectName, path: developerProjectPath)
-        chatInput = "Create a new web app named \(developerProjectName) in \(developerProjectPath). Set up a minimal runnable project, then tell me how to preview it locally inside LocalClaw."
+        developerInput = "Create a new web app named \(developerProjectName) in \(developerProjectPath). Set up a minimal runnable project, then tell me how to preview it locally inside LocalClaw."
         screen = .developer
     }
 
@@ -8432,7 +8702,7 @@ final class InstallerViewModel: ObservableObject {
             developerPreviewRefreshID = UUID()
             developerActiveTab = "preview"
             developerPreviewStatus = "App opened. Run preview to load it."
-            chatInput = "Use this project folder as context: \(url.path). Inspect it and suggest the next development step."
+            developerInput = "Use this project folder as context: \(url.path). Inspect it and suggest the next development step."
             refreshDeveloperGitStatus()
         }
     }
@@ -8544,7 +8814,7 @@ final class InstallerViewModel: ObservableObject {
 
     func developerAskForGitReview() {
         refreshDeveloperGitStatus()
-        chatInput = "Review the current Git changes in this project. Explain what changed, risks, and what should be tested before committing."
+        developerInput = "Review the current Git changes in this project. Explain what changed, risks, and what should be tested before committing."
         screen = .developer
     }
 
@@ -8675,7 +8945,7 @@ final class InstallerViewModel: ObservableObject {
         } catch {
             developerPreviewStatus = "Could not prepare preview project: \(error.localizedDescription)"
             if updatePrompt {
-                chatInput = "Create or fix a runnable web preview for \(developerProjectPath). Add package.json scripts if needed, then report the preview URL."
+                developerInput = "Create or fix a runnable web preview for \(developerProjectPath). Add package.json scripts if needed, then report the preview URL."
             }
             return
         }
@@ -8710,7 +8980,7 @@ final class InstallerViewModel: ObservableObject {
             developerPreviewStatus = "Preview failed: \(error.localizedDescription)"
         }
         if updatePrompt {
-            chatInput = "Start or verify the local preview for \(developerProjectPath). If a dev server is needed, use the existing project scripts and report the local URL."
+            developerInput = "Start or verify the local preview for \(developerProjectPath). If a dev server is needed, use the existing project scripts and report the local URL."
         }
     }
 
@@ -9169,6 +9439,33 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    func attachDeveloperImage() {
+        let panel = NSOpenPanel()
+        panel.title = "Attach image to Developer"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.png, .jpeg, .gif, .tiff, .bmp, .heic, .webP]
+
+        if panel.runModal() == .OK, let url = panel.url {
+            developerImagePath = url.path
+        }
+    }
+
+    func pasteDeveloperImageFromClipboard() {
+        guard let image = Self.imageFromPasteboard(NSPasteboard.general) else {
+            chatStatus = "No image in clipboard"
+            return
+        }
+
+        do {
+            developerImagePath = try Self.saveClipboardImage(image)
+            chatStatus = "Image pasted"
+        } catch {
+            chatStatus = "Could not paste image: \(error.localizedDescription)"
+        }
+    }
+
     nonisolated static func imageFromPasteboard(_ pasteboard: NSPasteboard) -> NSImage? {
         if let image = pasteboard.readObjects(forClasses: [NSImage.self])?.first as? NSImage {
             return image
@@ -9205,6 +9502,10 @@ final class InstallerViewModel: ObservableObject {
 
     func removeChatImage() {
         chatImagePath = ""
+    }
+
+    func removeDeveloperImage() {
+        developerImagePath = ""
     }
 
     nonisolated private static func isBrokenGlobalWhatsAppPluginError(_ raw: String) -> Bool {
@@ -9360,10 +9661,16 @@ final class InstallerViewModel: ObservableObject {
     }
 
     var openClawChatStatus: String {
-        if openclawInstalledVersion == "Checking..." { return "Checking..." }
-        if openclawInstalledVersion == "Not installed" { return "Setup needed" }
-        if openclawUpdateStatus == "Not installed" { return "Setup needed" }
-        return "Ready"
+        switch runtimeSnapshot.health {
+        case .checking:
+            return "Checking..."
+        case .ready:
+            return "Ready"
+        case .attention:
+            return "Needs attention"
+        case .blocked:
+            return "Action required"
+        }
     }
 
     var openClawChatModeLabel: String {
@@ -9714,7 +10021,7 @@ final class InstallerViewModel: ObservableObject {
         let authProvider = effectiveAuthProvider()
         let apiKey = installLMStudio ? "" : requiredProviderKey()
         let dynamicLocalCandidates = ([resolvedLocalModel] + modelOptions)
-            .compactMap { name in localModelCandidates.first { $0.name == name } }
+            .compactMap { name in localModelCatalog.first { $0.name == name } }
             .reduce(into: [LocalModelCandidate]()) { result, candidate in
                 if !result.contains(where: { $0.providerId == candidate.providerId }) {
                     result.append(candidate)
@@ -10575,7 +10882,6 @@ struct CTAButton: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(AppFont.heading(15))
-            .kerning(0.6)
             .foregroundStyle(primary ? .white : UI.text)
             .padding(.vertical, 14)
             .padding(.horizontal, 26)
@@ -10894,6 +11200,7 @@ struct ContentView: View {
     @State private var isSidebarVisible = true
     @State private var pasteEventMonitor: Any?
     @AppStorage("localclaw.appearance") private var appearance = "dark"
+    @AppStorage("localclaw.navigation.advanced.v1") private var advancedNavigation = false
 
     var body: some View {
         ZStack {
@@ -11021,6 +11328,7 @@ struct ContentView: View {
             .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
             .help(isSidebarVisible ? "Hide navigation" : "Show navigation")
+            .accessibilityLabel(isSidebarVisible ? "Hide navigation" : "Show navigation")
 
             BrandLogoView(size: 20)
             VStack(alignment: .leading, spacing: 1) {
@@ -11176,26 +11484,54 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("NAVIGATION")
                 .font(AppFont.heading(10))
-                .kerning(0.6)
                 .foregroundStyle(UI.muted)
                 .padding(.bottom, 4)
 
-            sidebarButton("Home", icon: "house", isActive: vm.screen == .home) { vm.screen = .home }
-            sidebarButton("Install", icon: "plus.circle", isActive: vm.screen == .options || vm.screen == .install || vm.screen == .ready) {
-                vm.chooseMode(.fullInstall)
+            Picker("Navigation level", selection: $advancedNavigation) {
+                Text("Essentials").tag(false)
+                Text("Advanced").tag(true)
             }
-            sidebarButton("Updates", icon: "arrow.clockwise", isActive: vm.screen == .updates) { vm.screen = .updates }
-            sidebarButton("Control Center", icon: "slider.horizontal.3", isActive: vm.screen == .commandCenter) { vm.screen = .commandCenter }
-            sidebarButton("OpenClaw Chat", icon: "message.badge.waveform", isActive: vm.screen == .chat) { vm.screen = .chat }
-            sidebarButton("Developer", icon: "curlybraces.square", isActive: vm.screen == .developer) { vm.screen = .developer }
-            sidebarButton("Models", icon: "cpu", isActive: vm.screen == .models) { vm.screen = .models }
-            sidebarButton("Skills", icon: "wand.and.stars", isActive: vm.screen == .skills) { vm.screen = .skills }
-            sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup) { vm.screen = .channelSetup }
-            sidebarButton("Agents", icon: "person.2.wave.2", isActive: vm.screen == .agents) { vm.screen = .agents }
-            sidebarButton("Cron Jobs", icon: "calendar.badge.clock", isActive: vm.screen == .cronJobs) { vm.screen = .cronJobs }
-            sidebarButton("Kanban", icon: "rectangle.3.group", isActive: vm.screen == .kanban) { vm.screen = .kanban }
-            sidebarButton("Help", icon: "cross.case", isActive: vm.screen == .healthCenter) { vm.screen = .healthCenter }
-            sidebarButton("Uninstall", icon: "trash", isActive: vm.screen == .uninstallCenter) { vm.screen = .uninstallCenter }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .tint(UI.accent)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 7) {
+                    sidebarSectionLabel("Start")
+                    sidebarButton("Home", icon: "house", isActive: vm.screen == .home) { vm.screen = .home }
+                    sidebarButton("Install", icon: "plus.circle", isActive: vm.screen == .options || vm.screen == .install || vm.screen == .ready) {
+                        vm.chooseMode(.fullInstall)
+                    }
+                    sidebarButton("Updates", icon: "arrow.clockwise", isActive: vm.screen == .updates) { vm.screen = .updates }
+
+                    sidebarSectionLabel("Work")
+                    sidebarButton("OpenClaw Chat", icon: "message.badge.waveform", isActive: vm.screen == .chat) { vm.screen = .chat }
+                    sidebarButton("Developer", icon: "curlybraces.square", isActive: vm.screen == .developer) { vm.screen = .developer }
+
+                    sidebarSectionLabel("Configure")
+                    sidebarButton("Models", icon: "cpu", isActive: vm.screen == .models) { vm.screen = .models }
+                    sidebarButton("Channels", icon: "bubble.left.and.bubble.right", isActive: vm.screen == .channelSetup) { vm.screen = .channelSetup }
+                    if advancedNavigation {
+                        sidebarButton("Skills", icon: "wand.and.stars", isActive: vm.screen == .skills) { vm.screen = .skills }
+                        sidebarButton("Agents", icon: "person.2.wave.2", isActive: vm.screen == .agents) { vm.screen = .agents }
+                    }
+
+                    sidebarSectionLabel("Automate")
+                    sidebarButton("Cron Jobs", icon: "calendar.badge.clock", isActive: vm.screen == .cronJobs) { vm.screen = .cronJobs }
+                    sidebarButton("Kanban", icon: "rectangle.3.group", isActive: vm.screen == .kanban) { vm.screen = .kanban }
+
+                    if advancedNavigation {
+                        sidebarSectionLabel("Advanced")
+                        sidebarButton("Control Center", icon: "slider.horizontal.3", isActive: vm.screen == .commandCenter) { vm.screen = .commandCenter }
+                    }
+
+                    sidebarSectionLabel("Support")
+                    sidebarButton("Help", icon: "cross.case", isActive: vm.screen == .healthCenter) { vm.screen = .healthCenter }
+                    sidebarButton("Uninstall", icon: "trash", isActive: vm.screen == .uninstallCenter) { vm.screen = .uninstallCenter }
+                }
+                .padding(.vertical, 2)
+            }
+            .scrollIndicators(.hidden)
 
             Spacer()
 
@@ -11203,7 +11539,6 @@ struct ContentView: View {
                 HStack {
                     Text("OPENCLAW VERSION")
                         .font(AppFont.heading(10))
-                        .kerning(1.0)
                         .foregroundStyle(UI.muted)
                     Spacer()
                     Circle()
@@ -11272,6 +11607,14 @@ struct ContentView: View {
         if version.isEmpty || version == "Checking..." { return "Checking..." }
         if version == "Not installed" { return "Not installed" }
         return version.hasPrefix("v") ? version : "v\(version)"
+    }
+
+    private func sidebarSectionLabel(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(AppFont.bodySemi(9))
+            .foregroundStyle(UI.muted)
+            .padding(.top, 7)
+            .padding(.horizontal, 4)
     }
 
     private func sidebarButton(_ title: String, icon: String, isActive: Bool, action: @escaping () -> Void) -> some View {
@@ -11573,19 +11916,20 @@ struct ContentView: View {
     }
 
     private var dashboardHealthTint: Color {
-        if !vm.hasMachineUsageSnapshot { return UI.muted }
-        if vm.healthStatus == "Healthy" { return Color(NSColor.systemGreen) }
-        if vm.healthStatus == "Critical" { return Color(NSColor.systemRed) }
-        if vm.healthStatus == "Warning" { return Color(NSColor.systemOrange) }
-        return UI.muted
+        switch vm.runtimeSnapshot.health {
+        case .checking: return UI.muted
+        case .ready: return Color(NSColor.systemGreen)
+        case .attention: return Color(NSColor.systemOrange)
+        case .blocked: return Color(NSColor.systemRed)
+        }
     }
 
     private var dashboardHealthValue: String {
-        vm.hasMachineUsageSnapshot ? vm.healthStatus : "Disabled"
+        vm.runtimeSnapshot.statusTitle
     }
 
     private var dashboardHealthDetail: String {
-        vm.hasMachineUsageSnapshot ? String(format: "CPU %.0f%% · RAM %.1f/%.1f GB", vm.machineCPUPercent, vm.machineMemoryUsedGB, vm.machineMemoryTotalGB) : "Performance check off"
+        "\(vm.runtimeSnapshot.route.rawValue) · \(vm.runtimeSnapshot.freshnessLabel)"
     }
 
     private var dashboardConnectedChannels: Int {
@@ -11601,8 +11945,7 @@ struct ContentView: View {
     }
 
     private var dashboardModelNeedsSetup: Bool {
-        let model = vm.openClawChatModelLabel.lowercased()
-        return model.contains("not configured") || model == "unknown" || model.hasPrefix("error:")
+        vm.runtimeSnapshot.issues.contains { ["model", "local-model", "lmstudio"].contains($0.id) }
     }
 
     private var dashboardChannelsSummary: String {
@@ -11622,11 +11965,10 @@ struct ContentView: View {
 
     private var dashboardReadinessChecks: [(String, Bool)] {
         [
-            ("Gateway", vm.gatewayIsRunning),
-            ("Chat", vm.openClawChatStatus == "Ready"),
-            ("Model", !dashboardModelNeedsSetup),
-            ("Channel", dashboardConnectedChannels > 0),
-            ("Skill", dashboardActiveSkills > 0)
+            ("OpenClaw", vm.runtimeSnapshot.openClawInstalled),
+            ("Gateway", vm.runtimeSnapshot.gatewayReady),
+            ("Model", vm.runtimeSnapshot.modelReady),
+            ("Authentication", vm.runtimeSnapshot.authReady)
         ]
     }
 
@@ -11635,15 +11977,11 @@ struct ContentView: View {
     }
 
     private var dashboardReadinessTitle: String {
-        if dashboardReadinessCount == dashboardReadinessChecks.count { return "Ready" }
-        if dashboardReadinessCount >= 3 { return "Partially ready" }
-        return "Needs setup"
+        vm.runtimeSnapshot.statusTitle
     }
 
     private var dashboardReadinessTint: Color {
-        if dashboardReadinessTitle == "Ready" { return Color(NSColor.systemGreen) }
-        if dashboardReadinessTitle == "Partially ready" { return Color(NSColor.systemOrange) }
-        return Color(NSColor.systemRed)
+        dashboardHealthTint
     }
 
     private var dashboardReadinessPanel: some View {
@@ -11660,9 +11998,10 @@ struct ContentView: View {
                 Text(dashboardReadinessTitle)
                     .font(AppFont.heading(24))
                     .foregroundStyle(UI.text)
-                Text("\(dashboardReadinessCount)/\(dashboardReadinessChecks.count) checks passing")
+                Text(vm.runtimeSnapshot.routeLine)
                     .font(AppFont.body(12))
                     .foregroundStyle(UI.muted)
+                    .lineLimit(2)
             }
             .frame(width: 220, alignment: .leading)
 
@@ -11674,17 +12013,11 @@ struct ContentView: View {
 
             Spacer()
 
-            Button("Fix issues") {
-                if !vm.gatewayIsRunning || vm.openClawChatStatus != "Ready" {
+            Button(vm.runtimeSnapshot.health == .blocked ? "Resolve issue" : "Check now") {
+                if vm.runtimeSnapshot.health == .blocked {
                     vm.screen = .healthCenter
-                } else if dashboardModelNeedsSetup {
-                    vm.screen = .models
-                } else if dashboardConnectedChannels == 0 {
-                    vm.screen = .channelSetup
-                } else if dashboardActiveSkills == 0 {
-                    vm.screen = .skills
                 } else {
-                    vm.screen = .commandCenter
+                    vm.refreshRuntimeSnapshot()
                 }
             }
             .buttonStyle(CTAButton(primary: true))
@@ -11715,11 +12048,14 @@ struct ContentView: View {
 
     private var dashboardActionItems: [DashboardActionItem] {
         var items: [DashboardActionItem] = []
-        if !vm.gatewayIsRunning || vm.openClawChatStatus != "Ready" {
-            items.append(DashboardActionItem(title: "Repair OpenClaw health", detail: "Gateway or chat is not fully ready.", icon: "cross.case.fill", tint: Color(NSColor.systemRed)) { vm.screen = .healthCenter })
-        }
-        if dashboardModelNeedsSetup {
-            items.append(DashboardActionItem(title: "Choose a working model", detail: vm.openClawChatModelLabel, icon: "cpu.fill", tint: Color(NSColor.systemOrange)) { vm.screen = .models })
+        for issue in vm.runtimeSnapshot.issues {
+            let destination: InstallerViewModel.Screen = ["model", "local-model", "lmstudio", "auth"].contains(issue.id) ? .models : .healthCenter
+            items.append(DashboardActionItem(
+                title: issue.title,
+                detail: issue.detail,
+                icon: issue.severity == .blocking ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill",
+                tint: issue.severity == .blocking ? Color(NSColor.systemRed) : Color(NSColor.systemOrange)
+            ) { vm.screen = destination })
         }
         if dashboardConnectedChannels == 0 {
             items.append(DashboardActionItem(title: "Connect first channel", detail: "Telegram, Discord, WhatsApp, Slack and more.", icon: "plus.message.fill", tint: Color(NSColor.systemBlue)) { vm.screen = .channelSetup })
@@ -12413,41 +12749,38 @@ struct ContentView: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                if !vm.chatImagePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    chatImagePreview(path: vm.chatImagePath)
+                if !vm.developerImagePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    chatImagePreview(path: vm.developerImagePath, developer: true)
                 }
-                TextField("Ask OpenClaw to build, fix, or improve the app...", text: $vm.chatInput, axis: .vertical)
+                TextField("Ask OpenClaw to build, fix, or improve the app...", text: $vm.developerInput, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(AppFont.body(14))
                     .lineLimit(2...5)
                     .onSubmit { vm.sendDeveloperChatMessage() }
                     .onPasteCommand(of: [.image]) { _ in
-                        vm.pasteChatImageFromClipboard()
+                        vm.pasteDeveloperImageFromClipboard()
                     }
                 HStack(spacing: 10) {
-                    developerIconButton("paperclip") { vm.attachChatImage() }
-                    developerIconButton("clipboard") { vm.pasteChatImageFromClipboard() }
-                    developerIconButton("terminal") { vm.chatInput = "Run the project checks for \(vm.developerProjectPath) and summarize failures with fixes." }
-                    developerIconButton("photo") { vm.attachChatImage() }
-                    Text("Will send with \(vm.selectedChatModel.isEmpty ? vm.openClawChatModelLabel : vm.selectedChatModel)")
-                        .font(AppFont.bodySemi(11))
-                        .foregroundStyle(UI.muted)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    developerIconButton("paperclip") { vm.attachDeveloperImage() }
+                    developerIconButton("clipboard") { vm.pasteDeveloperImageFromClipboard() }
+                    developerIconButton("terminal") { vm.developerInput = "Run the project checks for \(vm.developerProjectPath) and summarize failures with fixes." }
+                    developerIconButton("photo") { vm.attachDeveloperImage() }
                     if vm.developerFreshContextEnabled {
-                        Text("Fresh context")
-                            .font(AppFont.bodySemi(10))
+                        Image(systemName: "sparkles")
+                            .font(AppFont.bodySemi(11))
                             .foregroundStyle(Color(NSColor.systemGreen))
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 4)
-                            .background(Capsule().fill(Color(NSColor.systemGreen).opacity(0.12)))
+                            .frame(width: 28, height: 28)
+                            .background(Circle().fill(Color(NSColor.systemGreen).opacity(0.12)))
+                            .help("Fresh context is enabled for the next request")
+                            .accessibilityLabel("Fresh context enabled")
                     }
                     Spacer()
                     Button(action: { vm.chatIsSending ? vm.stopChatGeneration() : vm.sendDeveloperChatMessage() }) {
                         Label(vm.chatIsSending ? "Stop" : "Send", systemImage: vm.chatIsSending ? "stop.fill" : "arrow.up")
                     }
                     .buttonStyle(SheetActionButton(primary: true))
-                    .disabled(!vm.chatIsSending && vm.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && vm.chatImagePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(!vm.chatIsSending && vm.developerInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && vm.developerImagePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .help("Send with \(vm.selectedChatModel.isEmpty ? vm.openClawChatModelLabel : vm.selectedChatModel)")
                 }
             }
             .padding(12)
@@ -12666,7 +12999,16 @@ struct ContentView: View {
     }
 
     private func developerIconButton(_ icon: String, action: @escaping () -> Void = {}) -> some View {
-        Button(action: action) {
+        let label: String = {
+            switch icon {
+            case "paperclip": return "Attach file"
+            case "clipboard": return "Paste image"
+            case "terminal": return "Prepare project checks"
+            case "photo": return "Attach image"
+            default: return icon
+            }
+        }()
+        return Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(UI.muted)
@@ -12674,6 +13016,8 @@ struct ContentView: View {
                 .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
         }
         .buttonStyle(.plain)
+        .help(label)
+        .accessibilityLabel(label)
     }
 
     private func developerTab(_ title: String, icon: String, id: String) -> some View {
@@ -12749,7 +13093,7 @@ struct ContentView: View {
     private var developerDatabasePanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             developerPanelHeader(title: "Database", subtitle: "Detect storage setup and ask OpenClaw for schema help.", icon: "cylinder.split.1x2", actionTitle: "Analyze") {
-                vm.chatInput = "Inspect database/storage needs for this project and propose the simplest local setup."
+                vm.developerInput = "Inspect database/storage needs for this project and propose the simplest local setup."
             }
             let summary = vm.developerProjectSummary()
             VStack(alignment: .leading, spacing: 10) {
@@ -12841,7 +13185,7 @@ struct ContentView: View {
                     HStack(spacing: 10) {
                         developerToolbarButton("Open app folder", icon: "folder") { vm.developerChooseFolder() }
                         developerToolbarButton("Ask setup", icon: "sparkles") {
-                            vm.chatInput = "Set up Git for this project and explain how to connect it to a GitHub repository safely."
+                            vm.developerInput = "Set up Git for this project and explain how to connect it to a GitHub repository safely."
                         }
                     }
                 } else {
@@ -12916,7 +13260,7 @@ struct ContentView: View {
     private var developerDeployPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             developerPanelHeader(title: "Deploy", subtitle: "Prepare build settings and deployment checklist.", icon: "icloud.and.arrow.up", actionTitle: "Prepare") {
-                vm.chatInput = "Prepare this project for deployment. Identify the platform, build command, output directory, and missing environment variables."
+                vm.developerInput = "Prepare this project for deployment. Identify the platform, build command, output directory, and missing environment variables."
             }
             VStack(alignment: .leading, spacing: 10) {
                 developerInfoCard("Project path", vm.developerProjectPath, icon: "folder")
@@ -12933,7 +13277,7 @@ struct ContentView: View {
     private var developerLogsPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             developerPanelHeader(title: "Logs", subtitle: "Useful local commands for debugging this project.", icon: "terminal", actionTitle: "Ask OpenClaw") {
-                vm.chatInput = "Check recent project logs and summarize the actionable errors."
+                vm.developerInput = "Check recent project logs and summarize the actionable errors."
             }
             VStack(alignment: .leading, spacing: 10) {
                 developerCodeBlock("cd \(vm.developerProjectPath)\nnpm run dev\nnpm run build\nnpm test")
@@ -13633,9 +13977,10 @@ struct ContentView: View {
         .buttonStyle(.plain)
         .disabled(disabled)
         .help(help)
+        .accessibilityLabel(help)
     }
 
-    func chatImagePreview(path: String) -> some View {
+    func chatImagePreview(path: String, developer: Bool = false) -> some View {
         HStack(spacing: 10) {
             if let image = NSImage(contentsOfFile: path) {
                 Image(nsImage: image)
@@ -13664,7 +14009,7 @@ struct ContentView: View {
 
             Spacer()
 
-            Button(action: { vm.removeChatImage() }) {
+            Button(action: { developer ? vm.removeDeveloperImage() : vm.removeChatImage() }) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(UI.muted)
@@ -14931,7 +15276,7 @@ struct ContentView: View {
             // Component status summary (Bug 4)
             VStack(alignment: .leading, spacing: 8) {
                 Text("WHAT WAS INSTALLED")
-                    .font(AppFont.heading(11)).kerning(0.6).foregroundStyle(UI.accent)
+                    .font(AppFont.heading(11)).foregroundStyle(UI.accent)
                 statusRow("Homebrew", vm.statusHomebrew)
                 statusRow("LM Studio", vm.selectedModel.isEmpty ? "SKIP" : vm.statusLMStudio)
                 statusRow("Model", vm.selectedModel.isEmpty ? "SKIP" : vm.statusModel)
@@ -14947,7 +15292,7 @@ struct ContentView: View {
             // Next steps checklist (Bug 4)
             VStack(alignment: .leading, spacing: 8) {
                 Text("NEXT STEPS")
-                    .font(AppFont.heading(11)).kerning(0.6).foregroundStyle(UI.accent)
+                    .font(AppFont.heading(11)).foregroundStyle(UI.accent)
                 nextStepRow("1", "Open the OpenClaw dashboard", "Open it with the button below")
                 nextStepRow("2", "Send your first message", "Type anything — your AI is live")
                 if vm.mode != .llmOnly {
@@ -14965,7 +15310,7 @@ struct ContentView: View {
             // CTA buttons (Bug 4)
             VStack(alignment: .leading, spacing: 10) {
                 Text("LAUNCH")
-                    .font(AppFont.heading(11)).kerning(0.6).foregroundStyle(UI.accent)
+                    .font(AppFont.heading(11)).foregroundStyle(UI.accent)
                 HStack(spacing: 10) {
                     Button("OPEN OPENCLAW DASHBOARD") { vm.openDashboard() }
                         .buttonStyle(CTAButton(primary: true))
@@ -15781,6 +16126,10 @@ struct ContentView: View {
                 isChecking: vm.automationReadinessIsLoading || vm.cronJobsIsLoading || vm.agentsIsLoading || vm.channelsIsLoading
             )
 
+            if let receipt = vm.latestAutomationReceipt(source: .cron) {
+                automationReceiptPanel(receipt)
+            }
+
             HStack(spacing: 10) {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
@@ -15902,6 +16251,56 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, minHeight: 50)
         .background(RoundedRectangle(cornerRadius: 10).fill(tint.opacity(0.08)))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(tint.opacity(0.32), lineWidth: 1))
+    }
+
+    private func automationReceiptPanel(_ receipt: AutomationReceipt) -> some View {
+        let tint = automationReceiptTint(receipt.status)
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: automationReceiptIcon(receipt.status))
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 7) {
+                    Text("Latest \(receipt.source.rawValue) run")
+                        .font(AppFont.bodySemi(12))
+                        .foregroundStyle(UI.text)
+                    Text(receipt.status.rawValue)
+                        .font(AppFont.bodySemi(10))
+                        .foregroundStyle(tint)
+                }
+                Text([receipt.title, receipt.agentID, receipt.modelID, receipt.destination, receipt.durationLabel].compactMap { $0 }.joined(separator: " · "))
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(2)
+                if let result = receipt.error ?? receipt.summary, !result.isEmpty {
+                    Text(result)
+                        .font(AppFont.body(10))
+                        .foregroundStyle(receipt.error == nil ? UI.muted : Color(NSColor.systemRed))
+                        .lineLimit(2)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(tint.opacity(0.07)))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(tint.opacity(0.28), lineWidth: 1))
+    }
+
+    private func automationReceiptTint(_ status: AutomationReceipt.Status) -> Color {
+        switch status {
+        case .running: return Color(NSColor.systemBlue)
+        case .succeeded: return Color(NSColor.systemGreen)
+        case .failed: return Color(NSColor.systemRed)
+        }
+    }
+
+    private func automationReceiptIcon(_ status: AutomationReceipt.Status) -> String {
+        switch status {
+        case .running: return "hourglass"
+        case .succeeded: return "checkmark.seal.fill"
+        case .failed: return "xmark.octagon.fill"
+        }
     }
 
     private func cronMetricCard(_ title: String, value: String, icon: String, tint: Color) -> some View {
@@ -16618,6 +17017,10 @@ struct ContentView: View {
                 isChecking: vm.automationReadinessIsLoading || vm.agentsIsLoading || vm.channelsIsLoading || vm.cronJobsIsLoading
             )
 
+            if let receipt = vm.latestAutomationReceipt(source: .kanban) {
+                automationReceiptPanel(receipt)
+            }
+
             HStack(spacing: 10) {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
@@ -16793,6 +17196,22 @@ struct ContentView: View {
             }
 
             kanbanTimeline(card, columnID: columnID)
+
+            if let receipt = vm.latestAutomationReceipt(source: .kanban, sourceID: card.id) {
+                HStack(spacing: 6) {
+                    Image(systemName: automationReceiptIcon(receipt.status))
+                    Text(receipt.status.rawValue)
+                    if let duration = receipt.durationLabel {
+                        Text(duration)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .font(AppFont.bodySemi(10))
+                .foregroundStyle(automationReceiptTint(receipt.status))
+                .padding(.horizontal, 8)
+                .frame(minHeight: 26)
+                .background(RoundedRectangle(cornerRadius: 7).fill(automationReceiptTint(receipt.status).opacity(0.09)))
+            }
 
             HStack(spacing: 6) {
                 kanbanIconAction("chevron.left", help: "Move left", disabled: columnID == vm.kanbanColumns.first?.id) {
@@ -17346,10 +17765,12 @@ struct ContentView: View {
     }
 
     private var helpHealthTint: Color {
-        if vm.healthStatus == "Healthy" { return Color(NSColor.systemGreen) }
-        if vm.healthStatus == "Critical" { return Color(NSColor.systemRed) }
-        if vm.healthStatus == "Warning" { return Color(NSColor.systemOrange) }
-        return UI.muted
+        switch vm.runtimeSnapshot.health {
+        case .checking: return UI.muted
+        case .ready: return Color(NSColor.systemGreen)
+        case .attention: return Color(NSColor.systemOrange)
+        case .blocked: return Color(NSColor.systemRed)
+        }
     }
 
     private var helpStatusPanel: some View {
@@ -17362,7 +17783,7 @@ struct ContentView: View {
                     .font(AppFont.bodySemi(12))
                     .foregroundStyle(UI.muted)
                 Spacer()
-                Text(vm.healthStatus)
+                Text(vm.runtimeSnapshot.health.rawValue)
                     .font(AppFont.bodySemi(11))
                     .foregroundStyle(helpHealthTint)
                     .padding(.horizontal, 8)
@@ -17373,9 +17794,10 @@ struct ContentView: View {
                 .font(AppFont.heading(22))
                 .foregroundStyle(UI.text)
             VStack(alignment: .leading, spacing: 7) {
-                helpStatusLine("Gateway", value: vm.gatewayIsRunning ? "Running" : "Needs check", ok: vm.gatewayIsRunning)
-                helpStatusLine("Mode", value: vm.openClawChatModeLabel, ok: true)
-                helpStatusLine("Model", value: vm.openClawChatModelLabel, ok: !dashboardModelNeedsSetup)
+                helpStatusLine("OpenClaw", value: vm.runtimeSnapshot.openClawVersion, ok: vm.runtimeSnapshot.openClawInstalled)
+                helpStatusLine("Gateway", value: vm.runtimeSnapshot.gatewayReady ? "Running" : "Offline", ok: vm.runtimeSnapshot.gatewayReady)
+                helpStatusLine("Model", value: vm.runtimeSnapshot.modelID, ok: vm.runtimeSnapshot.modelReady)
+                helpStatusLine("Authentication", value: vm.runtimeSnapshot.authLabel, ok: vm.runtimeSnapshot.authReady)
             }
         }
         .padding(14)
@@ -17385,12 +17807,7 @@ struct ContentView: View {
     }
 
     private var helpStatusTitle: String {
-        switch vm.healthStatus {
-        case "Healthy": return "Ready to use"
-        case "Critical": return "Needs repair"
-        case "Warning": return "Check recommended"
-        default: return "Run a check"
-        }
+        vm.runtimeSnapshot.statusTitle
     }
 
     private func helpStatusLine(_ title: String, value: String, ok: Bool) -> some View {
@@ -17487,7 +17904,10 @@ struct ContentView: View {
                 }
                 Spacer()
                 HStack(spacing: 10) {
-                    helpHeaderButton("Run check", primary: false) { vm.runHealthCheck() }
+                    helpHeaderButton("Run check", primary: false) {
+                        vm.refreshRuntimeSnapshot()
+                        vm.runHealthCheck()
+                    }
                     helpHeaderButton("Setup guide", primary: true) { vm.restartOnboarding() }
                 }
             }
@@ -17588,6 +18008,43 @@ struct ContentView: View {
                             helpCommandButton("Copy Report", icon: "doc.on.doc.fill", primary: false) { vm.copyHealthReport() }
                         }
 
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "arrow.counterclockwise.circle.fill")
+                                    .foregroundStyle(UI.accent)
+                                Text("Recovery and support")
+                                    .font(AppFont.bodySemi(14))
+                                    .foregroundStyle(UI.text)
+                                Spacer()
+                                Text(vm.recoveryStatus)
+                                    .font(AppFont.body(11))
+                                    .foregroundStyle(UI.muted)
+                                    .lineLimit(1)
+                            }
+
+                            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 10) {
+                                helpCommandButton("Create Restore Point", icon: "externaldrive.badge.plus", primary: false) {
+                                    vm.createRecoveryPoint(reason: "Manual restore point")
+                                }
+                                helpCommandButton("Restore Latest", icon: "arrow.counterclockwise", primary: false) {
+                                    vm.restoreLatestRecoveryPoint()
+                                }
+                                helpCommandButton("Export Support Report", icon: "doc.text.magnifyingglass", primary: true) {
+                                    vm.exportSupportReport()
+                                }
+                                helpCommandButton("Open Recovery Folder", icon: "folder", primary: false) {
+                                    vm.openRecoveryFolder()
+                                }
+                            }
+
+                            Text("Restore points stay private on this Mac. Support reports redact tokens and credentials before export.")
+                                .font(AppFont.body(11))
+                                .foregroundStyle(UI.muted)
+                        }
+                        .padding(12)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+
                         Text("Diagnostics log")
                             .font(AppFont.bodySemi(14))
                             .foregroundStyle(UI.muted)
@@ -17613,9 +18070,8 @@ struct ContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.10), radius: 8, x: 0, y: 3)
         .onAppear {
-            if vm.healthStatus == "Unknown" {
-                vm.runHealthCheck()
-            }
+            vm.refreshRuntimeSnapshot()
+            vm.refreshRecoveryPoints()
         }
     }
 
@@ -18001,6 +18457,8 @@ struct ContentView: View {
             vm.refreshOpenClawChatInfo()
             vm.refreshOpenRouterModels()
             vm.refreshLocalLMStudioModels()
+            vm.refreshRuntimeSnapshot()
+            vm.refreshLocalModelCatalog()
         }
     }
 
@@ -18012,7 +18470,7 @@ struct ContentView: View {
             }
             Spacer()
             Button("Refresh") {
-                vm.refreshOpenClawChatInfo(); vm.refreshOpenRouterModels(); vm.refreshLocalLMStudioModels()
+                vm.refreshOpenClawChatInfo(); vm.refreshOpenRouterModels(); vm.refreshLocalLMStudioModels(); vm.refreshRuntimeSnapshot(); vm.refreshLocalModelCatalog()
             }
             .buttonStyle(CTAButton(primary: true))
         }
@@ -18020,9 +18478,9 @@ struct ContentView: View {
 
     var modelsSummaryRow: some View {
         HStack(spacing: 12) {
-            modelSummaryCard("Active model", value: vm.openClawChatModelLabel, icon: "cpu")
-            modelSummaryCard("Mode", value: vm.openClawChatModeLabel, icon: vm.inferenceMode == .local ? "desktopcomputer" : "cloud.fill")
-            modelSummaryCard("Cloud auth", value: vm.cloudProviderAuthConfigured ? "Configured" : "Missing", icon: "key.fill")
+            modelSummaryCard("Active model", value: vm.runtimeSnapshot.modelID, icon: "cpu")
+            modelSummaryCard("Mode", value: vm.runtimeSnapshot.route.rawValue, icon: vm.runtimeSnapshot.route == .local ? "desktopcomputer" : "cloud.fill")
+            modelSummaryCard("Authentication", value: vm.runtimeSnapshot.authLabel, icon: "key.fill")
             modelSummaryCard("Local models", value: "\(vm.localLMStudioModels.count)", icon: "internaldrive.fill")
         }
     }
@@ -18168,7 +18626,19 @@ struct ContentView: View {
                     }
                     .pickerStyle(.menu)
                     .frame(width: 175)
+                    Button {
+                        vm.refreshLocalModelCatalog()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(vm.localModelCatalogIsRefreshing)
+                    .help("Refresh model recommendations")
                 }
+                Text(vm.localModelCatalogIsRefreshing ? "Refreshing model catalog..." : vm.localModelCatalogStatus)
+                    .font(AppFont.body(10))
+                    .foregroundStyle(UI.muted)
                 Text(vm.localModelAdvisorSummary)
                     .font(AppFont.body(10))
                     .foregroundStyle(vm.detectedHardwareProfile.isAppleSilicon ? UI.muted : Color(NSColor.systemOrange))
@@ -19312,7 +19782,6 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("STATUS")
                         .font(AppFont.heading(11))
-                        .kerning(0.6)
                         .foregroundStyle(UI.accent)
 
                     HStack(spacing: 16) {
@@ -19326,7 +19795,6 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("MACHINE USAGE")
                         .font(AppFont.heading(11))
-                        .kerning(0.6)
                         .foregroundStyle(UI.accent)
 
                     VStack(spacing: 8) {
@@ -19354,7 +19822,6 @@ struct ContentView: View {
                     HStack {
                         Text("HEAVY PROCESSES")
                             .font(AppFont.heading(11))
-                            .kerning(0.6)
                             .foregroundStyle(UI.accent)
                         Spacer()
                         Button("Emergency cleanup") { vm.emergencyCleanupAction() }
@@ -19396,7 +19863,6 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("QUICK ACTIONS")
                         .font(AppFont.heading(11))
-                        .kerning(0.6)
                         .foregroundStyle(UI.accent)
 
                     HStack(spacing: 12) {
@@ -19414,7 +19880,6 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("CHANGE MODEL")
                         .font(AppFont.heading(11))
-                        .kerning(0.6)
                         .foregroundStyle(UI.accent)
 
                     VStack(alignment: .leading, spacing: 8) {
@@ -19452,7 +19917,6 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("OUTPUT")
                         .font(AppFont.heading(11))
-                        .kerning(0.6)
                         .foregroundStyle(UI.accent)
 
                     ScrollView {
@@ -19505,7 +19969,7 @@ struct ContentView: View {
     // MARK: - New Command Center (Part 3 - Advanced)
     
     var commandCenter: some View {
-        AdvancedCommandCenterView()
+        AdvancedCommandCenterView(appViewModel: vm)
     }
 }
 

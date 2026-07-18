@@ -7,7 +7,7 @@ cd "$ROOT"
 APP_NAME="LocalClaw"
 DMG_NAME="localclaw"
 BUNDLE_ID="io.localclaw.installer"
-MARKETING_VERSION="1.0.169"
+MARKETING_VERSION="1.0.170"
 BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
 DIST_DIR="dist"
 DIST_APP_PATH="${DIST_DIR}/${APP_NAME}.app"
@@ -19,12 +19,11 @@ NOTARY_TIMEOUT_SECONDS="${NOTARY_TIMEOUT_SECONDS:-900}"
 NOTARY_POLL_SECONDS="${NOTARY_POLL_SECONDS:-15}"
 
 mkdir -p "$DIST_DIR"
-if [[ "$RELEASE_NOTARIZE" == "1" ]]; then
-  BUILD_ROOT="$(mktemp -d /private/tmp/localclaw-release.XXXXXX)"
-  trap 'rm -rf "$BUILD_ROOT"' EXIT
-else
-  BUILD_ROOT="$DIST_DIR"
-fi
+# Always stage outside synced workspace folders. File-provider metadata can be
+# recreated inside the repository and makes codesign reject an otherwise valid
+# bundle before either ad-hoc or Developer ID signing.
+BUILD_ROOT="$(mktemp -d /private/tmp/localclaw-release.XXXXXX)"
+trap 'rm -rf "$BUILD_ROOT"' EXIT
 APP_PATH="${BUILD_ROOT}/${APP_NAME}.app"
 DMG_PATH="${BUILD_ROOT}/${DMG_NAME}.dmg"
 STAGING="${BUILD_ROOT}/dmg-staging"

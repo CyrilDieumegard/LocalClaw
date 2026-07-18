@@ -1,8 +1,8 @@
-# LocalClaw macOS Installer
+# LocalClaw for macOS
 
 ![LocalClaw](https://localclaw.io/images/twitter-card.png)
 
-Native macOS installer app (SwiftUI) to set up LM Studio + OpenClaw on Apple Silicon, fast and clean.
+Native SwiftUI control plane for installing, operating, and automating OpenClaw on Apple Silicon Macs.
 
 <p align="center">
   <img src="https://localclaw.io/images/crab-logo.png" alt="LocalClaw Logo" width="180" />
@@ -13,18 +13,17 @@ Native macOS installer app (SwiftUI) to set up LM Studio + OpenClaw on Apple Sil
 This repository ships **source code only**.
 No DMG or prebuilt binaries are committed here.
 
-## Features
+## Product surfaces
 
-- Hardware detection (chip + RAM)
-- Local model recommendation
-- License activation flow (email + key)
-- Guided setup for:
-  - Homebrew
-  - LM Studio
-  - Node.js
-  - OpenClaw
-- Post-install health checks
-- Real-time install logs
+- Guided first install and in-app updates
+- Cloud, OAuth, and LM Studio local runtimes
+- Hardware-aware local model advisor with a validated, cached catalog
+- OpenClaw Chat with project memory and image attachments
+- Developer workspaces, Git/GitHub actions, and local preview
+- Channels, agents, cron jobs, and Kanban automation
+- Canonical runtime health shared by Home, Models, Help, and Control Center
+- Automatic restore points before repairs and updates
+- Redacted customer support reports and automation execution receipts
 
 ## Quick start
 
@@ -111,12 +110,26 @@ Mock credentials:
 
 ## Project structure
 
-- `Sources/` SwiftUI app and installer logic
+- `Sources/LocalClawInstallerApp.swift` primary app state and product views
+- `Sources/RuntimeState.swift` canonical OpenClaw runtime snapshot
+- `Sources/RecoveryService.swift` private restore points and redacted reports
+- `Sources/AutomationReceipt.swift` persisted automation outcomes
+- `Sources/LocalModelCatalogService.swift` validated remote model catalog with offline cache
 - `Tests/` test suite
 - `scripts/` build, checks, local mock tools
 - `release-bundle/` release handoff docs and integration notes
+
+## Customer-safe change policy
+
+Before publishing a release, prove both paths:
+
+1. A new customer downloads the public DMG, activates, installs, and sends one request.
+2. An existing customer updates from the currently published version using LocalClaw's Updates screen.
+
+Run the full release matrix in `RELEASE_CHECKLIST.md`. A successful repository build alone is not release proof.
 
 ## Philosophy
 
 - GitHub repo: transparent source and DIY setup
 - Paid installer distribution: convenience, packaging, support
+- Stability and recoverability take priority over adding new sections
