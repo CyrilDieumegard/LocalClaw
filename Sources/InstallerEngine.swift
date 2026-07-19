@@ -112,6 +112,8 @@ struct ProcessUsageItem: Identifiable {
 final class InstallerEngine: @unchecked Sendable {
     static let shellPathPrefix = #"export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"; "#
     static let minimumNodeVersion = "22.19.0"
+    private let providerAuthCacheLock = NSLock()
+    private var providerAuthCache: (checkedAt: Date, configuredProviders: Set<String>)?
 
     static func firstJSONData(in output: String) -> Data? {
         let bytes = Array(output.utf8)
@@ -1164,22 +1166,44 @@ final class InstallerEngine: @unchecked Sendable {
             return true
         }
 
-        guard let envKey = Self.providerEnvironmentKey(for: provider) else { return false }
-        let launchEnvironmentValue = shell("launchctl getenv \(envKey) 2>/dev/null").1
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if !launchEnvironmentValue.isEmpty { return true }
+        if let envKey = Self.providerEnvironmentKey(for: provider) {
+            let launchEnvironmentValue = shell("launchctl getenv \(envKey) 2>/dev/null").1
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !launchEnvironmentValue.isEmpty { return true }
 
-        for path in [NSHomeDirectory() + "/.openclaw/.env", NSHomeDirectory() + "/.openclaw/.env.local"] where fm.fileExists(atPath: path) {
-            guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
-            if raw.components(separatedBy: .newlines).contains(where: { line in
-                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard trimmed.hasPrefix("\(envKey)=") else { return false }
-                let value = String(trimmed.dropFirst(envKey.count + 1))
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                return !value.isEmpty
-            }) { return true }
+            for path in [NSHomeDirectory() + "/.openclaw/.env", NSHomeDirectory() + "/.openclaw/.env.local"] where fm.fileExists(atPath: path) {
+                guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
+                if raw.components(separatedBy: .newlines).contains(where: { line in
+                    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard trimmed.hasPrefix("\(envKey)=") else { return false }
+                    let value = String(trimmed.dropFirst(envKey.count + 1))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    return !value.isEmpty
+                }) { return true }
+            }
         }
-        return false
+
+        return providersConfiguredByOpenClawStatus().contains(provider.lowercased())
+    }
+
+    private func providersConfiguredByOpenClawStatus() -> Set<String> {
+        providerAuthCacheLock.lock()
+        if let cached = providerAuthCache,
+           Date().timeIntervalSince(cached.checkedAt) < 30 {
+            providerAuthCacheLock.unlock()
+            return cached.configuredProviders
+        }
+        providerAuthCacheLock.unlock()
+
+        let result = shell("openclaw models status --json 2>/dev/null")
+        guard result.0 == 0,
+              let status = Self.firstJSONObject(in: result.1) else { return [] }
+        let configuredProviders = Self.configuredProviders(inModelStatus: status)
+
+        providerAuthCacheLock.lock()
+        providerAuthCache = (Date(), configuredProviders)
+        providerAuthCacheLock.unlock()
+        return configuredProviders
     }
 
     static func providerEnvironmentKey(for provider: String) -> String? {
@@ -1223,6 +1247,30 @@ final class InstallerEngine: @unchecked Sendable {
             return true
         }
         return false
+    }
+
+    static func configuredProviders(inModelStatus status: [String: Any]) -> Set<String> {
+        guard let auth = status["auth"] as? [String: Any] else { return [] }
+        let missing = Set((auth["missingProvidersInUse"] as? [String] ?? []).map { $0.lowercased() })
+        var configured = Set((auth["providersWithOAuth"] as? [String] ?? []).map { $0.lowercased() })
+
+        for rawProvider in auth["providers"] as? [[String: Any]] ?? [] {
+            guard let provider = (rawProvider["provider"] as? String)?.lowercased(),
+                  !provider.isEmpty,
+                  !missing.contains(provider) else { continue }
+            let profiles = rawProvider["profiles"] as? [String: Any] ?? [:]
+            let profileCount = profiles["count"] as? Int ?? 0
+            let oauthCount = profiles["oauth"] as? Int ?? 0
+            let tokenCount = profiles["token"] as? Int ?? 0
+            let apiKeyCount = profiles["apiKey"] as? Int ?? 0
+            let effectiveKind = ((rawProvider["effective"] as? [String: Any])?["kind"] as? String)?
+                .lowercased() ?? ""
+            let hasEffectiveAuth = !effectiveKind.isEmpty && !["missing", "none", "unconfigured"].contains(effectiveKind)
+            if profileCount > 0 || oauthCount > 0 || tokenCount > 0 || apiKeyCount > 0 || hasEffectiveAuth {
+                configured.insert(provider)
+            }
+        }
+        return configured
     }
 
     static func providerAuthConfigured(in profiles: [String: Any], provider: String) -> Bool {

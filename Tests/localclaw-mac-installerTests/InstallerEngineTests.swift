@@ -258,6 +258,32 @@ struct InstallerEngineTests {
         #expect(!InstallerEngine.providerAuthConfigured(inConfig: config, provider: "anthropic"))
     }
 
+    @Test func providerAuthDetectsOpenClawSQLiteBackedStatus() {
+        let status: [String: Any] = [
+            "auth": [
+                "providersWithOAuth": ["openai"],
+                "missingProvidersInUse": ["anthropic"],
+                "providers": [
+                    [
+                        "provider": "openrouter",
+                        "effective": ["kind": "profiles"],
+                        "profiles": ["count": 1, "oauth": 0, "token": 0, "apiKey": 1]
+                    ],
+                    [
+                        "provider": "anthropic",
+                        "effective": ["kind": "missing"],
+                        "profiles": ["count": 0, "oauth": 0, "token": 0, "apiKey": 0]
+                    ]
+                ]
+            ]
+        ]
+
+        let configured = InstallerEngine.configuredProviders(inModelStatus: status)
+        #expect(configured.contains("openrouter"))
+        #expect(configured.contains("openai"))
+        #expect(!configured.contains("anthropic"))
+    }
+
     @Test func usageSummaryFiltersBySelectedWindow() {
         let calendar = Calendar(identifier: .gregorian)
         let now = Date(timeIntervalSince1970: 1_700_000_000)
