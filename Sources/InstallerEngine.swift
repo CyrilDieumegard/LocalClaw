@@ -1152,6 +1152,7 @@ final class InstallerEngine: @unchecked Sendable {
         for path in authPaths where fm.fileExists(atPath: path) {
             guard let data = fm.contents(atPath: path),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            if Self.providerAuthConfigured(inConfig: json, provider: provider) { return true }
             let rootProfiles = json["profiles"] as? [String: Any]
             let nestedProfiles = (json["auth"] as? [String: Any])?["profiles"] as? [String: Any]
             for profiles in [rootProfiles, nestedProfiles].compactMap({ $0 }) {
@@ -1159,27 +1160,74 @@ final class InstallerEngine: @unchecked Sendable {
             }
         }
 
-        let envKeyMap = [
-            "openrouter": "OPENROUTER_API_KEY",
-            "openai": "OPENAI_API_KEY",
-            "anthropic": "ANTHROPIC_API_KEY",
-            "google": "GEMINI_API_KEY",
-            "xai": "XAI_API_KEY"
-        ]
-        guard let envKey = envKeyMap[provider] else { return false }
+        if Self.providerAuthConfigured(in: ProcessInfo.processInfo.environment, provider: provider) {
+            return true
+        }
+
+        guard let envKey = Self.providerEnvironmentKey(for: provider) else { return false }
+        let launchEnvironmentValue = shell("launchctl getenv \(envKey) 2>/dev/null").1
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !launchEnvironmentValue.isEmpty { return true }
+
         for path in [NSHomeDirectory() + "/.openclaw/.env", NSHomeDirectory() + "/.openclaw/.env.local"] where fm.fileExists(atPath: path) {
             guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
             if raw.components(separatedBy: .newlines).contains(where: { line in
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                return trimmed.hasPrefix("\(envKey)=") && trimmed.split(separator: "=", maxSplits: 1).count == 2
+                guard trimmed.hasPrefix("\(envKey)=") else { return false }
+                let value = String(trimmed.dropFirst(envKey.count + 1))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return !value.isEmpty
             }) { return true }
         }
         return false
     }
 
+    static func providerEnvironmentKey(for provider: String) -> String? {
+        [
+            "openrouter": "OPENROUTER_API_KEY",
+            "openai": "OPENAI_API_KEY",
+            "anthropic": "ANTHROPIC_API_KEY",
+            "google": "GEMINI_API_KEY",
+            "xai": "XAI_API_KEY"
+        ][provider.lowercased()]
+    }
+
+    static func providerAuthConfigured(in environment: [String: String], provider: String) -> Bool {
+        guard let envKey = providerEnvironmentKey(for: provider),
+              let value = environment[envKey] else { return false }
+        return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    static func providerAuthConfigured(inConfig config: [String: Any], provider: String) -> Bool {
+        let normalizedProvider = provider.lowercased()
+        let aliases = normalizedProvider == "xai" ? ["xai", "x-ai"] : [normalizedProvider]
+        if let providers = ((config["models"] as? [String: Any])?["providers"] as? [String: Any]) {
+            for alias in aliases {
+                guard let providerConfig = providers[alias] as? [String: Any] else { continue }
+                for field in ["apiKey", "key", "token"] {
+                    if let value = providerConfig[field] as? String,
+                       !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        return true
+                    }
+                }
+            }
+        }
+
+        if let rawEnvironment = config["env"] as? [String: Any] {
+            let environment = rawEnvironment.compactMapValues { $0 as? String }
+            if providerAuthConfigured(in: environment, provider: normalizedProvider) {
+                return true
+            }
+        } else if let environment = config["env"] as? [String: String],
+                  providerAuthConfigured(in: environment, provider: normalizedProvider) {
+            return true
+        }
+        return false
+    }
+
     static func providerAuthConfigured(in profiles: [String: Any], provider: String) -> Bool {
-        let providerPrefix = "\(provider):"
-        for (profileKey, rawProfile) in profiles where profileKey.hasPrefix(providerPrefix) {
+        let providerPrefix = "\(provider.lowercased()):"
+        for (profileKey, rawProfile) in profiles where profileKey.lowercased().hasPrefix(providerPrefix) {
             guard let profile = rawProfile as? [String: Any] else { continue }
             if let key = profile["key"] as? String,
                !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

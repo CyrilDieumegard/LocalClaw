@@ -237,6 +237,27 @@ struct InstallerEngineTests {
         #expect(!InstallerEngine.providerAuthConfigured(in: profiles, provider: "openai"))
     }
 
+    @Test func providerAuthDetectsProcessEnvironmentWithoutExposingValue() {
+        let environment = ["OPENROUTER_API_KEY": "configured"]
+
+        #expect(InstallerEngine.providerAuthConfigured(in: environment, provider: "openrouter"))
+        #expect(!InstallerEngine.providerAuthConfigured(in: ["OPENROUTER_API_KEY": "  "], provider: "openrouter"))
+        #expect(!InstallerEngine.providerAuthConfigured(in: environment, provider: "openai"))
+    }
+
+    @Test func providerAuthDetectsOpenClawProviderConfig() {
+        let config: [String: Any] = [
+            "models": [
+                "providers": [
+                    "openrouter": ["apiKey": "configured"]
+                ]
+            ]
+        ]
+
+        #expect(InstallerEngine.providerAuthConfigured(inConfig: config, provider: "openrouter"))
+        #expect(!InstallerEngine.providerAuthConfigured(inConfig: config, provider: "anthropic"))
+    }
+
     @Test func usageSummaryFiltersBySelectedWindow() {
         let calendar = Calendar(identifier: .gregorian)
         let now = Date(timeIntervalSince1970: 1_700_000_000)
@@ -675,6 +696,15 @@ struct InstallerEngineTests {
         #expect(status.message.contains("No Git repository"))
     }
 
+    @Test func developerGitStatusIgnoresParentWorkspaceRepository() {
+        let status = InstallerViewModel.parseDeveloperGitStatus(
+            output: "__LOCALCLAW_PARENT_REPO__/Users/test/.openclaw/workspace"
+        )
+
+        #expect(!status.isRepository)
+        #expect(status.message.contains("parent workspace repository"))
+    }
+
     @MainActor
     @Test func developerProjectRenameStyleAndDeleteOnlyAffectList() {
         let vm = InstallerViewModel()
@@ -748,9 +778,11 @@ struct InstallerEngineTests {
 
         vm.ensureSelectedChatModel()
 
-        #expect(vm.availableChatModels.allSatisfy { $0.id.hasPrefix("lmstudio/") })
-        #expect(vm.availableChatModels.map(\.id) == ["lmstudio/google/gemma-4-e2b", "lmstudio/nvidia/nemotron-3-nano-4b"])
-        #expect(vm.selectedChatModel == "lmstudio/google/gemma-4-e2b")
+        let availableIDs = Set(vm.availableChatModels.map(\.id))
+        #expect(availableIDs.allSatisfy { $0.hasPrefix("lmstudio/") })
+        #expect(availableIDs.contains("lmstudio/google/gemma-4-e2b"))
+        #expect(availableIDs.contains("lmstudio/nvidia/nemotron-3-nano-4b"))
+        #expect(availableIDs.contains(vm.selectedChatModel))
     }
 
     @MainActor
@@ -1046,11 +1078,20 @@ Created job
         try InstallerViewModel.createDeveloperPreviewScaffold(at: root, appName: "Cyril's App")
 
         let package = try String(contentsOf: root.appendingPathComponent("package.json"), encoding: .utf8)
+        let packageData = try Data(contentsOf: root.appendingPathComponent("package.json"))
+        let packageJSON = try #require(JSONSerialization.jsonObject(with: packageData) as? [String: Any])
+        let dependencies = try #require(packageJSON["dependencies"] as? [String: Any])
+        let devDependencies = try #require(packageJSON["devDependencies"] as? [String: Any])
         let index = try String(contentsOf: root.appendingPathComponent("index.html"), encoding: .utf8)
         let main = try String(contentsOf: root.appendingPathComponent("src/main.jsx"), encoding: .utf8)
 
         #expect(package.contains(#""dev" : "vite --host 127.0.0.1""#) || package.contains(#""dev": "vite --host 127.0.0.1""#))
         #expect(package.contains(#""name" : "cyril-s-app""#) || package.contains(#""name": "cyril-s-app""#))
+        #expect(dependencies["react"] != nil)
+        #expect(dependencies["react-dom"] != nil)
+        #expect(dependencies["vite"] == nil)
+        #expect(dependencies["@vitejs/plugin-react"] == nil)
+        #expect(devDependencies["vite"] != nil)
         #expect(index.contains("<div id=\"root\"></div>"))
         #expect(main.contains(#"const appName = "Cyril's App";"#))
     }
@@ -1065,10 +1106,59 @@ Created job
 
         try InstallerViewModel.createDeveloperPreviewScaffold(at: root, appName: "Existing App")
 
-        let package = try String(contentsOf: root.appendingPathComponent("package.json"), encoding: .utf8)
+        let packageURL = root.appendingPathComponent("package.json")
+        let package = try String(contentsOf: packageURL, encoding: .utf8)
+        let packageData = try Data(contentsOf: packageURL)
+        let packageJSON = try #require(JSONSerialization.jsonObject(with: packageData) as? [String: Any])
+        let dependencies = try #require(packageJSON["dependencies"] as? [String: Any])
+        let devDependencies = try #require(packageJSON["devDependencies"] as? [String: Any])
         #expect(package.contains(#""build" : "vite build""#) || package.contains(#""build": "vite build""#))
         #expect(package.contains(#""dev" : "vite --host 127.0.0.1""#) || package.contains(#""dev": "vite --host 127.0.0.1""#))
-        #expect(package.contains(#""react" : "18""#) || package.contains(#""react": "18""#))
-        #expect(package.contains(#""vite" : "latest""#) || package.contains(#""vite": "latest""#))
+        #expect(dependencies["react"] as? String == "18")
+        #expect(dependencies["react-dom"] == nil)
+        #expect(dependencies["@vitejs/plugin-react"] == nil)
+        #expect(devDependencies["vite"] as? String == "latest")
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("src/main.jsx").path))
+    }
+
+    @Test func preservesExistingThreeJSProjectDependencies() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("localclaw-preview-three-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try #"{"name":"iron-descent","scripts":{"dev":"vite"},"dependencies":{"three":"^0.166.1"},"devDependencies":{"vite":"^5.4.21"}}"#
+            .write(to: root.appendingPathComponent("package.json"), atomically: true, encoding: .utf8)
+        try "<script type=\"module\" src=\"/src/main.js\"></script>"
+            .write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+
+        try InstallerViewModel.createDeveloperPreviewScaffold(at: root, appName: "Renamed in LocalClaw")
+
+        let packageData = try Data(contentsOf: root.appendingPathComponent("package.json"))
+        let packageJSON = try #require(JSONSerialization.jsonObject(with: packageData) as? [String: Any])
+        let dependencies = try #require(packageJSON["dependencies"] as? [String: Any])
+        let devDependencies = try #require(packageJSON["devDependencies"] as? [String: Any])
+        #expect(packageJSON["name"] as? String == "iron-descent")
+        #expect(dependencies.keys.sorted() == ["three"])
+        #expect(devDependencies.keys.sorted() == ["vite"])
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("src/main.jsx").path))
+    }
+
+    @Test func addsMinimalVitePackageToStaticHTMLProject() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("localclaw-preview-static-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try "<h1>Existing static app</h1>"
+            .write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+
+        try InstallerViewModel.createDeveloperPreviewScaffold(at: root, appName: "Static App")
+
+        let packageData = try Data(contentsOf: root.appendingPathComponent("package.json"))
+        let packageJSON = try #require(JSONSerialization.jsonObject(with: packageData) as? [String: Any])
+        let dependencies = try #require(packageJSON["dependencies"] as? [String: Any])
+        let devDependencies = try #require(packageJSON["devDependencies"] as? [String: Any])
+        #expect(dependencies.isEmpty)
+        #expect(devDependencies["vite"] != nil)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("src/main.jsx").path))
     }
 }

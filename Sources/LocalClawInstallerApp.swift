@@ -8877,8 +8877,15 @@ final class InstallerViewModel: ObservableObject {
             let quotedRoot = Self.shellSingleQuote(root)
             let command = """
             cd \(quotedRoot) 2>/dev/null || exit 2
-            if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            project_root="$(pwd -P)"
+            repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+            if [ -z "$repo_root" ]; then
               echo "__LOCALCLAW_NO_REPO__"
+              exit 0
+            fi
+            repo_root="$(cd "$repo_root" 2>/dev/null && pwd -P)"
+            if [ "$repo_root" != "$project_root" ]; then
+              printf "__LOCALCLAW_PARENT_REPO__%s\\n" "$repo_root"
               exit 0
             fi
             printf "__BRANCH__%s\\n" "$(git branch --show-current 2>/dev/null || git rev-parse --short HEAD 2>/dev/null)"
@@ -8899,6 +8906,10 @@ final class InstallerViewModel: ObservableObject {
     nonisolated static func parseDeveloperGitStatus(output: String) -> DeveloperGitStatus {
         var status = DeveloperGitStatus()
         let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.contains("__LOCALCLAW_PARENT_REPO__") {
+            status.message = "The parent workspace repository was ignored. Initialize Git in this project before connecting GitHub."
+            return status
+        }
         if trimmed.contains("__LOCALCLAW_NO_REPO__") || trimmed.isEmpty {
             status.message = "No Git repository detected in this project folder."
             return status
@@ -9061,7 +9072,10 @@ final class InstallerViewModel: ObservableObject {
             let quotedName = Self.shellSingleQuote(repoName)
             let command = """
             cd \(quotedRoot) 2>&1 || exit 2
-            if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git init; fi
+            project_root="$(pwd -P)"
+            repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+            if [ -n "$repo_root" ]; then repo_root="$(cd "$repo_root" 2>/dev/null && pwd -P)"; fi
+            if [ "$repo_root" != "$project_root" ]; then git init .; fi
             git add -A
             if ! git rev-parse --verify HEAD >/dev/null 2>&1; then git commit -m 'Initial LocalClaw project' || true; fi
             gh repo create \(quotedName) --source . --private --remote origin --push 2>&1
@@ -9153,25 +9167,36 @@ final class InstallerViewModel: ObservableObject {
 
         let cleanName = appName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? root.lastPathComponent : appName
         let packageName = slugifyProjectName(cleanName)
+        let packageURL = root.appendingPathComponent("package.json")
+        let indexURL = root.appendingPathComponent("index.html")
+        let packageExisted = fm.fileExists(atPath: packageURL.path)
+        let indexExisted = fm.fileExists(atPath: indexURL.path)
+        let shouldCreateDefaultApp = !packageExisted && !indexExisted
         let appNameLiteralData = try JSONSerialization.data(withJSONObject: cleanName, options: [.fragmentsAllowed])
         let appNameLiteral = String(data: appNameLiteralData, encoding: .utf8) ?? #""My App""#
         let htmlTitle = cleanName
             .replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
-        let files: [(String, String)] = [
+        let defaultFiles: [(String, String)] = [
             ("package.json", """
             {
+              "name": "\(packageName)",
+              "version": "0.1.0",
+              "private": true,
+              "type": "module",
               "scripts": {
-                "dev": "vite --host 127.0.0.1"
+                "dev": "vite --host 127.0.0.1",
+                "build": "vite build",
+                "preview": "vite preview"
               },
               "dependencies": {
-                "@vitejs/plugin-react": "latest",
-                "vite": "latest",
                 "react": "latest",
                 "react-dom": "latest"
               },
-              "devDependencies": {}
+              "devDependencies": {
+                "vite": "latest"
+              }
             }
             """),
             ("index.html", """
@@ -9293,29 +9318,53 @@ final class InstallerViewModel: ObservableObject {
             """)
         ]
 
-        for (relativePath, content) in files {
-            let url = root.appendingPathComponent(relativePath)
-            try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            if !fm.fileExists(atPath: url.path) {
+        if shouldCreateDefaultApp {
+            for (relativePath, content) in defaultFiles {
+                let url = root.appendingPathComponent(relativePath)
+                try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try content.write(to: url, atomically: true, encoding: .utf8)
             }
+        } else if !packageExisted {
+            let package = """
+            {
+              "name": "\(packageName)",
+              "version": "0.1.0",
+              "private": true,
+              "type": "module",
+              "scripts": {
+                "dev": "vite --host 127.0.0.1",
+                "build": "vite build",
+                "preview": "vite preview"
+              },
+              "dependencies": {},
+              "devDependencies": {
+                "vite": "latest"
+              }
+            }
+            """
+            try package.write(to: packageURL, atomically: true, encoding: .utf8)
         }
 
-        let packageURL = root.appendingPathComponent("package.json")
         if var packageData = try? Data(contentsOf: packageURL),
            var packageJSON = try? JSONSerialization.jsonObject(with: packageData) as? [String: Any] {
-            packageJSON["name"] = packageName
+            if (packageJSON["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+                packageJSON["name"] = packageName
+            }
             var scripts = packageJSON["scripts"] as? [String: Any] ?? [:]
-            if (scripts["dev"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+            let needsPreviewScript = (scripts["dev"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
+            if needsPreviewScript {
                 scripts["dev"] = "vite --host 127.0.0.1"
             }
             packageJSON["scripts"] = scripts
 
-            var dependencies = packageJSON["dependencies"] as? [String: Any] ?? [:]
-            for dependency in ["@vitejs/plugin-react", "vite", "react", "react-dom"] where dependencies[dependency] == nil {
-                dependencies[dependency] = "latest"
+            if needsPreviewScript {
+                let dependencies = packageJSON["dependencies"] as? [String: Any] ?? [:]
+                var devDependencies = packageJSON["devDependencies"] as? [String: Any] ?? [:]
+                if dependencies["vite"] == nil && devDependencies["vite"] == nil {
+                    devDependencies["vite"] = "latest"
+                }
+                packageJSON["devDependencies"] = devDependencies
             }
-            packageJSON["dependencies"] = dependencies
 
             packageData = try JSONSerialization.data(withJSONObject: packageJSON, options: [.prettyPrinted, .sortedKeys])
             try packageData.write(to: packageURL, options: .atomic)
