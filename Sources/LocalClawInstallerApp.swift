@@ -76,7 +76,7 @@ final class InstallerViewModel: ObservableObject {
         init(id: UUID = UUID(), role: String, text: String, metadata: String? = nil, modelName: String? = nil, imagePath: String? = nil, createdAt: Date = Date(), pinned: Bool = false) {
             self.id = id
             self.role = role
-            self.text = text
+            self.text = SecretRedactor.redactConfigText(text)
             self.metadata = metadata
             self.modelName = modelName
             self.imagePath = imagePath
@@ -92,7 +92,7 @@ final class InstallerViewModel: ObservableObject {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             id = try container.decode(UUID.self, forKey: .id)
             role = try container.decode(String.self, forKey: .role)
-            text = try container.decode(String.self, forKey: .text)
+            text = SecretRedactor.redactConfigText(try container.decode(String.self, forKey: .text))
             metadata = try container.decodeIfPresent(String.self, forKey: .metadata)
             modelName = try container.decodeIfPresent(String.self, forKey: .modelName)
             imagePath = try container.decodeIfPresent(String.self, forKey: .imagePath)
@@ -1120,7 +1120,14 @@ final class InstallerViewModel: ObservableObject {
     @Published var chatIsSending = false
     @Published var chatStatus = "Ready"
     @Published var chatRecoveryMessageID: UUID?
-    @Published var selectedChatModel = ""
+    @Published var selectedChatModel = "" {
+        didSet {
+            let model = selectedChatModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !model.isEmpty {
+                UserDefaults.standard.set(model, forKey: Self.selectedChatModelDefaultsKey)
+            }
+        }
+    }
     @Published var selectedChatResponseMode: ChatResponseMode = .cloud {
         didSet {
             UserDefaults.standard.set(selectedChatResponseMode.rawValue, forKey: Self.selectedChatResponseModeDefaultsKey)
@@ -1384,6 +1391,7 @@ final class InstallerViewModel: ObservableObject {
     private static let chatSessionsDefaultsKey = "localclaw.chat.sessions.v1"
     private static let chatProjectsDefaultsKey = "localclaw.chat.projects.v1"
     private static let selectedChatSessionDefaultsKey = "localclaw.chat.selectedSession.v1"
+    private static let selectedChatModelDefaultsKey = "localclaw.chat.selectedModel.v1"
     private static let selectedChatResponseModeDefaultsKey = "localclaw.chat.responseMode.v1"
     private static let chatMemoryEnabledDefaultsKey = "localclaw.chat.memoryEnabled.v1"
     private static let chatMemoryPanelVisibleDefaultsKey = "localclaw.chat.memoryPanelVisible.v1"
@@ -1406,6 +1414,10 @@ final class InstallerViewModel: ObservableObject {
         if let savedMode = UserDefaults.standard.string(forKey: Self.selectedChatResponseModeDefaultsKey),
            let mode = ChatResponseMode(rawValue: savedMode) {
             selectedChatResponseMode = mode
+        }
+        if let savedModel = UserDefaults.standard.string(forKey: Self.selectedChatModelDefaultsKey),
+           !savedModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            selectedChatModel = savedModel
         }
         if UserDefaults.standard.object(forKey: Self.chatMemoryEnabledDefaultsKey) != nil {
             chatMemoryEnabled = UserDefaults.standard.bool(forKey: Self.chatMemoryEnabledDefaultsKey)
@@ -2252,6 +2264,8 @@ final class InstallerViewModel: ObservableObject {
             selectedCloudAuthMode = .api
             selectedOpenRouterModel = primary
             selectedProvider = .openRouter
+            currentModel = primary
+            selectedChatModel = primary
         } else if primary.hasPrefix("openai-codex/") {
             inferenceMode = .oauth
             selectedChatResponseMode = .cloud
@@ -3035,7 +3049,9 @@ final class InstallerViewModel: ObservableObject {
 
                 await MainActor.run {
                     self.openRouterModelsLive = mapped
-                    if !self.openRouterModelsLive.contains(where: { $0.id == self.selectedOpenRouterModel }) {
+                    if self.selectedChatModel.hasPrefix("openrouter/") {
+                        self.selectedOpenRouterModel = self.selectedChatModel
+                    } else if !self.openRouterModelsLive.contains(where: { $0.id == self.selectedOpenRouterModel }) {
                         self.selectedOpenRouterModel = self.openRouterModelsLive.first?.id ?? ""
                     }
                     if self.selectedChatResponseMode != .local {
@@ -7545,6 +7561,18 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    func continueDeveloperAfterTimeout(_ message: ChatMessage) {
+        guard !chatIsSending else { return }
+        var messages = developerChatMessages
+        messages.removeAll { $0.id == message.id }
+        developerChatMessages = messages
+        developerImagePath = ""
+        developerInput = """
+        Continue the previous Developer task from the current workspace state. Inspect the files and generated assets that already exist before changing anything. Preserve completed work, finish only what remains, and do not repeat successful external API calls or recreate existing paid assets.
+        """
+        sendDeveloperChatMessage()
+    }
+
     func chatRecoveryPlan(for message: ChatMessage) -> ChatRecoveryPlan? {
         guard message.role == "error" else { return nil }
         return ChatRecoveryPlan.classify(error: message.text)
@@ -7565,7 +7593,11 @@ final class InstallerViewModel: ObservableObject {
             chatGatewayPrepared = false
             retryChatMessage(message, useDeveloperSession: useDeveloperSession)
         case .timeout:
-            retryChatMessage(message, useDeveloperSession: useDeveloperSession)
+            if useDeveloperSession {
+                continueDeveloperAfterTimeout(message)
+            } else {
+                retryChatMessage(message, useDeveloperSession: false)
+            }
         case .runtimeFiles, .gateway, .unknown:
             chatRecoveryMessageID = message.id
             chatIsSending = true
@@ -7770,6 +7802,7 @@ final class InstallerViewModel: ObservableObject {
         let requestID = UUID()
         activeChatRequestID = requestID
         let userText = text.isEmpty ? "Image attached" : text
+        let visibleUserText = SecretRedactor.redactConfigText(userText)
         let targetSessionID = useDeveloperSession ? sessionID : activeChatSessionID
         let projectContext = chatProjectContext(for: targetSessionID)
         var agentTextParts: [String] = []
@@ -7818,16 +7851,16 @@ final class InstallerViewModel: ObservableObject {
         agentTextParts.append(imagePath.isEmpty ? text : "\(userText)\n\n[Attached image: \(imagePath)]")
         let agentText = agentTextParts.joined(separator: "\n\n")
         if useDeveloperSession {
-            developerChatMessages.append(ChatMessage(role: "user", text: userText, imagePath: imagePath.isEmpty ? nil : imagePath))
+            developerChatMessages.append(ChatMessage(role: "user", text: visibleUserText, imagePath: imagePath.isEmpty ? nil : imagePath))
             updateDeveloperChatSession { session in
                 if session.title == "Developer workspace" {
-                    let compact = userText.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                    let compact = visibleUserText.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
                     session.title = String(compact.prefix(34)) + (compact.count > 34 ? "…" : "")
                 }
             }
         } else {
-            chatMessages.append(ChatMessage(role: "user", text: userText, imagePath: imagePath.isEmpty ? nil : imagePath))
-            renameSelectedChatSession(from: userText)
+            chatMessages.append(ChatMessage(role: "user", text: visibleUserText, imagePath: imagePath.isEmpty ? nil : imagePath))
+            renameSelectedChatSession(from: visibleUserText)
         }
         if useDeveloperSession,
            imagePath.isEmpty,
@@ -7965,6 +7998,7 @@ final class InstallerViewModel: ObservableObject {
                     }
                 }
             }
+            result = Self.normalizedAgentResult(result)
             if result.0 != 0 && Self.isUnsupportedModelFlagError(result.1) && !modelOverride.isEmpty {
                 await MainActor.run {
                     if self.activeChatRequestID == requestID {
@@ -7986,6 +8020,7 @@ final class InstallerViewModel: ObservableObject {
                         }
                     }
                 }
+                result = Self.normalizedAgentResult(result)
             }
             var repairedPlugin = false
             var automaticRecoveryNote: String?
@@ -8013,6 +8048,7 @@ final class InstallerViewModel: ObservableObject {
                             }
                         }
                     }
+                    result = Self.normalizedAgentResult(result)
                 }
             }
             if result.0 != 0 {
@@ -8050,6 +8086,7 @@ final class InstallerViewModel: ObservableObject {
                                 }
                             }
                         }
+                        result = Self.normalizedAgentResult(result)
                         if result.0 == 0 {
                             automaticRecoveryNote = "OpenClaw stopped responding. LocalClaw refreshed the Gateway and retried automatically."
                         }
@@ -8084,6 +8121,7 @@ final class InstallerViewModel: ObservableObject {
                                     }
                                 }
                             }
+                            result = Self.normalizedAgentResult(result)
                             if result.0 == 0 {
                                 automaticRecoveryNote = "LocalClaw repaired the OpenClaw runtime and retried automatically."
                             }
@@ -8096,7 +8134,7 @@ final class InstallerViewModel: ObservableObject {
             let reply = knownDiagnostic ?? Self.extractAgentReply(from: result.1)
             let runtimeModel = Self.extractAgentRuntimeModel(from: result.1)
             let usage = Self.extractAgentUsage(from: result.1)
-            let metrics = Self.extractAgentMetrics(from: result.1, elapsedSeconds: elapsed, timeoutSeconds: wallClockTimeout, thinking: agentThinking)
+            let metrics = Self.extractAgentMetrics(from: result.1, elapsedSeconds: elapsed, timeoutSeconds: agentTimeout, thinking: agentThinking)
             await MainActor.run {
                 guard self.activeChatRequestID == requestID else { return }
                 self.activeChatProcess = nil
@@ -8107,7 +8145,8 @@ final class InstallerViewModel: ObservableObject {
                     self.chatIsSending = false
                     return
                 }
-                let responseModel = runtimeModel?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? runtimeModel : self.openClawChatModelLabel
+                let selectedResponseModel = modelOverride.isEmpty ? self.selectedChatModel : modelOverride
+                let responseModel = runtimeModel?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? runtimeModel : selectedResponseModel
                 if let runtimeModel, !runtimeModel.isEmpty {
                     self.currentModel = runtimeModel
                 }
@@ -8119,8 +8158,8 @@ final class InstallerViewModel: ObservableObject {
                     let repairMessage = ChatMessage(role: "assistant", text: automaticRecoveryNote, modelName: "LocalClaw")
                     if useDeveloperSession { self.developerChatMessages.append(repairMessage) } else { self.chatMessages.append(repairMessage) }
                 }
-                let role = (result.0 == 0 || knownDiagnostic != nil) ? "assistant" : "error"
-                let responseMessage = ChatMessage(role: role, text: reply, metadata: metrics, modelName: role == "assistant" ? responseModel : nil)
+                let role = result.0 == 0 ? "assistant" : "error"
+                let responseMessage = ChatMessage(role: role, text: reply, metadata: metrics, modelName: responseModel)
                 if useDeveloperSession { self.developerChatMessages.append(responseMessage) } else { self.chatMessages.append(responseMessage) }
                 if result.0 == 0 {
                     self.recordModelUsage(model: runtimeModel ?? self.currentModel, input: usage.input, output: usage.output, total: usage.total)
@@ -8141,7 +8180,7 @@ final class InstallerViewModel: ObservableObject {
                         self.developerPreviewStatus = "Code changes applied. Open Files or add package.json to preview."
                     }
                 }
-                self.chatStatus = result.0 == 0 ? "Ready" : (knownDiagnostic == nil ? "Error" : "Needs setup")
+                self.chatStatus = result.0 == 0 ? "Ready" : "Error"
                 self.chatIsSending = false
             }
         }
@@ -8162,8 +8201,19 @@ final class InstallerViewModel: ObservableObject {
     var availableChatModels: [OpenRouterModel] {
         var models: [OpenRouterModel] = []
         let current = openClawChatModelLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let selected = selectedChatModel.trimmingCharacters(in: .whitespacesAndNewlines)
         let showingLocalModels = selectedChatResponseMode == .local
         let showingOAuthModels = inferenceMode == .oauth || selectedCloudAuthMode == .oauth
+        if !selected.isEmpty {
+            let selectedIsLocal = selected.hasPrefix("lmstudio/")
+            let selectedIsOAuth = Self.isOAuthRuntimeModelID(selected)
+            let selectedMatchesMode = showingOAuthModels
+                ? selectedIsOAuth
+                : (showingLocalModels ? selectedIsLocal : selected.hasPrefix("openrouter/"))
+            if selectedMatchesMode {
+                models.append(OpenRouterModel(id: selected, displayName: Self.readableModelName(selected)))
+            }
+        }
         if !current.isEmpty && !current.lowercased().contains("not configured") {
             let currentID = Self.normalizedChatModelID(current, inferenceMode: inferenceMode, localModels: localLMStudioModels)
             let currentIsLocal = currentID.hasPrefix("lmstudio/") || localLMStudioModels.contains(currentID)
@@ -8227,10 +8277,12 @@ final class InstallerViewModel: ObservableObject {
         inferenceMode = .cloud
         selectedProvider = .openRouter
         let cloudModels = openRouterModelsLive.isEmpty ? Self.openRouterModels : openRouterModelsLive
-        if !cloudModels.contains(where: { $0.id == selectedOpenRouterModel }) {
+        if selectedChatModel.hasPrefix("openrouter/") {
+            selectedOpenRouterModel = selectedChatModel
+        } else if !cloudModels.contains(where: { $0.id == selectedOpenRouterModel }) {
             selectedOpenRouterModel = cloudModels.first?.id ?? "openrouter/openai/gpt-5.4-mini"
         }
-        if selectedChatModel.isEmpty || !cloudModels.contains(where: { $0.id == selectedChatModel }) {
+        if !selectedChatModel.hasPrefix("openrouter/") {
             selectedChatModel = selectedOpenRouterModel
         }
         if openRouterModelsLive.isEmpty {
@@ -8528,13 +8580,13 @@ final class InstallerViewModel: ObservableObject {
         if useDeveloperSession {
             switch mode {
             case .fast:
-                return 90
+                return 180
             case .deep:
-                return 600
+                return 840
             case .local:
-                return 420
+                return 840
             case .cloud:
-                return 420
+                return 840
             }
         }
         switch mode {
@@ -9732,8 +9784,47 @@ final class InstallerViewModel: ObservableObject {
         raw.replacingOccurrences(of: "\u{001B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
     }
 
-    nonisolated private static func friendlyChatDiagnostic(from raw: String) -> String? {
+    nonisolated private static func agentResponseIndicatesTimeout(_ raw: String) -> Bool {
         let clean = stripANSI(raw)
+        let lower = clean.lowercased()
+        let reply = extractAgentReply(from: clean)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if reply == "llm request failed" || reply == "llm request failed." {
+            return true
+        }
+        return lower.contains("request timed out before a response was generated")
+            || lower.contains("request timed out")
+            || lower.contains("deadline exceeded")
+            || lower.contains("embedded run timeout")
+            || (lower.contains("stopreason") && lower.contains("aborted") && lower.contains("request was aborted"))
+    }
+
+    nonisolated static func agentResponseIndicatesFailure(exitCode: Int32, raw: String) -> Bool {
+        if exitCode != 0 { return true }
+        if agentResponseIndicatesTimeout(raw) { return true }
+        let reply = extractAgentReply(from: raw)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return reply == "llm request failed" || reply == "llm request failed."
+    }
+
+    nonisolated static func normalizedAgentResult(_ result: (Int32, String)) -> (Int32, String) {
+        guard result.0 == 0, agentResponseIndicatesFailure(exitCode: result.0, raw: result.1) else {
+            return result
+        }
+        return (agentResponseIndicatesTimeout(result.1) ? 124 : 1, result.1)
+    }
+
+    nonisolated static func friendlyChatDiagnostic(from raw: String) -> String? {
+        let clean = stripANSI(raw)
+        if agentResponseIndicatesTimeout(clean) {
+            return """
+            OpenClaw timed out before the selected model finished this run. The model is still selected, and LocalClaw kept the current project files unchanged.
+
+            Use the recovery action below to continue from the current workspace state. In Developer, LocalClaw will inspect existing files first and will not intentionally repeat completed external API calls.
+            """
+        }
         if clean.contains("Model context window too small") || clean.contains("context window too small") {
             let model = clean.range(of: #"lmstudio/[^\s;"]+"#, options: .regularExpression)
                 .map { String(clean[$0]) } ?? "your local LM Studio model"
@@ -12605,66 +12696,64 @@ struct ContentView: View {
 
     var developerCenter: some View {
         GeometryReader { geometry in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack(alignment: .center, spacing: 12) {
-                        Image(systemName: "curlybraces.square.fill")
-                            .font(.system(size: 24, weight: .semibold))
-                            .foregroundStyle(UI.accent)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Developer")
-                                .font(AppFont.heading(28))
-                                .foregroundStyle(UI.text)
-                            Text("Describe the change, inspect the workspace, review source control, and preview the result.")
-                                .font(AppFont.body(13))
-                                .foregroundStyle(UI.muted)
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .center, spacing: 12) {
+                    Image(systemName: "curlybraces.square.fill")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundStyle(UI.accent)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Developer")
+                            .font(AppFont.heading(28))
+                            .foregroundStyle(UI.text)
+                        Text("Describe the change, inspect the workspace, review source control, and preview the result.")
+                            .font(AppFont.body(13))
+                            .foregroundStyle(UI.muted)
+                    }
+                    Spacer()
+                    developerActiveProjectPill
+                    Menu {
+                        Button(vm.developerProjectsPanelVisible ? "Hide projects" : "Show projects") {
+                            vm.developerProjectsPanelVisible.toggle()
                         }
-                        Spacer()
-                        developerActiveProjectPill
-                        Menu {
-                            Button(vm.developerProjectsPanelVisible ? "Hide projects" : "Show projects") {
-                                vm.developerProjectsPanelVisible.toggle()
-                            }
-                            Divider()
-                            Button("New project") { vm.developerNewApp() }
-                            Button("Open project") { vm.developerChooseFolder() }
-                            Button("Sync project folder") { vm.syncDeveloperProjectFolder() }
-                        } label: {
-                            Label("Workspace", systemImage: "folder.badge.gearshape")
-                        }
-                        .buttonStyle(CompactChatButton(primary: false))
+                        Divider()
+                        Button("New project") { vm.developerNewApp() }
+                        Button("Open project") { vm.developerChooseFolder() }
+                        Button("Sync project folder") { vm.syncDeveloperProjectFolder() }
+                    } label: {
+                        Label("Workspace", systemImage: "folder.badge.gearshape")
+                    }
+                    .buttonStyle(CompactChatButton(primary: false))
 
-                        developerToolbarButton(
-                            vm.developerPreviewIsRunning ? "Stop preview" : "Run preview",
-                            icon: vm.developerPreviewIsRunning ? "stop.fill" : "play.fill",
-                            primary: true
-                        ) {
-                            if vm.developerPreviewIsRunning {
-                                vm.developerStopPreview()
-                            } else {
-                                vm.developerRunPreview()
-                            }
+                    developerToolbarButton(
+                        vm.developerPreviewIsRunning ? "Stop preview" : "Run preview",
+                        icon: vm.developerPreviewIsRunning ? "stop.fill" : "play.fill",
+                        primary: true
+                    ) {
+                        if vm.developerPreviewIsRunning {
+                            vm.developerStopPreview()
+                        } else {
+                            vm.developerRunPreview()
                         }
                     }
-
-                    developerWorkspaceStatusBar
-
-                    HStack(alignment: .top, spacing: 14) {
-                        if vm.developerProjectsPanelVisible {
-                            developerProjectsPanel
-                                .frame(width: 230)
-                        }
-                        developerChatPanel
-                            .frame(minWidth: 360, idealWidth: 430, maxWidth: 500)
-                        developerPreviewPanel
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .padding(18)
-                .frame(maxWidth: .infinity, minHeight: max(geometry.size.height, 720), alignment: .topLeading)
+
+                developerWorkspaceStatusBar
+
+                HStack(alignment: .top, spacing: 14) {
+                    if vm.developerProjectsPanelVisible {
+                        developerProjectsPanel
+                            .frame(width: 230)
+                            .frame(maxHeight: .infinity)
+                    }
+                    developerChatPanel
+                        .frame(minWidth: 360, idealWidth: 430, maxWidth: 500, maxHeight: .infinity)
+                    developerPreviewPanel
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .scrollIndicators(.visible)
+            .padding(18)
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 18).fill(UI.card))
@@ -13561,6 +13650,9 @@ struct ContentView: View {
     @ViewBuilder
     private func chatRecoveryContent(_ message: InstallerViewModel.ChatMessage, useDeveloperSession: Bool) -> some View {
         if let plan = vm.chatRecoveryPlan(for: message) {
+            let primaryActionLabel = useDeveloperSession && plan.kind == .timeout
+                ? "Continue Safely"
+                : plan.primaryActionLabel
             VStack(alignment: .leading, spacing: 10) {
                 Label(plan.title, systemImage: plan.systemImage)
                     .font(AppFont.bodySemi(14))
@@ -13581,7 +13673,7 @@ struct ContentView: View {
                                 Text("Recovering...")
                             }
                         } else {
-                            Label(plan.primaryActionLabel, systemImage: plan.systemImage)
+                            Label(primaryActionLabel, systemImage: plan.systemImage)
                         }
                     }
                     .buttonStyle(CompactChatButton(primary: true))
@@ -13641,7 +13733,7 @@ struct ContentView: View {
             if isError {
                 chatRecoveryContent(message, useDeveloperSession: true)
             } else {
-                Text(message.text)
+                Text(SecretRedactor.redactConfigText(message.text))
                     .font(AppFont.body(13))
                     .foregroundStyle(UI.text)
                     .textSelection(.enabled)
@@ -14646,7 +14738,7 @@ struct ContentView: View {
                 if isError {
                     chatRecoveryContent(message, useDeveloperSession: false)
                 } else {
-                    renderedChatText(message.text)
+                    renderedChatText(SecretRedactor.redactConfigText(message.text))
                         .font(AppFont.body(14))
                         .foregroundStyle(UI.text)
                         .lineSpacing(3)
@@ -14680,7 +14772,7 @@ struct ContentView: View {
 
     func copyChatMessage(_ text: String) {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+        NSPasteboard.general.setString(SecretRedactor.redactConfigText(text), forType: .string)
     }
 
     func renderedChatText(_ text: String) -> Text {

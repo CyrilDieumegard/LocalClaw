@@ -58,17 +58,37 @@ enum SecretRedactor {
     }
 
     private static func redactPlainText(_ raw: String) -> String {
-        let patterns = [
-            #"(?i)([A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*\s*=\s*)[^\s]+"#,
-            #"(?i)(\"(?:api[_-]?key|apikey|token|secret|password|key)\"\s*:\s*\")[^\"]*(\")"#
-        ]
+        var redacted = raw.replacingOccurrences(
+            of: #"(?i)([A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*\s*=\s*)[^\s]+"#,
+            with: "$1<redacted>",
+            options: .regularExpression
+        )
+        redacted = redacted.replacingOccurrences(
+            of: #"(?i)(\"(?:api[_-]?key|apikey|token|secret|password|key)\"\s*:\s*\")[^\"]*(\")"#,
+            with: "$1<redacted>$2",
+            options: .regularExpression
+        )
+        redacted = redacted.replacingOccurrences(
+            of: #"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{16,}"#,
+            with: "Bearer <redacted>",
+            options: .regularExpression
+        )
 
-        return patterns.reduce(raw) { text, pattern in
-            text.replacingOccurrences(
+        let standaloneTokenPatterns = [
+            #"(?i)\bmsy_[A-Za-z0-9_-]{12,}\b"#,
+            #"(?i)\bsk-[A-Za-z0-9_-]{12,}\b"#,
+            #"(?i)\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"#,
+            #"(?i)\bxox[baprs]-[A-Za-z0-9-]{12,}\b"#,
+            #"\b[0-9]{6,12}:[A-Za-z0-9_-]{20,}\b"#,
+            #"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"#
+        ]
+        for pattern in standaloneTokenPatterns {
+            redacted = redacted.replacingOccurrences(
                 of: pattern,
-                with: "$1<redacted>$2",
+                with: "<redacted>",
                 options: .regularExpression
             )
         }
+        return redacted
     }
 }

@@ -387,6 +387,28 @@ struct InstallerEngineTests {
         #expect(redacted.contains("kimi-k2.5"))
     }
 
+    @Test func redactsStandaloneProviderTokensFromChatText() {
+        let providerToken = "msy_exampleTokenValue123456789"
+        let cloudToken = "sk-exampleCloudTokenValue123456789"
+        let raw = "Use \(providerToken) for assets and \(cloudToken) for the model."
+
+        let redacted = SecretRedactor.redactConfigText(raw)
+
+        #expect(!redacted.contains(providerToken))
+        #expect(!redacted.contains(cloudToken))
+        #expect(redacted.components(separatedBy: "<redacted>").count == 3)
+    }
+
+    @MainActor
+    @Test func chatMessagesNeverPersistStandaloneProviderTokens() {
+        let token = "msy_exampleTokenValue123456789"
+
+        let message = InstallerViewModel.ChatMessage(role: "user", text: "Use \(token) for this task")
+
+        #expect(!message.text.contains(token))
+        #expect(message.text.contains("<redacted>"))
+    }
+
     @Test func computesSHA256ForDownloadedInstaller() throws {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("localclaw-sha-test-\(UUID().uuidString)")
@@ -556,9 +578,39 @@ struct InstallerEngineTests {
 
     @Test func fastDeveloperRequestsUseLowThinkingAndShortTimeout() {
         #expect(InstallerViewModel.agentThinkingLevel(for: .fast) == "low")
-        #expect(InstallerViewModel.agentTimeoutSeconds(for: .fast, useDeveloperSession: true) == 90)
-        #expect(InstallerViewModel.agentTimeoutSeconds(for: .cloud, useDeveloperSession: true) == 420)
-        #expect(InstallerViewModel.agentTimeoutSeconds(for: .deep, useDeveloperSession: true) == 600)
+        #expect(InstallerViewModel.agentTimeoutSeconds(for: .fast, useDeveloperSession: true) == 180)
+        #expect(InstallerViewModel.agentTimeoutSeconds(for: .cloud, useDeveloperSession: true) == 840)
+        #expect(InstallerViewModel.agentTimeoutSeconds(for: .deep, useDeveloperSession: true) == 840)
+        #expect(InstallerViewModel.wallClockTimeoutSeconds(forAgentTimeout: 840) == 900)
+    }
+
+    @Test func semanticOpenClawTimeoutIsNotTreatedAsSuccess() {
+        let raw = """
+        {
+          "status": "ok",
+          "summary": "LLM request failed.",
+          "result": {
+            "payloads": [{"text": "LLM request failed."}],
+            "stopReason": "aborted",
+            "errorMessage": "Request was aborted"
+          }
+        }
+        """
+
+        let normalized = InstallerViewModel.normalizedAgentResult((0, raw))
+
+        #expect(InstallerViewModel.agentResponseIndicatesFailure(exitCode: 0, raw: raw))
+        #expect(normalized.0 == 124)
+        #expect(InstallerViewModel.friendlyChatDiagnostic(from: raw)?.contains("model is still selected") == true)
+    }
+
+    @Test func successfulOpenClawReplyRemainsSuccessful() {
+        let raw = #"{"status":"ok","result":{"payloads":[{"text":"Build completed."}]}}"#
+
+        let normalized = InstallerViewModel.normalizedAgentResult((0, raw))
+
+        #expect(!InstallerViewModel.agentResponseIndicatesFailure(exitCode: 0, raw: raw))
+        #expect(normalized.0 == 0)
     }
 
     @Test func simpleDeveloperEditsUseTightBudget() {
@@ -829,6 +881,26 @@ struct InstallerEngineTests {
         #expect(vm.availableChatModels.allSatisfy { $0.id.hasPrefix("openrouter/") })
         #expect(vm.availableChatModels.map(\.id) == ["openrouter/openai/gpt-5.5", "openrouter/openai/gpt-5.4-mini"])
         #expect(vm.selectedChatModel == "openrouter/openai/gpt-5.5")
+    }
+
+    @MainActor
+    @Test func cloudModelSelectionSurvivesCatalogRefreshGaps() {
+        let vm = InstallerViewModel()
+        let selected = "openrouter/moonshotai/kimi-k3"
+        vm.inferenceMode = .cloud
+        vm.selectedCloudAuthMode = .api
+        vm.selectedChatResponseMode = .cloud
+        vm.openRouterModelsLive = [
+            InstallerViewModel.OpenRouterModel(id: "openrouter/openai/gpt-5.4-mini", displayName: "GPT-5.4 Mini")
+        ]
+        vm.selectedChatModel = selected
+
+        vm.prepareCloudModelSelection()
+        vm.ensureSelectedChatModel()
+
+        #expect(vm.selectedChatModel == selected)
+        #expect(vm.selectedOpenRouterModel == selected)
+        #expect(vm.availableChatModels.map(\.id).contains(selected))
     }
 
     @MainActor

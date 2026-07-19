@@ -79,12 +79,13 @@ struct ChatRecoveryPlan: Equatable, Sendable {
         if clean.contains("timed out") ||
             clean.contains("timeout") ||
             clean.contains("deadline exceeded") ||
+            clean.contains("llm request failed") ||
             clean.contains("code=124") {
             return ChatRecoveryPlan(
                 kind: .timeout,
                 title: "The request took too long",
-                explanation: "OpenClaw did not finish before the safety limit. Retry the request, or choose a faster model if this continues.",
-                primaryActionLabel: "Retry Request",
+                explanation: "OpenClaw ended the run before the model finished. The selected model and project files are still available, so LocalClaw can continue from the current state.",
+                primaryActionLabel: "Continue Request",
                 systemImage: "clock.badge.exclamationmark.fill"
             )
         }
