@@ -1188,7 +1188,13 @@ final class InstallerViewModel: ObservableObject {
     @Published var developerFreshContextEnabled = true {
         didSet { UserDefaults.standard.set(developerFreshContextEnabled, forKey: Self.developerFreshContextDefaultsKey) }
     }
+    @Published var developerActivityStartedAt: Date?
+    @Published var developerActivityPhase = "Ready"
+    @Published var developerActivityModel = ""
+    @Published var developerActivityTimeoutSeconds = 0
+    @Published var developerActivityEvents: [DeveloperActivityEvent] = []
     private var developerPreviewProcess: Process?
+    private var developerActivityMonitorTask: Task<Void, Never>?
     var developerPreviewIsRunning: Bool {
         developerPreviewProcess?.isRunning == true
     }
@@ -1408,6 +1414,7 @@ final class InstallerViewModel: ObservableObject {
     private static let homeUsageWindowDefaultsKey = "localclaw.home.usageWindow.v1"
     private static let kanbanDefaultsKey = "localclaw.kanban.board.v1"
     nonisolated static let simpleDeveloperEditTimeoutSeconds = 60
+    nonisolated static let developerContinuationPrompt = "Continue the previous Developer task from the current workspace state. Inspect the files and generated assets that already exist before changing anything. Preserve completed work, finish only what remains, and do not repeat successful external API calls or recreate existing paid assets."
 
     init() {
         Self.ensureTelegramDefaultAccountToken()
@@ -6388,7 +6395,15 @@ final class InstallerViewModel: ObservableObject {
         if let data = UserDefaults.standard.data(forKey: Self.chatSessionsDefaultsKey),
            let decoded = try? JSONDecoder().decode([ChatSession].self, from: data),
            !decoded.isEmpty {
-            chatSessions = decoded.sorted { $0.updatedAt > $1.updatedAt }
+            chatSessions = decoded.map { session in
+                var cleaned = session
+                if cleaned.id.hasPrefix("localclaw-developer-chat-") {
+                    cleaned.messages.removeAll {
+                        $0.role == "user" && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == Self.developerContinuationPrompt
+                    }
+                }
+                return cleaned
+            }.sorted { $0.updatedAt > $1.updatedAt }
         }
         if normalChatSessions.isEmpty {
             chatSessions.append(ChatSession.fresh(title: "Main setup"))
@@ -7567,10 +7582,14 @@ final class InstallerViewModel: ObservableObject {
         messages.removeAll { $0.id == message.id }
         developerChatMessages = messages
         developerImagePath = ""
-        developerInput = """
-        Continue the previous Developer task from the current workspace state. Inspect the files and generated assets that already exist before changing anything. Preserve completed work, finish only what remains, and do not repeat successful external API calls or recreate existing paid assets.
-        """
-        sendDeveloperChatMessage()
+        ensureDeveloperChatSession()
+        sendChatMessage(
+            sessionID: activeDeveloperChatSessionID,
+            useDeveloperSession: true,
+            inputOverride: Self.developerContinuationPrompt,
+            imagePathOverride: "",
+            appendVisibleUserMessage: false
+        )
     }
 
     func chatRecoveryPlan(for message: ChatMessage) -> ChatRecoveryPlan? {
@@ -7784,9 +7803,15 @@ final class InstallerViewModel: ObservableObject {
         sendChatMessage(sessionID: activeDeveloperChatSessionID, useDeveloperSession: true)
     }
 
-    private func sendChatMessage(sessionID: String, useDeveloperSession: Bool) {
-        let rawInput = useDeveloperSession ? developerInput : chatInput
-        let rawImagePath = useDeveloperSession ? developerImagePath : chatImagePath
+    private func sendChatMessage(
+        sessionID: String,
+        useDeveloperSession: Bool,
+        inputOverride: String? = nil,
+        imagePathOverride: String? = nil,
+        appendVisibleUserMessage: Bool = true
+    ) {
+        let rawInput = inputOverride ?? (useDeveloperSession ? developerInput : chatInput)
+        let rawImagePath = imagePathOverride ?? (useDeveloperSession ? developerImagePath : chatImagePath)
         let text = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
         let imagePath = rawImagePath.trimmingCharacters(in: .whitespacesAndNewlines)
         if (text.isEmpty && imagePath.isEmpty) || chatIsSending { return }
@@ -7851,11 +7876,13 @@ final class InstallerViewModel: ObservableObject {
         agentTextParts.append(imagePath.isEmpty ? text : "\(userText)\n\n[Attached image: \(imagePath)]")
         let agentText = agentTextParts.joined(separator: "\n\n")
         if useDeveloperSession {
-            developerChatMessages.append(ChatMessage(role: "user", text: visibleUserText, imagePath: imagePath.isEmpty ? nil : imagePath))
-            updateDeveloperChatSession { session in
-                if session.title == "Developer workspace" {
-                    let compact = visibleUserText.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-                    session.title = String(compact.prefix(34)) + (compact.count > 34 ? "…" : "")
+            if appendVisibleUserMessage {
+                developerChatMessages.append(ChatMessage(role: "user", text: visibleUserText, imagePath: imagePath.isEmpty ? nil : imagePath))
+                updateDeveloperChatSession { session in
+                    if session.title == "Developer workspace" {
+                        let compact = visibleUserText.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                        session.title = String(compact.prefix(34)) + (compact.count > 34 ? "…" : "")
+                    }
                 }
             }
         } else {
@@ -7922,6 +7949,7 @@ final class InstallerViewModel: ObservableObject {
             let setupMessage = ChatMessage(role: "assistant", text: setupText, metadata: "local setup • no model call", modelName: "LocalClaw")
             if useDeveloperSession { developerChatMessages.append(setupMessage) } else { chatMessages.append(setupMessage) }
             chatStatus = "Setting up local model..."
+            chatIsSending = false
             return
         }
         let developerWorkdir = developerProjectPath
@@ -7930,6 +7958,11 @@ final class InstallerViewModel: ObservableObject {
         let agentThinking = isSimpleDeveloperEdit ? "low" : Self.agentThinkingLevel(for: selectedChatResponseMode)
         let agentTimeout = isSimpleDeveloperEdit ? Self.simpleDeveloperEditTimeoutSeconds : Self.agentTimeoutSeconds(for: selectedChatResponseMode, useDeveloperSession: useDeveloperSession)
         let wallClockTimeout = Self.wallClockTimeoutSeconds(forAgentTimeout: agentTimeout)
+        let activityModelName = availableChatModels.first(where: { $0.id == selectedModelForRequest || $0.id == modelOverride })?.displayName
+            ?? (selectedModelForRequest.isEmpty ? openClawChatModelLabel : selectedModelForRequest)
+        if useDeveloperSession {
+            beginDeveloperActivity(requestID: requestID, model: activityModelName, timeoutSeconds: agentTimeout)
+        }
 
         Task.detached {
             let engine = InstallerEngine()
@@ -7937,17 +7970,26 @@ final class InstallerViewModel: ObservableObject {
                 await MainActor.run {
                     if self.activeChatRequestID == requestID {
                         self.chatStatus = "Preparing OpenClaw..."
+                        if useDeveloperSession {
+                            self.updateDeveloperActivityPhase("Checking the OpenClaw Gateway", requestID: requestID)
+                        }
                     }
                 }
                 _ = engine.shell("openclaw gateway status >/dev/null 2>&1 || openclaw gateway start >/dev/null 2>&1 || true")
             }
             if !modelOverride.isEmpty {
+                await MainActor.run {
+                    if useDeveloperSession {
+                        self.updateDeveloperActivityPhase("Checking model access", requestID: requestID)
+                    }
+                }
                 let allowResult = engine.ensureModelAllowedInConfig(modelIdentifier: modelOverride)
                 if allowResult.state == .fail {
                     await MainActor.run {
                         let errorMessage = ChatMessage(role: "error", text: allowResult.message)
                         if useDeveloperSession { self.developerChatMessages.append(errorMessage) } else { self.chatMessages.append(errorMessage) }
                         self.chatStatus = "Error"
+                        if useDeveloperSession { self.finishDeveloperActivity() }
                         self.chatIsSending = false
                     }
                     return
@@ -7962,6 +8004,7 @@ final class InstallerViewModel: ObservableObject {
                     let errorMessage = ChatMessage(role: "error", text: "I couldn’t prepare the message for OpenClaw: \(error.localizedDescription)")
                     if useDeveloperSession { self.developerChatMessages.append(errorMessage) } else { self.chatMessages.append(errorMessage) }
                     self.chatStatus = "Error"
+                    if useDeveloperSession { self.finishDeveloperActivity() }
                     self.chatIsSending = false
                 }
                 return
@@ -7981,6 +8024,13 @@ final class InstallerViewModel: ObservableObject {
             await MainActor.run {
                 if self.activeChatRequestID == requestID {
                     self.chatStatus = isSimpleDeveloperEdit ? "Applying quick edit..." : "Running OpenClaw..."
+                    if useDeveloperSession {
+                        self.startDeveloperActivityMonitor(sessionID: runtimeSessionID, requestID: requestID)
+                        self.updateDeveloperActivityPhase(
+                            isSimpleDeveloperEdit ? "Applying a focused edit" : "OpenClaw is working in \(self.developerProjectName)",
+                            requestID: requestID
+                        )
+                    }
                 }
             }
             var result = Self.openClawAgentCancellable(
@@ -8059,6 +8109,12 @@ final class InstallerViewModel: ObservableObject {
                             self.chatStatus = recoveryKind == .runtimeFiles
                                 ? "Refreshing OpenClaw runtime..."
                                 : "Restarting OpenClaw Gateway..."
+                            if useDeveloperSession {
+                                self.updateDeveloperActivityPhase(
+                                    recoveryKind == .runtimeFiles ? "Repairing OpenClaw runtime" : "Restarting OpenClaw Gateway",
+                                    requestID: requestID
+                                )
+                            }
                             if recoveryKind == .runtimeFiles {
                                 _ = self.createRecoveryPoint(reason: "Before automatic chat recovery")
                             }
@@ -8098,6 +8154,9 @@ final class InstallerViewModel: ObservableObject {
                         await MainActor.run {
                             if self.activeChatRequestID == requestID {
                                 self.chatStatus = "Repairing OpenClaw package..."
+                                if useDeveloperSession {
+                                    self.updateDeveloperActivityPhase("Repairing the OpenClaw package", requestID: requestID)
+                                }
                             }
                         }
                         let packageRepair = engine.recoverOpenClawRuntime(
@@ -8165,6 +8224,7 @@ final class InstallerViewModel: ObservableObject {
                     self.recordModelUsage(model: runtimeModel ?? self.currentModel, input: usage.input, output: usage.output, total: usage.total)
                 }
                 if useDeveloperSession && result.0 == 0 {
+                    self.updateDeveloperActivityPhase("Refreshing the project preview", requestID: requestID)
                     self.refreshDeveloperGitStatus()
                     let packageURL = URL(fileURLWithPath: self.developerProjectPath).appendingPathComponent("package.json")
                     if FileManager.default.fileExists(atPath: packageURL.path) {
@@ -8180,6 +8240,7 @@ final class InstallerViewModel: ObservableObject {
                         self.developerPreviewStatus = "Code changes applied. Open Files or add package.json to preview."
                     }
                 }
+                if useDeveloperSession { self.finishDeveloperActivity() }
                 self.chatStatus = result.0 == 0 ? "Ready" : "Error"
                 self.chatIsSending = false
             }
@@ -8193,9 +8254,93 @@ final class InstallerViewModel: ObservableObject {
         activeChatProcess?.terminate()
         activeChatProcess = nil
         activeChatRequestID = nil
+        finishDeveloperActivity()
         appendChatSystemMessageOnce("Generation stopped.")
         chatStatus = "Ready"
         chatIsSending = false
+    }
+
+    private func beginDeveloperActivity(requestID: UUID, model: String, timeoutSeconds: Int) {
+        developerActivityMonitorTask?.cancel()
+        developerActivityStartedAt = Date()
+        developerActivityPhase = "Preparing OpenClaw"
+        developerActivityModel = model
+        developerActivityTimeoutSeconds = timeoutSeconds
+        developerActivityEvents = []
+    }
+
+    private func updateDeveloperActivityPhase(_ phase: String, requestID: UUID) {
+        guard activeChatRequestID == requestID else { return }
+        developerActivityPhase = phase
+    }
+
+    private func startDeveloperActivityMonitor(sessionID: String, requestID: UUID) {
+        developerActivityMonitorTask?.cancel()
+        let path = NSHomeDirectory() + "/.openclaw/agents/main/sessions/\(sessionID).jsonl"
+        let initialOffset = Self.developerActivityFileSize(path: path)
+        developerActivityMonitorTask = Task { [weak self] in
+            var offset = initialOffset
+            var pending = Data()
+            while !Task.isCancelled {
+                let readOffset = offset
+                let chunk = await Task.detached(priority: .utility) { @Sendable in
+                    Self.readDeveloperActivityChunk(path: path, offset: readOffset)
+                }.value
+                offset = chunk.nextOffset
+                if !chunk.data.isEmpty {
+                    pending.append(chunk.data)
+                    while let newline = pending.firstIndex(of: 0x0A) {
+                        let lineData = Data(pending[..<newline])
+                        pending.removeSubrange(...newline)
+                        guard let line = String(data: lineData, encoding: .utf8), !line.isEmpty,
+                              let self, self.activeChatRequestID == requestID else { continue }
+                        let updated = DeveloperActivityParser.applying(
+                            jsonLine: line,
+                            to: self.developerActivityEvents,
+                            projectPath: self.developerProjectPath
+                        )
+                        if updated != self.developerActivityEvents {
+                            self.developerActivityEvents = updated
+                            if let running = updated.last(where: { $0.state == .running }) {
+                                self.developerActivityPhase = running.title
+                            } else if !updated.isEmpty {
+                                self.developerActivityPhase = "OpenClaw is reviewing the result"
+                            }
+                        }
+                    }
+                }
+                try? await Task.sleep(for: .milliseconds(700))
+            }
+        }
+    }
+
+    private func finishDeveloperActivity() {
+        developerActivityMonitorTask?.cancel()
+        developerActivityMonitorTask = nil
+        developerActivityStartedAt = nil
+        developerActivityPhase = "Ready"
+        developerActivityTimeoutSeconds = 0
+    }
+
+    nonisolated private static func developerActivityFileSize(path: String) -> UInt64 {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+        return (attributes?[.size] as? NSNumber)?.uint64Value ?? 0
+    }
+
+    nonisolated private static func readDeveloperActivityChunk(path: String, offset: UInt64) -> (data: Data, nextOffset: UInt64) {
+        guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else {
+            return (Data(), offset)
+        }
+        defer { try? handle.close() }
+        let size = developerActivityFileSize(path: path)
+        let safeOffset = size < offset ? 0 : offset
+        do {
+            try handle.seek(toOffset: safeOffset)
+            let data = try handle.readToEnd() ?? Data()
+            return (data, safeOffset + UInt64(data.count))
+        } catch {
+            return (Data(), safeOffset)
+        }
     }
 
     var availableChatModels: [OpenRouterModel] {
@@ -11375,13 +11520,104 @@ struct PresetPillButton: ButtonStyle {
     }
 }
 
+final class InteractiveDeveloperWebView: WKWebView {
+    override var acceptsFirstResponder: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        super.mouseDown(with: event)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        super.rightMouseDown(with: event)
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        super.otherMouseDown(with: event)
+    }
+}
+
 struct DeveloperWebPreview: NSViewRepresentable {
     let urlString: String
+
+    private static let pointerLockFallbackScript = #"""
+    (() => {
+      if (window.__localClawPointerLockInstalled) return;
+      window.__localClawPointerLockInstalled = true;
+
+      const pointerDescriptor = Object.getOwnPropertyDescriptor(Document.prototype, 'pointerLockElement');
+      const nativePointerElement = document => {
+        try { return pointerDescriptor && pointerDescriptor.get ? pointerDescriptor.get.call(document) : null; }
+        catch (_) { return null; }
+      };
+      let fallbackElement = null;
+      let previousCursor = '';
+
+      const notify = () => document.dispatchEvent(new Event('pointerlockchange'));
+      const releaseFallback = () => {
+        if (!fallbackElement) return;
+        fallbackElement = null;
+        if (document.documentElement) document.documentElement.style.cursor = previousCursor;
+        notify();
+      };
+      const activateFallback = element => {
+        if (nativePointerElement(document) || fallbackElement === element) return;
+        fallbackElement = element;
+        if (document.documentElement) {
+          previousCursor = document.documentElement.style.cursor || '';
+          document.documentElement.style.cursor = 'none';
+        }
+        notify();
+      };
+
+      try {
+        Object.defineProperty(Document.prototype, 'pointerLockElement', {
+          configurable: true,
+          get() { return nativePointerElement(this) || fallbackElement; }
+        });
+      } catch (_) {}
+
+      const nativeRequest = Element.prototype.requestPointerLock;
+      Element.prototype.requestPointerLock = function(options) {
+        let nativeResult;
+        try {
+          nativeResult = nativeRequest ? nativeRequest.call(this, options) : null;
+          if (nativeResult && typeof nativeResult.catch === 'function') {
+            nativeResult.catch(() => activateFallback(this));
+          }
+        } catch (_) {}
+        setTimeout(() => activateFallback(this), 80);
+        return nativeResult || Promise.resolve();
+      };
+
+      const nativeExit = Document.prototype.exitPointerLock;
+      Document.prototype.exitPointerLock = function() {
+        releaseFallback();
+        try { return nativeExit ? nativeExit.call(this) : undefined; }
+        catch (_) { return undefined; }
+      };
+
+      addEventListener('keydown', event => {
+        if (event.key === 'Escape') releaseFallback();
+      }, true);
+      addEventListener('blur', releaseFallback);
+    })();
+    """#
 
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        configuration.preferences.isElementFullscreenEnabled = true
+        configuration.userContentController.addUserScript(
+            WKUserScript(
+                source: Self.pointerLockFallbackScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+        )
+        let webView = InteractiveDeveloperWebView(frame: .zero, configuration: configuration)
         webView.allowsBackForwardNavigationGestures = true
         webView.setValue(false, forKey: "drawsBackground")
         load(webView)
@@ -13019,14 +13255,7 @@ struct ContentView: View {
                             }
                         }
                         if vm.chatIsSending {
-                            HStack(spacing: 8) {
-                                ProgressView()
-                                    .scaleEffect(0.7)
-                                Text(vm.chatStatus)
-                                    .font(AppFont.body(12))
-                                    .foregroundStyle(UI.muted)
-                            }
-                            .padding(.horizontal, 10)
+                            developerActivityPanel
                         }
                         Color.clear
                             .frame(height: 10)
@@ -13107,6 +13336,97 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 12).fill(UI.card))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    @ViewBuilder
+    private var developerActivityPanel: some View {
+        if let startedAt = vm.developerActivityStartedAt {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let elapsed = max(0, Int(context.date.timeIntervalSince(startedAt)))
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack(spacing: 9) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(vm.developerActivityPhase)
+                            .font(AppFont.bodySemi(12))
+                            .foregroundStyle(UI.text)
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        Text(developerDurationLabel(elapsed))
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(UI.accent)
+                    }
+
+                    HStack(spacing: 6) {
+                        Label(vm.developerActivityModel, systemImage: "cpu")
+                        Text("·")
+                        Text("limit \(developerDurationLabel(vm.developerActivityTimeoutSeconds))")
+                    }
+                    .font(AppFont.body(10))
+                    .foregroundStyle(UI.muted)
+                    .lineLimit(1)
+
+                    if vm.developerActivityEvents.isEmpty {
+                        Text(elapsed >= 45
+                             ? "The model is still planning or waiting for the provider before its first tool action."
+                             : "Waiting for the model's first tool action...")
+                            .font(AppFont.body(11))
+                            .foregroundStyle(UI.muted)
+                            .lineLimit(2)
+                    } else {
+                        ForEach(Array(vm.developerActivityEvents.suffix(3))) { event in
+                            HStack(spacing: 8) {
+                                developerActivityIcon(event.state)
+                                Text(event.title)
+                                    .font(AppFont.body(11))
+                                    .foregroundStyle(event.state == .failed ? Color(NSColor.systemRed) : UI.text)
+                                    .lineLimit(1)
+                                Spacer(minLength: 0)
+                            }
+                        }
+                    }
+                }
+                .padding(11)
+                .background(RoundedRectangle(cornerRadius: 12).fill(UI.card))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.accent.opacity(0.45), lineWidth: 1))
+            }
+        } else {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(vm.chatStatus)
+                    .font(AppFont.body(12))
+                    .foregroundStyle(UI.muted)
+            }
+            .padding(.horizontal, 10)
+        }
+    }
+
+    @ViewBuilder
+    private func developerActivityIcon(_ state: DeveloperActivityEvent.State) -> some View {
+        switch state {
+        case .running:
+            ProgressView()
+                .controlSize(.mini)
+                .frame(width: 14, height: 14)
+        case .succeeded:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color(NSColor.systemGreen))
+                .frame(width: 14, height: 14)
+        case .failed:
+            Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color(NSColor.systemRed))
+                .frame(width: 14, height: 14)
+        }
+    }
+
+    private func developerDurationLabel(_ seconds: Int) -> String {
+        let safeSeconds = max(0, seconds)
+        let minutes = safeSeconds / 60
+        let remainder = safeSeconds % 60
+        return minutes > 0 ? String(format: "%dm %02ds", minutes, remainder) : "\(remainder)s"
     }
 
     private func scrollDeveloperChatToBottom(_ proxy: ScrollViewProxy) {
@@ -13260,7 +13580,11 @@ struct ContentView: View {
                         .id(vm.developerPreviewRefreshID)
                         .frame(width: vm.developerPreviewDevice == "mobile" ? 390 : nil)
                         .background(Color.black)
-                        .overlay(RoundedRectangle(cornerRadius: vm.developerPreviewDevice == "mobile" ? 18 : 0).stroke(vm.developerPreviewDevice == "mobile" ? UI.lineSoft : Color.clear, lineWidth: 1))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: vm.developerPreviewDevice == "mobile" ? 18 : 0)
+                                .stroke(vm.developerPreviewDevice == "mobile" ? UI.lineSoft : Color.clear, lineWidth: 1)
+                                .allowsHitTesting(false)
+                        )
                         .clipShape(RoundedRectangle(cornerRadius: vm.developerPreviewDevice == "mobile" ? 18 : 0))
                     if vm.developerPreviewDevice == "mobile" { Spacer(minLength: 0) }
                 }

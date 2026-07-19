@@ -1259,4 +1259,71 @@ Created job
         #expect(devDependencies["vite"] != nil)
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("src/main.jsx").path))
     }
+
+    @Test func developerActivityTracksToolStartAndCompletion() throws {
+        let projectPath = "/Users/test/project"
+        let call: [String: Any] = [
+            "type": "message",
+            "message": [
+                "role": "assistant",
+                "timestamp": 1_784_473_699_681 as Double,
+                "content": [[
+                    "type": "toolCall",
+                    "id": "read_1",
+                    "name": "read",
+                    "arguments": ["path": "/Users/test/project/src/main.js"]
+                ]]
+            ]
+        ]
+        let callData = try JSONSerialization.data(withJSONObject: call)
+        let callLine = try #require(String(data: callData, encoding: .utf8))
+        var events = DeveloperActivityParser.applying(jsonLine: callLine, to: [], projectPath: projectPath)
+
+        #expect(events.count == 1)
+        #expect(events[0].title == "Reading src/main.js")
+        #expect(events[0].state == .running)
+
+        let result: [String: Any] = [
+            "type": "message",
+            "message": [
+                "role": "toolResult",
+                "toolCallId": "read_1",
+                "toolName": "read",
+                "isError": false,
+                "content": [["type": "text", "text": "hidden"]]
+            ]
+        ]
+        let resultData = try JSONSerialization.data(withJSONObject: result)
+        let resultLine = try #require(String(data: resultData, encoding: .utf8))
+        events = DeveloperActivityParser.applying(jsonLine: resultLine, to: events, projectPath: projectPath)
+
+        #expect(events[0].state == .succeeded)
+    }
+
+    @Test func developerActivitySummarizesCommandsWithoutExposingCommandText() {
+        let summary = DeveloperActivityParser.toolSummary(
+            name: "exec",
+            arguments: ["command": "TOKEN=private-value npm run build"],
+            projectPath: "/tmp/project"
+        )
+
+        #expect(summary.title == "Building the project")
+        #expect(!summary.title.contains("private-value"))
+        #expect(!summary.detail.contains("private-value"))
+    }
+
+    @Test func developerActivityHumanizesUnknownToolNames() {
+        let summary = DeveloperActivityParser.toolSummary(
+            name: "custom_project_tool",
+            arguments: [:],
+            projectPath: "/tmp/project"
+        )
+
+        #expect(summary.title == "Using Custom Project Tool")
+    }
+
+    @Test @MainActor func developerPreviewAcceptsKeyboardFocus() {
+        let preview = InteractiveDeveloperWebView(frame: .zero, configuration: .init())
+        #expect(preview.acceptsFirstResponder)
+    }
 }
