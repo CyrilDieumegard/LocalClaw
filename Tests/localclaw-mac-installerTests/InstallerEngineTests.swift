@@ -578,10 +578,62 @@ struct InstallerEngineTests {
 
     @Test func fastDeveloperRequestsUseLowThinkingAndShortTimeout() {
         #expect(InstallerViewModel.agentThinkingLevel(for: .fast) == "low")
+        #expect(InstallerViewModel.agentThinkingLevel(for: .local) == "off")
         #expect(InstallerViewModel.agentTimeoutSeconds(for: .fast, useDeveloperSession: true) == 180)
         #expect(InstallerViewModel.agentTimeoutSeconds(for: .cloud, useDeveloperSession: true) == 840)
         #expect(InstallerViewModel.agentTimeoutSeconds(for: .deep, useDeveloperSession: true) == 840)
         #expect(InstallerViewModel.wallClockTimeoutSeconds(forAgentTimeout: 840) == 900)
+    }
+
+    @Test func localModelsAlwaysDisableUnsupportedThinkingLevels() {
+        #expect(InstallerViewModel.agentThinkingLevel(
+            for: "lmstudio/nvidia/nemotron-3-nano-4b",
+            inferenceMode: .local,
+            responseMode: .local,
+            isSimpleDeveloperEdit: false
+        ) == "off")
+        #expect(InstallerViewModel.agentThinkingLevel(
+            for: "lmstudio/nvidia/nemotron-3-nano-4b",
+            inferenceMode: .cloud,
+            responseMode: .cloud,
+            isSimpleDeveloperEdit: true
+        ) == "off")
+        #expect(InstallerViewModel.agentThinkingLevel(
+            for: "openrouter/openai/gpt-5.4-mini",
+            inferenceMode: .cloud,
+            responseMode: .cloud,
+            isSimpleDeveloperEdit: true
+        ) == "low")
+        #expect(InstallerViewModel.isUnsupportedThinkingLevelError("Thinking level medium is not supported for lmstudio/test. Use one of: off."))
+    }
+
+    @Test func localModelConfigGetsACompatibleToolPolicyWithoutChangingCloudPolicies() {
+        let original: [String: Any] = [
+            "tools": [
+                "byProvider": [
+                    "openrouter": ["profile": "coding"],
+                    "lmstudio/nvidia/nemotron-3-nano-4b": [
+                        "profile": "full",
+                        "alsoAllow": ["cron"],
+                        "deny": ["exec"],
+                    ],
+                ],
+            ],
+        ]
+        let updated = InstallerEngine.configByEnsuringLocalModelToolPolicy(
+            original,
+            modelIdentifier: "lmstudio/nvidia/nemotron-3-nano-4b"
+        )
+        let tools = updated["tools"] as? [String: Any]
+        let byProvider = tools?["byProvider"] as? [String: Any]
+        let local = byProvider?["lmstudio/nvidia/nemotron-3-nano-4b"] as? [String: Any]
+        let cloud = byProvider?["openrouter"] as? [String: Any]
+
+        #expect(local?["allow"] as? [String] == InstallerEngine.localModelCompatibleTools)
+        #expect(local?["profile"] == nil)
+        #expect(local?["alsoAllow"] == nil)
+        #expect(local?["deny"] as? [String] == ["exec"])
+        #expect(cloud?["profile"] as? String == "coding")
     }
 
     @Test func semanticOpenClawTimeoutIsNotTreatedAsSuccess() {

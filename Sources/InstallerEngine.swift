@@ -669,6 +669,7 @@ final class InstallerEngine: @unchecked Sendable {
         defaults = ensureAgentModelAllowlist(defaults: defaults, modelIdentifier: modelIdentifier)
         agents["defaults"] = defaults
         config["agents"] = agents
+        config = Self.configByEnsuringLocalModelToolPolicy(config, modelIdentifier: modelIdentifier)
 
         do {
             let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
@@ -699,6 +700,7 @@ final class InstallerEngine: @unchecked Sendable {
         defaults = ensureAgentModelAllowlist(defaults: defaults, modelIdentifier: modelIdentifier)
         agents["defaults"] = defaults
         config["agents"] = agents
+        config = Self.configByEnsuringLocalModelToolPolicy(config, modelIdentifier: modelIdentifier)
 
         do {
             let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
@@ -720,6 +722,38 @@ final class InstallerEngine: @unchecked Sendable {
         entry["agentRuntime"] = runtime
         models[modelIdentifier] = entry
         updated["models"] = models
+        return updated
+    }
+
+    static let localModelCompatibleTools = [
+        "read",
+        "write",
+        "edit",
+        "apply_patch",
+        "exec",
+        "process",
+        "get_goal",
+        "create_goal",
+        "update_goal",
+        "session_status",
+    ]
+
+    static func configByEnsuringLocalModelToolPolicy(
+        _ config: [String: Any],
+        modelIdentifier: String
+    ) -> [String: Any] {
+        guard modelIdentifier.lowercased().hasPrefix("lmstudio/") else { return config }
+
+        var updated = config
+        var tools = updated["tools"] as? [String: Any] ?? [:]
+        var byProvider = tools["byProvider"] as? [String: Any] ?? [:]
+        var modelPolicy = byProvider[modelIdentifier] as? [String: Any] ?? [:]
+        modelPolicy["allow"] = localModelCompatibleTools
+        modelPolicy.removeValue(forKey: "profile")
+        modelPolicy.removeValue(forKey: "alsoAllow")
+        byProvider[modelIdentifier] = modelPolicy
+        tools["byProvider"] = byProvider
+        updated["tools"] = tools
         return updated
     }
 

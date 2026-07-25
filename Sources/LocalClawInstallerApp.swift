@@ -7969,7 +7969,12 @@ final class InstallerViewModel: ObservableObject {
         let developerWorkdir = developerProjectPath
         let useFreshDeveloperContext = useDeveloperSession && developerFreshContextEnabled
         let isSimpleDeveloperEdit = useDeveloperSession && Self.isSimpleDeveloperEdit(text)
-        let agentThinking = isSimpleDeveloperEdit ? "low" : Self.agentThinkingLevel(for: selectedChatResponseMode)
+        let agentThinking = Self.agentThinkingLevel(
+            for: modelOverride,
+            inferenceMode: requestInferenceMode,
+            responseMode: selectedChatResponseMode,
+            isSimpleDeveloperEdit: isSimpleDeveloperEdit
+        )
         let agentTimeout = isSimpleDeveloperEdit ? Self.simpleDeveloperEditTimeoutSeconds : Self.agentTimeoutSeconds(for: selectedChatResponseMode, useDeveloperSession: useDeveloperSession)
         let wallClockTimeout = Self.wallClockTimeoutSeconds(forAgentTimeout: agentTimeout)
         let activityModelName = availableChatModels.first(where: { $0.id == selectedModelForRequest || $0.id == modelOverride })?.displayName
@@ -8047,11 +8052,12 @@ final class InstallerViewModel: ObservableObject {
                     }
                 }
             }
+            var effectiveThinking = agentThinking
             var result = Self.openClawAgentCancellable(
                 sessionID: runtimeSessionID,
                 message: agentText,
                 model: modelOverride,
-                thinking: agentThinking,
+                thinking: effectiveThinking,
                 agentTimeout: agentTimeout,
                 currentDirectory: useDeveloperSession ? developerWorkdir : nil,
                 timeoutSeconds: wallClockTimeout
@@ -8063,6 +8069,30 @@ final class InstallerViewModel: ObservableObject {
                 }
             }
             result = Self.normalizedAgentResult(result)
+            if result.0 != 0 && Self.isUnsupportedThinkingLevelError(result.1) && effectiveThinking != "off" {
+                await MainActor.run {
+                    if self.activeChatRequestID == requestID {
+                        self.chatStatus = "Retrying with compatible reasoning..."
+                    }
+                }
+                effectiveThinking = "off"
+                result = Self.openClawAgentCancellable(
+                    sessionID: runtimeSessionID,
+                    message: agentText,
+                    model: modelOverride,
+                    thinking: effectiveThinking,
+                    agentTimeout: agentTimeout,
+                    currentDirectory: useDeveloperSession ? developerWorkdir : nil,
+                    timeoutSeconds: wallClockTimeout
+                ) { process in
+                    Task { @MainActor in
+                        if self.activeChatRequestID == requestID {
+                            self.activeChatProcess = process
+                        }
+                    }
+                }
+                result = Self.normalizedAgentResult(result)
+            }
             if result.0 != 0 && Self.isUnsupportedModelFlagError(result.1) && !modelOverride.isEmpty {
                 await MainActor.run {
                     if self.activeChatRequestID == requestID {
@@ -8073,7 +8103,7 @@ final class InstallerViewModel: ObservableObject {
                     sessionID: runtimeSessionID,
                     message: agentText,
                     model: "",
-                    thinking: agentThinking,
+                    thinking: effectiveThinking,
                     agentTimeout: agentTimeout,
                     currentDirectory: useDeveloperSession ? developerWorkdir : nil,
                     timeoutSeconds: wallClockTimeout
@@ -8101,7 +8131,7 @@ final class InstallerViewModel: ObservableObject {
                         sessionID: runtimeSessionID,
                         message: agentText,
                         model: modelOverride,
-                        thinking: agentThinking,
+                        thinking: effectiveThinking,
                         agentTimeout: agentTimeout,
                         currentDirectory: useDeveloperSession ? developerWorkdir : nil,
                         timeoutSeconds: wallClockTimeout
@@ -8145,7 +8175,7 @@ final class InstallerViewModel: ObservableObject {
                             sessionID: runtimeSessionID,
                             message: agentText,
                             model: modelOverride,
-                            thinking: agentThinking,
+                            thinking: effectiveThinking,
                             agentTimeout: agentTimeout,
                             currentDirectory: useDeveloperSession ? developerWorkdir : nil,
                             timeoutSeconds: wallClockTimeout
@@ -8183,7 +8213,7 @@ final class InstallerViewModel: ObservableObject {
                                 sessionID: runtimeSessionID,
                                 message: agentText,
                                 model: modelOverride,
-                                thinking: agentThinking,
+                                thinking: effectiveThinking,
                                 agentTimeout: agentTimeout,
                                 currentDirectory: useDeveloperSession ? developerWorkdir : nil,
                                 timeoutSeconds: wallClockTimeout
@@ -8207,7 +8237,7 @@ final class InstallerViewModel: ObservableObject {
             let reply = knownDiagnostic ?? Self.extractAgentReply(from: result.1)
             let runtimeModel = Self.extractAgentRuntimeModel(from: result.1)
             let usage = Self.extractAgentUsage(from: result.1)
-            let metrics = Self.extractAgentMetrics(from: result.1, elapsedSeconds: elapsed, timeoutSeconds: agentTimeout, thinking: agentThinking)
+            let metrics = Self.extractAgentMetrics(from: result.1, elapsedSeconds: elapsed, timeoutSeconds: agentTimeout, thinking: effectiveThinking)
             await MainActor.run {
                 guard self.activeChatRequestID == requestID else { return }
                 self.activeChatProcess = nil
@@ -8730,9 +8760,23 @@ final class InstallerViewModel: ObservableObject {
             return "low"
         case .deep:
             return "high"
-        case .local, .cloud:
+        case .local:
+            return "off"
+        case .cloud:
             return "medium"
         }
+    }
+
+    nonisolated static func agentThinkingLevel(
+        for modelID: String,
+        inferenceMode: InferenceMode,
+        responseMode: ChatResponseMode,
+        isSimpleDeveloperEdit: Bool
+    ) -> String {
+        if inferenceMode == .local || modelID.lowercased().hasPrefix("lmstudio/") {
+            return "off"
+        }
+        return isSimpleDeveloperEdit ? "low" : agentThinkingLevel(for: responseMode)
     }
 
     nonisolated static func agentTimeoutSeconds(for mode: ChatResponseMode, useDeveloperSession: Bool) -> Int {
@@ -9937,6 +9981,11 @@ final class InstallerViewModel: ObservableObject {
 
     nonisolated private static func isUnsupportedModelFlagError(_ raw: String) -> Bool {
         stripANSI(raw).lowercased().contains("unknown option '--model'")
+    }
+
+    nonisolated static func isUnsupportedThinkingLevelError(_ raw: String) -> Bool {
+        let clean = stripANSI(raw).lowercased()
+        return clean.contains("thinking level") && clean.contains("not supported")
     }
 
     nonisolated private static func stripANSI(_ raw: String) -> String {
