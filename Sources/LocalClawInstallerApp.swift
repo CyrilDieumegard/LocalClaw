@@ -7,7 +7,7 @@ import WebKit
 
 @MainActor
 final class InstallerViewModel: ObservableObject {
-    enum Screen { case license, onboarding, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, agents, cronJobs, kanban, healthCenter, usageCenter, chat, models, skills, developer }
+    enum Screen { case license, onboarding, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, agents, cronJobs, kanban, healthCenter, usageCenter, chat, goals, models, skills, developer }
     enum InstallMode: String {
         case llmOnly = "Install Local LLM only"
         case openClawOnly = "Install OpenClaw only"
@@ -7803,12 +7803,26 @@ final class InstallerViewModel: ObservableObject {
         sendChatMessage(sessionID: activeDeveloperChatSessionID, useDeveloperSession: true)
     }
 
+    func sendGoalAdvance(chatSessionID: String, runtimeSessionID: String, objective: String, starting: Bool) {
+        guard !chatIsSending,
+              normalChatSessions.contains(where: { $0.id == chatSessionID }),
+              !objective.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        selectedChatSessionID = chatSessionID
+        sendChatMessage(
+            sessionID: chatSessionID,
+            useDeveloperSession: false,
+            inputOverride: GoalWorkPrompt.make(objective: objective, starting: starting),
+            runtimeSessionIDOverride: runtimeSessionID
+        )
+    }
+
     private func sendChatMessage(
         sessionID: String,
         useDeveloperSession: Bool,
         inputOverride: String? = nil,
         imagePathOverride: String? = nil,
-        appendVisibleUserMessage: Bool = true
+        appendVisibleUserMessage: Bool = true,
+        runtimeSessionIDOverride: String? = nil
     ) {
         let rawInput = inputOverride ?? (useDeveloperSession ? developerInput : chatInput)
         let rawImagePath = imagePathOverride ?? (useDeveloperSession ? developerImagePath : chatImagePath)
@@ -8014,7 +8028,7 @@ final class InstallerViewModel: ObservableObject {
             let runtimeTurnID = (!useDeveloperSession || useFreshDeveloperContext || requestInferenceMode == .local)
                 ? String(requestID.uuidString.prefix(8))
                 : nil
-            let runtimeSessionID = Self.runtimeSessionID(
+            let runtimeSessionID = runtimeSessionIDOverride ?? Self.runtimeSessionID(
                 base: sessionID,
                 modelID: modelOverride,
                 useDeveloperSession: useDeveloperSession,
@@ -11667,6 +11681,7 @@ struct ProgressSteps: View {
         case .healthCenter: return 0
         case .usageCenter: return 0
         case .chat: return 0
+        case .goals: return 0
         case .models: return 0
         case .skills: return 0
         case .developer: return 0
@@ -11735,6 +11750,7 @@ struct ContentView: View {
     }
 
     @StateObject private var vm = InstallerViewModel()
+    @StateObject private var goalCenter = GoalCenterModel()
     @State private var helpTab: HelpTab = .stepByStep
     @State private var isSidebarVisible = true
     @State private var pasteEventMonitor: Any?
@@ -11788,6 +11804,7 @@ struct ContentView: View {
                             case .healthCenter: healthCenter
                             case .usageCenter: usageCenter
                             case .chat: openClawChat
+                            case .goals: GoalCenterView(vm: vm, goal: goalCenter)
                             case .models: modelsCenter
                             case .skills: skillsCenter
                             case .developer: developerCenter
@@ -12045,6 +12062,7 @@ struct ContentView: View {
 
                     sidebarSectionLabel("Work")
                     sidebarButton("OpenClaw Chat", icon: "message.badge.waveform", isActive: vm.screen == .chat) { vm.screen = .chat }
+                    sidebarButton("Goals", icon: "target", isActive: vm.screen == .goals) { vm.screen = .goals }
                     sidebarButton("Developer", icon: "curlybraces.square", isActive: vm.screen == .developer) { vm.screen = .developer }
 
                     sidebarSectionLabel("Configure")
@@ -14346,6 +14364,14 @@ struct ContentView: View {
 
     var chatViewControls: some View {
         HStack(spacing: 7) {
+            chatHeaderIconButton(
+                "target",
+                active: false,
+                help: "Open Goals"
+            ) {
+                goalCenter.selectedChatSessionID = vm.activeChatSessionID
+                vm.screen = .goals
+            }
             chatToolsMenu
             chatHeaderIconButton(
                 vm.chatCleanViewEnabled ? "eye.fill" : "eye",

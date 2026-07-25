@@ -1326,4 +1326,86 @@ Created job
         let preview = InteractiveDeveloperWebView(frame: .zero, configuration: .init())
         #expect(preview.acceptsFirstResponder)
     }
+
+    @Test func goalAdvisorRejectsWeakTinyLocalModels() {
+        let readiness = GoalCapabilityAdvisor.local(
+            openClawInstalled: true,
+            modelName: "Qwen 3.5 2B",
+            isLoaded: true,
+            fit: .great,
+            toolUseScore: 3.5,
+            contextTokens: 32_768,
+            recommendedModel: "Qwen 3.5 4B"
+        )
+
+        #expect(readiness.level == .blocked)
+        #expect(!readiness.canStart)
+        #expect(readiness.recommendation == "Qwen 3.5 4B")
+    }
+
+    @Test func goalAdvisorAcceptsCapableLocalModelsWithHeadroom() {
+        let readiness = GoalCapabilityAdvisor.local(
+            openClawInstalled: true,
+            modelName: "Nemotron 3 Nano 4B",
+            isLoaded: true,
+            fit: .good,
+            toolUseScore: 4.2,
+            contextTokens: 32_768,
+            recommendedModel: nil
+        )
+
+        #expect(readiness.level == .ready)
+        #expect(readiness.canStart)
+        #expect(readiness.detail.contains("Nemotron 3 Nano 4B"))
+    }
+
+    @Test func goalAdvisorRequiresProviderAuthentication() {
+        let readiness = GoalCapabilityAdvisor.cloud(
+            openClawInstalled: true,
+            authReady: false,
+            modelID: "openrouter/openai/gpt-5.4-mini",
+            modeName: "Cloud LLM"
+        )
+
+        #expect(readiness.level == .blocked)
+        #expect(!readiness.canStart)
+        #expect(readiness.title == "Cloud LLM needs authentication")
+    }
+
+    @Test func goalAdvisorNamesTheSelectedCloudModel() {
+        let readiness = GoalCapabilityAdvisor.cloud(
+            openClawInstalled: true,
+            authReady: true,
+            modelID: "openrouter/moonshotai/kimi-k3",
+            modeName: "Cloud LLM"
+        )
+
+        #expect(readiness.level == .ready)
+        #expect(readiness.canStart)
+        #expect(readiness.detail.contains("openrouter/moonshotai/kimi-k3"))
+    }
+
+    @Test @MainActor func goalSessionRemainsStableAcrossWorkTurns() {
+        let chatID = "localclaw-ui-chat-ABC-123"
+        let first = GoalCenterModel.runtimeSessionID(for: chatID)
+        let second = GoalCenterModel.runtimeSessionID(for: chatID)
+
+        #expect(first == second)
+        #expect(first.hasSuffix("-goal"))
+        #expect(GoalCenterModel.openClawSessionKey(for: chatID) == "agent:main:explicit:\(first)")
+    }
+
+    @Test func goalModelIdentityMatchesLMStudioQuantVariants() {
+        #expect(GoalModelIdentity.matches("lmstudio/nvidia/nemotron-3-nano-4b@q4_k_m", "nvidia/nemotron-3-nano-4b"))
+        #expect(!GoalModelIdentity.matches("google/gemma-4-e2b", "qwen/qwen3.5-4b"))
+    }
+
+    @Test func goalWorkPromptAlwaysCarriesTheDurableObjective() {
+        let prompt = GoalWorkPrompt.make(objective: "  Audit the release pipeline  ", starting: false)
+
+        #expect(prompt.contains("Objective:\nAudit the release pipeline"))
+        #expect(prompt.contains("Continue working on it now"))
+        #expect(prompt.contains("update_goal with status complete"))
+        #expect(!prompt.contains("repeat the objective?"))
+    }
 }
