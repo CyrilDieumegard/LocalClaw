@@ -1408,4 +1408,32 @@ Created job
         #expect(prompt.contains("update_goal with status complete"))
         #expect(!prompt.contains("repeat the objective?"))
     }
+
+    @Test func goalControllerResourceLocatorSupportsPackagedAndSwiftPMLayouts() {
+        let packaged = GoalControllerResourceLocator.candidateURLs(
+            bundleURL: URL(fileURLWithPath: "/Applications/LocalClaw.app"),
+            resourceURL: URL(fileURLWithPath: "/Applications/LocalClaw.app/Contents/Resources"),
+            executableURL: URL(fileURLWithPath: "/Applications/LocalClaw.app/Contents/MacOS/LocalClaw")
+        )
+        #expect(packaged.contains(URL(fileURLWithPath: "/Applications/LocalClaw.app/Contents/Resources/localclaw-mac-installer_localclaw-mac-installer.bundle/goal-controller.mjs")))
+
+        let swiftPM = GoalControllerResourceLocator.candidateURLs(
+            bundleURL: URL(fileURLWithPath: "/tmp/.build/arm64-apple-macosx/debug"),
+            resourceURL: nil,
+            executableURL: URL(fileURLWithPath: "/tmp/.build/arm64-apple-macosx/debug/localclaw-mac-installer")
+        )
+        #expect(swiftPM.contains(URL(fileURLWithPath: "/tmp/.build/arm64-apple-macosx/debug/localclaw-mac-installer_localclaw-mac-installer.bundle/goal-controller.mjs")))
+    }
+
+    @Test func goalControllerResourceIsPresentInTheTestBuild() {
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let script = packageRoot
+            .appendingPathComponent(".build/debug/localclaw-mac-installer_localclaw-mac-installer.bundle", isDirectory: true)
+            .appendingPathComponent("goal-controller.mjs")
+
+        #expect(FileManager.default.fileExists(atPath: script.path))
+    }
 }

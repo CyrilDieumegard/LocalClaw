@@ -142,6 +142,55 @@ enum OpenClawGoalBridgeError: LocalizedError {
     }
 }
 
+enum GoalControllerResourceLocator {
+    private static let resourceBundleName = "localclaw-mac-installer_localclaw-mac-installer.bundle"
+    private static let scriptName = "goal-controller.mjs"
+
+    static func locate() -> URL? {
+        let fileManager = FileManager.default
+        return candidateURLs(
+            bundleURL: Bundle.main.bundleURL,
+            resourceURL: Bundle.main.resourceURL,
+            executableURL: Bundle.main.executableURL
+        ).first { url in
+            var isDirectory: ObjCBool = false
+            return fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) && !isDirectory.boolValue
+        }
+    }
+
+    static func candidateURLs(bundleURL: URL, resourceURL: URL?, executableURL: URL?) -> [URL] {
+        var roots = [bundleURL]
+        if let resourceURL { roots.append(resourceURL) }
+        if let executableURL { roots.append(executableURL.deletingLastPathComponent()) }
+
+        var expandedRoots: [URL] = []
+        for root in roots {
+            var current = root.standardizedFileURL
+            for _ in 0..<5 {
+                expandedRoots.append(current)
+                let parent = current.deletingLastPathComponent()
+                if parent == current { break }
+                current = parent
+            }
+        }
+
+        var seen = Set<String>()
+        var candidates: [URL] = []
+        for root in expandedRoots {
+            let paths = [
+                root.appendingPathComponent(resourceBundleName, isDirectory: true).appendingPathComponent(scriptName),
+                root.appendingPathComponent("Resources", isDirectory: true).appendingPathComponent(resourceBundleName, isDirectory: true).appendingPathComponent(scriptName),
+                root.appendingPathComponent(scriptName),
+            ]
+            for path in paths {
+                let standardized = path.standardizedFileURL
+                if seen.insert(standardized.path).inserted { candidates.append(standardized) }
+            }
+        }
+        return candidates
+    }
+}
+
 actor OpenClawGoalBridge {
     static let shared = OpenClawGoalBridge()
 
@@ -179,7 +228,7 @@ actor OpenClawGoalBridge {
         if let process, process.isRunning, input != nil, output != nil { return }
         resetProcess()
 
-        guard let scriptURL = Bundle.module.url(forResource: "goal-controller", withExtension: "mjs") else {
+        guard let scriptURL = GoalControllerResourceLocator.locate() else {
             throw OpenClawGoalBridgeError.resourceMissing
         }
 
