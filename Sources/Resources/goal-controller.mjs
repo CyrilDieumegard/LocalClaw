@@ -130,6 +130,9 @@ async function handleRequest(controller, request) {
       goal = await controller.createSessionGoal({
         ...options,
         objective,
+        ...(Number.isInteger(request.tokenBudget) && request.tokenBudget > 0
+          ? { tokenBudget: request.tokenBudget }
+          : {}),
         fallbackEntry: entry ?? { sessionId: randomUUID(), updatedAt: Date.now() },
       });
       message = "Goal created without using model tokens.";

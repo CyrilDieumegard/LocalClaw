@@ -1584,6 +1584,30 @@ Created job
         #expect(prompt.contains("Never make manual user input"))
         #expect(prompt.contains("deterministic automated smoke tests"))
         #expect(prompt.contains("concrete absolute destination"))
+        #expect(prompt.contains("use exactly two steps"))
+    }
+
+    @Test func localGoalSessionMaintenanceKeepsContextAndUsageBounded() {
+        let key = "agent:main:explicit:localclaw-ui-chat-ABC-goal"
+        let command = GoalSessionMaintenance.compactCommand(sessionKey: key, maxLines: 12)
+
+        #expect(GoalSessionMaintenance.isLocalModel("lmstudio/qwen3.5-9b"))
+        #expect(!GoalSessionMaintenance.isLocalModel("openrouter/openai/gpt-5.4-mini"))
+        #expect(command.contains("sessions compact 'agent:main:explicit:localclaw-ui-chat-ABC-goal'"))
+        #expect(command.contains("--max-lines 12"))
+        #expect(GoalSessionMaintenance.isTimeoutMessage("OpenClaw timed out before the selected model finished"))
+        #expect(GoalSessionMaintenance.exceededRunBudget(startTokens: 784_119, currentTokens: 844_119))
+        #expect(!GoalSessionMaintenance.exceededRunBudget(startTokens: 784_119, currentTokens: 800_000))
+    }
+
+    @MainActor
+    @Test func goalPlanningUsesAFreshRuntimeSession() {
+        let first = GoalCenterModel.planningRuntimeSessionID(for: "chat-1", nonce: "AAAA")
+        let second = GoalCenterModel.planningRuntimeSessionID(for: "chat-1", nonce: "BBBB")
+
+        #expect(first != second)
+        #expect(first.contains("chat-1-goal-plan-AAAA"))
+        #expect(GoalCenterModel.runtimeSessionID(for: "chat-1") == "chat-1-goal")
     }
 
     @Test func goalApprovalExplainsWhenAPlanHasTooFewSteps() throws {

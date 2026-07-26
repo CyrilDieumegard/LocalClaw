@@ -124,6 +124,31 @@ enum GoalOutputVerifier {
     }
 }
 
+enum GoalSessionMaintenance {
+    static let localTranscriptLines = 12
+    static let newGoalTranscriptLines = 1
+    static let localGoalTokenBudget = 80_000
+    static let localRunTokenBudget = 60_000
+
+    static func isLocalModel(_ modelID: String) -> Bool {
+        modelID.lowercased().hasPrefix("lmstudio/")
+    }
+
+    static func compactCommand(sessionKey: String, maxLines: Int) -> String {
+        let escaped = sessionKey.replacingOccurrences(of: "'", with: "'\"'\"'")
+        return "openclaw --no-color sessions compact '\(escaped)' --max-lines \(max(maxLines, 1)) --timeout 30000 --json 2>&1"
+    }
+
+    static func isTimeoutMessage(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        return lower.contains("timed out before") || lower.contains("request timed out") || lower.contains("deadline exceeded")
+    }
+
+    static func exceededRunBudget(startTokens: Int, currentTokens: Int, budget: Int = localRunTokenBudget) -> Bool {
+        max(currentTokens - startTokens, 0) >= budget
+    }
+}
+
 struct GoalPlanStep: Identifiable, Codable, Equatable, Sendable {
     var id: String
     var title: String
@@ -289,7 +314,7 @@ enum GoalPlanPrompt {
           ]
         }
 
-        Use 2 to 8 meaningful steps. Prefer 2 or 3 steps for a small, focused deliverable. The output contract must make it unambiguous what files or result the user receives and how completion is verified. Use a concrete absolute destination inside the user's workspace when the output is a file or folder.
+        Use 2 to 8 meaningful steps. Prefer 2 or 3 steps for a small, focused deliverable. If the output is one HTML, text, script, or document file, use exactly two steps: create the complete final file, then verify that exact file. Never add a placeholder-only project structure step for a single-file output. The output contract must make it unambiguous what files or result the user receives and how completion is verified. Use a concrete absolute destination inside the user's workspace when the output is a file or folder.
 
         Every step must be verifiable with local files, commands, tests, or other tools available to the agent. Never make manual user input, browser clicking, visual inspection, or unavailable UI automation a blocking completion criterion. For an interactive app or game, require deterministic automated smoke tests or static checks; a manual playthrough may be mentioned only as an optional handoff check after the automated criteria pass.
 
@@ -432,6 +457,8 @@ enum GoalWorkPrompt {
         let currentCriteria = plan.currentStep?.completionCriteria.map { "- \($0)" }.joined(separator: "\n") ?? "- Verify the approved outcome."
         let currentTitle = plan.currentStep?.title ?? "Final verification"
         let currentOutcome = plan.currentStep?.outcome ?? "Verify the complete output contract."
+        let previousSummary = plan.currentStep?.summary.trimmed ?? ""
+        let previousEvidence = plan.currentStep?.evidence.map { "- \($0)" }.joined(separator: "\n") ?? ""
         let outputVerification = GoalOutputVerifier.verify(plan.output)
         let localOutputInstruction = outputVerification.requiresLocalArtifact
             ? "LocalClaw host filesystem check: \(outputVerification.detail) You must create and verify the real artifact at this exact destination before reporting the final step complete."
@@ -463,11 +490,21 @@ enum GoalWorkPrompt {
         Step completion criteria:
         \(currentCriteria)
 
+        Previous checkpoint for this step:
+        \(previousSummary.isEmpty ? "No verified progress has been saved yet." : previousSummary)
+        \(previousEvidence.isEmpty ? "" : previousEvidence)
+
         \(localOutputInstruction)
 
         \(action) the current step from the existing workspace and session state. Inspect existing work before changing anything, preserve completed results, and do not repeat successful external calls. Work only toward the current step and approved output contract.
 
         Actually call the available file, shell, and test tools when work or verification requires them. Never invent a tool result, never describe an unexecuted command as evidence, and never claim a file exists unless the tool call confirmed it on disk.
+
+        Execution discipline for compact and local models:
+        - Start with the first necessary tool call instead of narrating a plan.
+        - Complete only this current step in the fewest useful tool calls.
+        - For a single-file deliverable, write the complete file directly instead of creating placeholders.
+        - Keep the visible final response below 180 words; put substantive work in the artifact and tool calls.
 
         At the very end of your response, include exactly one machine-readable progress block:
         <localclaw_progress>
@@ -537,6 +574,7 @@ private struct GoalControllerRequest: Encodable {
     let sessionKey: String
     let objective: String?
     let note: String?
+    let tokenBudget: Int?
 }
 
 private struct GoalControllerEnvelope: Decodable {
@@ -618,14 +656,15 @@ actor OpenClawGoalBridge {
     private var output: FileHandle?
     private var outputBuffer = Data()
 
-    func request(action: String, sessionKey: String, objective: String? = nil, note: String? = nil) throws -> (OpenClawGoalSnapshot?, String) {
+    func request(action: String, sessionKey: String, objective: String? = nil, note: String? = nil, tokenBudget: Int? = nil) throws -> (OpenClawGoalSnapshot?, String) {
         try ensureProcess()
         let request = GoalControllerRequest(
             id: UUID().uuidString,
             action: action,
             sessionKey: sessionKey,
             objective: objective,
-            note: note
+            note: note,
+            tokenBudget: tokenBudget
         )
         let payload = try JSONEncoder().encode(request)
         guard let input else { throw OpenClawGoalBridgeError.processFailed("Goal controller is not running.") }
@@ -735,6 +774,10 @@ final class GoalCenterModel: ObservableObject {
         return "\(String(cleaned).prefix(120))-goal"
     }
 
+    static func planningRuntimeSessionID(for chatSessionID: String, nonce: String = UUID().uuidString) -> String {
+        "\(runtimeSessionID(for: chatSessionID))-plan-\(String(nonce.prefix(12)))"
+    }
+
     static func openClawSessionKey(for chatSessionID: String) -> String {
         "agent:main:explicit:\(runtimeSessionID(for: chatSessionID))"
     }
@@ -770,13 +813,13 @@ final class GoalCenterModel: ObservableObject {
         await perform(action: "status")
     }
 
-    func start() async -> Bool {
+    func start(tokenBudget: Int? = nil) async -> Bool {
         let trimmed = objective.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             statusMessage = "Describe the result you want first."
             return false
         }
-        return await perform(action: "start", objective: trimmed)
+        return await perform(action: "start", objective: trimmed, tokenBudget: tokenBudget)
     }
 
     func generatePlan(using viewModel: InstallerViewModel) {
@@ -926,7 +969,14 @@ final class GoalCenterModel: ObservableObject {
             guard let self, let viewModel else { return }
             let ready: Bool
             if self.snapshot == nil {
-                ready = await self.start()
+                if GoalSessionMaintenance.isLocalModel(viewModel.selectedGoalModelID) {
+                    self.statusMessage = "Preparing a clean local Goal session..."
+                    _ = await self.compactGoalTranscript(maxLines: GoalSessionMaintenance.newGoalTranscriptLines)
+                }
+                let tokenBudget = GoalSessionMaintenance.isLocalModel(viewModel.selectedGoalModelID)
+                    ? GoalSessionMaintenance.localGoalTokenBudget
+                    : nil
+                ready = await self.start(tokenBudget: tokenBudget)
             } else if self.snapshot?.status == .active {
                 ready = await self.edit()
             } else {
@@ -972,6 +1022,18 @@ final class GoalCenterModel: ObservableObject {
         }
         _ = await perform(action: "resume", note: note)
     }
+
+    func resumeForExecution(using viewModel: InstallerViewModel) async -> Bool {
+        if snapshot?.status == .complete, plan?.isComplete == false {
+            guard await perform(action: "clear") else { return false }
+            let tokenBudget = GoalSessionMaintenance.isLocalModel(viewModel.selectedGoalModelID)
+                ? GoalSessionMaintenance.localGoalTokenBudget
+                : nil
+            return await start(tokenBudget: tokenBudget)
+        }
+        await resume()
+        return snapshot?.status == .active
+    }
     func complete() async {
         stopContinuousRun(message: "Completing Goal...")
         _ = await perform(action: "complete", note: note)
@@ -1011,6 +1073,8 @@ final class GoalCenterModel: ObservableObject {
         continuousRunEnabled = true
         automaticTurns = 0
         let sessionID = selectedChatSessionID
+        let localExecution = GoalSessionMaintenance.isLocalModel(viewModel.selectedGoalModelID)
+        let runStartTokens = snapshot?.tokensUsed ?? 0
         statusMessage = "Continuous run started. The model is preparing the next step."
 
         continuousTask = Task { @MainActor [weak self, weak viewModel] in
@@ -1023,6 +1087,7 @@ final class GoalCenterModel: ObservableObject {
                 }
             }
             var isStartingTurn = starting
+            var consecutiveTimeouts = 0
 
             while !Task.isCancelled && self.continuousRunEnabled && self.selectedChatSessionID == sessionID {
                 await self.refresh()
@@ -1032,6 +1097,15 @@ final class GoalCenterModel: ObservableObject {
                     latestMessageRole: nil
                 ) else {
                     self.finishContinuousRunForCurrentStatus()
+                    return
+                }
+
+                if localExecution,
+                   GoalSessionMaintenance.exceededRunBudget(
+                    startTokens: runStartTokens,
+                    currentTokens: self.snapshot?.tokensUsed ?? runStartTokens
+                   ) {
+                    await self.pauseForSafety("Local Goal paused after using \(GoalSessionMaintenance.localRunTokenBudget.formatted()) tokens in this run. Review the current step or choose the recommended local model before continuing.")
                     return
                 }
 
@@ -1048,6 +1122,10 @@ final class GoalCenterModel: ObservableObject {
                 guard let currentPlan = self.plan, currentPlan.isApproved, currentPlan.currentStep != nil else {
                     self.stopContinuousRun(message: "Continuous run stopped because the approved plan is unavailable.")
                     return
+                }
+                if localExecution {
+                    self.statusMessage = "Reducing local context before the next step..."
+                    _ = await self.compactGoalTranscript(maxLines: GoalSessionMaintenance.localTranscriptLines)
                 }
                 let previousMessageID = viewModel.normalChatSessions
                     .first(where: { $0.id == sessionID })?
@@ -1078,7 +1156,30 @@ final class GoalCenterModel: ObservableObject {
                 let latestRole = latestMessage?.id == previousMessageID ? nil : latestMessage?.role
                 self.automaticTurns += 1
 
+                if latestRole == "error", let latestMessage,
+                   localExecution, GoalSessionMaintenance.isTimeoutMessage(latestMessage.text) {
+                    consecutiveTimeouts += 1
+                    if consecutiveTimeouts == 1 {
+                        viewModel.replaceGoalMessageText(
+                            sessionID: sessionID,
+                            messageID: latestMessage.id,
+                            text: "The local model timed out on this Goal turn. LocalClaw is reducing the session context and will retry the current step once from the saved workspace."
+                        )
+                        self.statusMessage = "Local model timeout detected. Compacting context and retrying once..."
+                        isStartingTurn = false
+                        continue
+                    }
+                    viewModel.replaceGoalMessageText(
+                        sessionID: sessionID,
+                        messageID: latestMessage.id,
+                        text: "The local model timed out twice on the same Goal step. LocalClaw paused safely without deleting project files. Choose the recommended local model or switch runtime before resuming."
+                    )
+                    await self.pauseForSafety("This local model timed out twice on the current step. Project files are preserved; choose the recommended model or another runtime before resuming.")
+                    return
+                }
+
                 if latestRole == "assistant", let latestMessage, var updatedPlan = self.plan {
+                    consecutiveTimeouts = 0
                     let parsed = GoalProgressParser.parse(latestMessage.text)
                     if updatedPlan.lastCheckpointMessageID != latestMessage.id {
                         if let report = parsed.report {
@@ -1167,8 +1268,19 @@ final class GoalCenterModel: ObservableObject {
         }
     }
 
+    private func compactGoalTranscript(maxLines: Int) async -> Bool {
+        let command = GoalSessionMaintenance.compactCommand(
+            sessionKey: Self.openClawSessionKey(for: selectedChatSessionID),
+            maxLines: maxLines
+        )
+        let result = await Task.detached(priority: .utility) {
+            InstallerEngine().shell(command)
+        }.value
+        return result.0 == 0
+    }
+
     @discardableResult
-    private func perform(action: String, objective: String? = nil, note: String? = nil) async -> Bool {
+    private func perform(action: String, objective: String? = nil, note: String? = nil, tokenBudget: Int? = nil) async -> Bool {
         guard !selectedChatSessionID.isEmpty else {
             statusMessage = "Choose a discussion first."
             return false
@@ -1180,7 +1292,8 @@ final class GoalCenterModel: ObservableObject {
                 action: action,
                 sessionKey: Self.openClawSessionKey(for: selectedChatSessionID),
                 objective: objective,
-                note: note?.trimmingCharacters(in: .whitespacesAndNewlines)
+                note: note?.trimmingCharacters(in: .whitespacesAndNewlines),
+                tokenBudget: tokenBudget
             )
             snapshot = result.0
             if let snapshot { self.objective = snapshot.objective }

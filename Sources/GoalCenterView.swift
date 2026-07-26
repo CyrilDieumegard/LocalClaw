@@ -685,7 +685,7 @@ struct GoalCenterView: View {
                                 .font(AppFont.bodySemi(12))
                                 .foregroundStyle(statusColor(snapshot.status))
                         }
-                        Text("\(snapshot.tokensUsed.formatted()) tokens")
+                        Text(snapshot.tokenBudget.map { "\(snapshot.tokensUsed.formatted()) / \($0.formatted()) tokens" } ?? "\(snapshot.tokensUsed.formatted()) tokens")
                             .font(AppFont.bodySemi(10))
                             .foregroundStyle(UI.muted)
                     }
@@ -730,8 +730,7 @@ struct GoalCenterView: View {
                 } else if hasApprovedPlan && (snapshot.status != .complete || needsOutputRecovery) {
                     Button {
                         Task {
-                            await goal.resume()
-                            guard goal.snapshot?.status == .active else { return }
+                            guard await goal.resumeForExecution(using: vm) else { return }
                             goal.startContinuousRun(using: vm, starting: false)
                         }
                     } label: {

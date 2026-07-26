@@ -7813,7 +7813,7 @@ final class InstallerViewModel: ObservableObject {
             useDeveloperSession: false,
             inputOverride: GoalPlanPrompt.make(objective: objective, outputHint: outputHint),
             appendVisibleUserMessage: false,
-            runtimeSessionIDOverride: GoalCenterModel.runtimeSessionID(for: chatSessionID)
+            runtimeSessionIDOverride: GoalCenterModel.planningRuntimeSessionID(for: chatSessionID)
         )
     }
 
