@@ -1534,6 +1534,53 @@ Created job
         #expect(prompt.contains("Current step:\nInspect release configuration"))
         #expect(prompt.contains("<localclaw_progress>"))
         #expect(prompt.contains("Do not call update_goal yourself"))
+        #expect(prompt.contains("Replace it with the strongest deterministic automated smoke test"))
+    }
+
+    @Test func goalResumeResetsOnlyTheCurrentSafetyWindow() throws {
+        var plan = GoalExecutionPlan(
+            sessionID: "goal-resume",
+            objective: "Finish the game",
+            output: GoalOutputContract(
+                type: "Browser game",
+                format: "HTML",
+                location: "/tmp/game",
+                launch: "Open index.html",
+                completionCriteria: ["Automated smoke test passes"]
+            ),
+            steps: [
+                GoalPlanStep(
+                    id: "step-1",
+                    title: "Verify output",
+                    outcome: "A tested game",
+                    completionCriteria: ["Smoke test passes"],
+                    status: .inProgress,
+                    summary: "Waiting for a checkpoint",
+                    evidence: [],
+                    attempts: 12,
+                    noProgressTurns: 3
+                )
+            ],
+            approvedAt: Date(),
+            createdAt: Date(),
+            updatedAt: Date(),
+            version: 1,
+            lastCheckpointMessageID: nil
+        )
+
+        plan.resetCurrentStepSafetyWindow()
+
+        let step = try #require(plan.currentStep)
+        #expect(step.attempts == 12)
+        #expect(step.noProgressTurns == 0)
+    }
+
+    @Test func goalPlanningPromptRejectsManualBlockingChecks() {
+        let prompt = GoalPlanPrompt.make(objective: "Build a game", outputHint: "Playable browser game")
+
+        #expect(prompt.contains("Never make manual user input"))
+        #expect(prompt.contains("deterministic automated smoke tests"))
+        #expect(prompt.contains("concrete absolute destination"))
     }
 
     @Test func goalPlanParserExtractsAnExplicitOutputContract() throws {

@@ -133,6 +133,12 @@ struct GoalExecutionPlan: Codable, Equatable, Sendable {
         }
         updatedAt = Date()
     }
+
+    mutating func resetCurrentStepSafetyWindow() {
+        guard let index = currentStepIndex else { return }
+        steps[index].noProgressTurns = 0
+        updatedAt = Date()
+    }
 }
 
 private extension String {
@@ -181,7 +187,11 @@ enum GoalPlanPrompt {
           ]
         }
 
-        Use 3 to 8 meaningful steps. The output contract must make it unambiguous what files or result the user receives and how completion is verified. Do not include markdown fences, commentary, estimates, hidden reasoning, or implementation work.
+        Use 3 to 8 meaningful steps. The output contract must make it unambiguous what files or result the user receives and how completion is verified. Use a concrete absolute destination inside the user's workspace when the output is a file or folder.
+
+        Every step must be verifiable with local files, commands, tests, or other tools available to the agent. Never make manual user input, browser clicking, visual inspection, or unavailable UI automation a blocking completion criterion. For an interactive app or game, require deterministic automated smoke tests or static checks; a manual playthrough may be mentioned only as an optional handoff check after the automated criteria pass.
+
+        Do not include markdown fences, commentary, estimates, hidden reasoning, or implementation work.
         """
     }
 }
@@ -354,7 +364,11 @@ enum GoalWorkPrompt {
         {"status":"working|complete|blocked","summary":"short factual progress summary","evidence":["file, command, test, or observable result"]}
         </localclaw_progress>
 
-        Use status complete only when every criterion for the current step is satisfied. Use blocked only for a genuine blocker that cannot be resolved autonomously. Otherwise use working. Do not call update_goal yourself; LocalClaw advances and completes the durable Goal from the approved plan.
+        Use status complete only when every criterion for the current step is satisfied. Use blocked only for a genuine blocker that cannot be resolved autonomously. Otherwise use working.
+
+        Verification must use tools available in this autonomous run. If an approved criterion asks for manual interaction, browser clicking, visual inspection, or unavailable UI automation, do not wait or loop on it. Replace it with the strongest deterministic automated smoke test or static verification you can run, record that evidence, and treat any remaining manual check as optional handoff guidance. Never wait for user interaction during this run.
+
+        Do not call update_goal yourself; LocalClaw advances and completes the durable Goal from the approved plan.
         """
     }
 }
@@ -833,7 +847,14 @@ final class GoalCenterModel: ObservableObject {
         _ = await perform(action: "pause", note: reason)
         statusMessage = reason
     }
-    func resume() async { _ = await perform(action: "resume", note: note) }
+    func resume() async {
+        if var resumedPlan = plan {
+            resumedPlan.resetCurrentStepSafetyWindow()
+            plan = resumedPlan
+            GoalPlanStore.save(resumedPlan)
+        }
+        _ = await perform(action: "resume", note: note)
+    }
     func complete() async {
         stopContinuousRun(message: "Completing Goal...")
         _ = await perform(action: "complete", note: note)
@@ -975,10 +996,6 @@ final class GoalCenterModel: ObservableObject {
                     }
                     if let current = updatedPlan.currentStep, current.noProgressTurns >= 3 {
                         await self.pauseForSafety("Paused after three turns without verifiable progress on \(current.title).")
-                        return
-                    }
-                    if let current = updatedPlan.currentStep, current.attempts >= 8 {
-                        await self.pauseForSafety("Paused after eight turns on \(current.title). Review the checkpoint before continuing.")
                         return
                     }
                 }

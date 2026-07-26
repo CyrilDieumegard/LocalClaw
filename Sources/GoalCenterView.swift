@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 enum GoalModelIdentity {
@@ -581,9 +582,43 @@ struct GoalCenterView: View {
             Text(output.location)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .help(output.location)
+            Spacer(minLength: 8)
+            Button {
+                revealGoalOutput(output.location)
+            } label: {
+                Label("Reveal in Finder", systemImage: "folder")
+            }
+            .buttonStyle(CompactChatButton(primary: false))
+            .disabled(output.location.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .font(AppFont.body(10))
         .foregroundStyle(UI.muted)
+    }
+
+    private func revealGoalOutput(_ rawPath: String) {
+        let path = NSString(string: rawPath.trimmingCharacters(in: .whitespacesAndNewlines)).expandingTildeInPath
+        guard !path.isEmpty else { return }
+
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) {
+            let url = URL(fileURLWithPath: path, isDirectory: isDirectory.boolValue)
+            if isDirectory.boolValue {
+                NSWorkspace.shared.open(url)
+            } else {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
+            goal.statusMessage = "Opened the Goal output in Finder."
+            return
+        }
+
+        let parent = URL(fileURLWithPath: path).deletingLastPathComponent()
+        if FileManager.default.fileExists(atPath: parent.path) {
+            NSWorkspace.shared.open(parent)
+            goal.statusMessage = "The final output is not present yet. Opened its destination folder."
+        } else {
+            goal.statusMessage = "Output location not found yet: \(path)"
+        }
     }
 
     private func executionStepRow(index: Int, step: GoalPlanStep) -> some View {
