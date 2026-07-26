@@ -1535,6 +1535,7 @@ Created job
         #expect(prompt.contains("<localclaw_progress>"))
         #expect(prompt.contains("Do not call update_goal yourself"))
         #expect(prompt.contains("Replace it with the strongest deterministic automated smoke test"))
+        #expect(prompt.contains("Never invent a tool result"))
     }
 
     @Test func goalResumeResetsOnlyTheCurrentSafetyWindow() throws {
@@ -1581,6 +1582,60 @@ Created job
         #expect(prompt.contains("Never make manual user input"))
         #expect(prompt.contains("deterministic automated smoke tests"))
         #expect(prompt.contains("concrete absolute destination"))
+    }
+
+    @Test func goalCompletionRequiresTheRealOutputOnDisk() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("localclaw-goal-output-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let output = root.appendingPathComponent("game.html")
+
+        var plan = GoalExecutionPlan(
+            sessionID: "goal-output-check",
+            objective: "Build a game",
+            output: GoalOutputContract(
+                type: "HTML game",
+                format: "HTML",
+                location: output.path,
+                launch: "Open game.html",
+                completionCriteria: ["The game file exists"]
+            ),
+            steps: [
+                GoalPlanStep(
+                    id: "step-1",
+                    title: "Build and verify",
+                    outcome: "A playable game",
+                    completionCriteria: ["The file exists on disk"],
+                    status: .inProgress,
+                    summary: "",
+                    evidence: [],
+                    attempts: 0,
+                    noProgressTurns: 0
+                )
+            ],
+            approvedAt: Date(),
+            createdAt: Date(),
+            updatedAt: Date(),
+            version: 1,
+            lastCheckpointMessageID: nil
+        )
+
+        plan.apply(GoalStepProgressReport(status: .complete, summary: "PASS", evidence: ["file exists"]))
+        #expect(!plan.isComplete)
+        #expect(plan.currentStep?.summary.contains("rejected the completion claim") == true)
+        #expect(plan.currentStep?.noProgressTurns == 1)
+
+        try "<!doctype html><title>Game</title>".write(to: output, atomically: true, encoding: .utf8)
+        plan.apply(GoalStepProgressReport(status: .complete, summary: "Created and tested", evidence: [output.path]))
+        #expect(plan.isComplete)
+        #expect(GoalOutputVerifier.verify(plan.output).isSatisfied)
+
+        try FileManager.default.removeItem(at: output)
+        let recovery = plan.reopenFinalStepWhenOutputIsMissing()
+        #expect(recovery?.state == .missing)
+        #expect(!plan.isComplete)
+        #expect(plan.currentStep?.status == .inProgress)
     }
 
     @Test func goalPlanParserExtractsAnExplicitOutputContract() throws {

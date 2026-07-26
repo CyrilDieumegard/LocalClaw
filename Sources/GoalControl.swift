@@ -58,6 +58,72 @@ struct GoalOutputContract: Codable, Equatable, Sendable {
     }
 }
 
+struct GoalOutputVerification: Equatable, Sendable {
+    enum State: Equatable, Sendable {
+        case notLocal
+        case missing
+        case empty
+        case ready
+    }
+
+    let state: State
+    let path: String?
+
+    var requiresLocalArtifact: Bool { state != .notLocal }
+    var isSatisfied: Bool { state == .notLocal || state == .ready }
+
+    var detail: String {
+        switch state {
+        case .notLocal:
+            return "The output is not a local file or folder."
+        case .missing:
+            return "The expected output does not exist on disk at \(path ?? "the approved location")."
+        case .empty:
+            return "The expected output exists but is empty at \(path ?? "the approved location")."
+        case .ready:
+            return "The expected output exists on disk at \(path ?? "the approved location")."
+        }
+    }
+}
+
+enum GoalOutputVerifier {
+    static func resolvedLocalPath(_ rawLocation: String) -> String? {
+        var location = rawLocation.trimmingCharacters(in: .whitespacesAndNewlines)
+        while location.count >= 2,
+              let first = location.first,
+              let last = location.last,
+              (first == "`" && last == "`" || first == "\"" && last == "\"") {
+            location.removeFirst()
+            location.removeLast()
+            location = location.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if location.hasPrefix("file://"), let url = URL(string: location), url.isFileURL {
+            return url.path
+        }
+        guard location.hasPrefix("/") || location.hasPrefix("~") else { return nil }
+        return NSString(string: location).expandingTildeInPath
+    }
+
+    static func verify(_ output: GoalOutputContract, fileManager: FileManager = .default) -> GoalOutputVerification {
+        guard let path = resolvedLocalPath(output.location) else {
+            return GoalOutputVerification(state: .notLocal, path: nil)
+        }
+
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory) else {
+            return GoalOutputVerification(state: .missing, path: path)
+        }
+
+        if isDirectory.boolValue {
+            let contents = (try? fileManager.contentsOfDirectory(atPath: path)) ?? []
+            return GoalOutputVerification(state: contents.isEmpty ? .empty : .ready, path: path)
+        }
+
+        let size = ((try? fileManager.attributesOfItem(atPath: path)[.size]) as? NSNumber)?.int64Value ?? 0
+        return GoalOutputVerification(state: size > 0 ? .ready : .empty, path: path)
+    }
+}
+
 struct GoalPlanStep: Identifiable, Codable, Equatable, Sendable {
     var id: String
     var title: String
@@ -116,6 +182,22 @@ struct GoalExecutionPlan: Codable, Equatable, Sendable {
     mutating func apply(_ report: GoalStepProgressReport) {
         guard let index = currentStepIndex else { return }
         steps[index].attempts += 1
+
+        let completesFinalOpenStep = report.status == .complete && steps.indices.allSatisfy {
+            $0 == index || steps[$0].status == .complete
+        }
+        if completesFinalOpenStep {
+            let verification = GoalOutputVerifier.verify(output)
+            if verification.requiresLocalArtifact && !verification.isSatisfied {
+                steps[index].status = .inProgress
+                steps[index].summary = "LocalClaw rejected the completion claim. \(verification.detail)"
+                steps[index].evidence = []
+                steps[index].noProgressTurns += 1
+                updatedAt = Date()
+                return
+            }
+        }
+
         steps[index].summary = report.summary.trimmed
         steps[index].evidence = report.evidence.map(\.trimmed).filter { !$0.isEmpty }
         steps[index].noProgressTurns = report.evidence.isEmpty ? steps[index].noProgressTurns + 1 : 0
@@ -138,6 +220,20 @@ struct GoalExecutionPlan: Codable, Equatable, Sendable {
         guard let index = currentStepIndex else { return }
         steps[index].noProgressTurns = 0
         updatedAt = Date()
+    }
+
+    mutating func reopenFinalStepWhenOutputIsMissing() -> GoalOutputVerification? {
+        guard isComplete, let index = steps.indices.last else { return nil }
+        let verification = GoalOutputVerifier.verify(output)
+        guard verification.requiresLocalArtifact, !verification.isSatisfied else { return nil }
+
+        steps[index].status = .inProgress
+        steps[index].summary = "LocalClaw reopened this step because the approved output is not present on disk."
+        steps[index].evidence = []
+        steps[index].noProgressTurns = 0
+        updatedAt = Date()
+        version += 1
+        return verification
     }
 }
 
@@ -330,6 +426,10 @@ enum GoalWorkPrompt {
         let currentCriteria = plan.currentStep?.completionCriteria.map { "- \($0)" }.joined(separator: "\n") ?? "- Verify the approved outcome."
         let currentTitle = plan.currentStep?.title ?? "Final verification"
         let currentOutcome = plan.currentStep?.outcome ?? "Verify the complete output contract."
+        let outputVerification = GoalOutputVerifier.verify(plan.output)
+        let localOutputInstruction = outputVerification.requiresLocalArtifact
+            ? "LocalClaw host filesystem check: \(outputVerification.detail) You must create and verify the real artifact at this exact destination before reporting the final step complete."
+            : "LocalClaw host filesystem check: this output is delivered outside the local filesystem. Provide concrete delivery evidence before reporting the final step complete."
         return """
         A user-approved LocalClaw Goal plan is active for this OpenClaw session.
 
@@ -357,7 +457,11 @@ enum GoalWorkPrompt {
         Step completion criteria:
         \(currentCriteria)
 
+        \(localOutputInstruction)
+
         \(action) the current step from the existing workspace and session state. Inspect existing work before changing anything, preserve completed results, and do not repeat successful external calls. Work only toward the current step and approved output contract.
+
+        Actually call the available file, shell, and test tools when work or verification requires them. Never invent a tool result, never describe an unexecuted command as evidence, and never claim a file exists unless the tool call confirmed it on disk.
 
         At the very end of your response, include exactly one machine-readable progress block:
         <localclaw_progress>
@@ -640,10 +744,17 @@ final class GoalCenterModel: ObservableObject {
             return
         }
         selectedChatSessionID = sessionID
-        plan = GoalPlanStore.load(sessionID: sessionID)
+        var loadedPlan = GoalPlanStore.load(sessionID: sessionID)
+        let outputRecovery = loadedPlan?.reopenFinalStepWhenOutputIsMissing()
+        if let loadedPlan, outputRecovery != nil {
+            GoalPlanStore.save(loadedPlan)
+        }
+        plan = loadedPlan
         if let plan { objective = plan.objective }
         await refresh()
-        if let plan, plan.isApproved, plan.currentStep?.status == .inProgress, snapshot?.status == .active {
+        if let outputRecovery {
+            statusMessage = "Completion was reopened: \(outputRecovery.detail) Repair the missing output to finish this Goal."
+        } else if let plan, plan.isApproved, plan.currentStep?.status == .inProgress, snapshot?.status == .active {
             statusMessage = "Goal interrupted during \(plan.currentStep?.title ?? "the current step"). Resume when ready."
         }
     }

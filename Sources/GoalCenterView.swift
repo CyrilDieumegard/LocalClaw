@@ -574,7 +574,8 @@ struct GoalCenterView: View {
     }
 
     private func executionOutputSummary(_ output: GoalOutputContract) -> some View {
-        HStack(spacing: 8) {
+        let verification = GoalOutputVerifier.verify(output)
+        return HStack(spacing: 8) {
             Label(output.type, systemImage: "shippingbox")
             Text("·")
             Text(output.format)
@@ -583,6 +584,13 @@ struct GoalCenterView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .help(output.location)
+            if verification.requiresLocalArtifact {
+                Label(
+                    verification.isSatisfied ? "On disk" : "Missing",
+                    systemImage: verification.isSatisfied ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+                )
+                .foregroundStyle(verification.isSatisfied ? Color(NSColor.systemGreen) : Color(NSColor.systemOrange))
+            }
             Spacer(minLength: 8)
             Button {
                 revealGoalOutput(output.location)
@@ -655,6 +663,7 @@ struct GoalCenterView: View {
 
     private func activeGoal(_ snapshot: OpenClawGoalSnapshot) -> some View {
         let hasApprovedPlan = goal.plan?.isApproved == true
+        let needsOutputRecovery = snapshot.status == .complete && goal.plan?.isComplete == false
         return VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -712,7 +721,7 @@ struct GoalCenterView: View {
                     }
                     .buttonStyle(CompactChatButton(primary: false))
                     .disabled(goal.isBusy)
-                } else if snapshot.status != .complete && hasApprovedPlan {
+                } else if hasApprovedPlan && (snapshot.status != .complete || needsOutputRecovery) {
                     Button {
                         Task {
                             await goal.resume()
@@ -720,13 +729,13 @@ struct GoalCenterView: View {
                             goal.startContinuousRun(using: vm, starting: false)
                         }
                     } label: {
-                        Label("Resume continuously", systemImage: "play.fill")
+                        Label(needsOutputRecovery ? "Repair missing output" : "Resume continuously", systemImage: "play.fill")
                     }
                     .buttonStyle(CTAButton(primary: true))
                     .disabled(goal.isBusy || vm.chatIsSending || !readiness.canStart)
                 }
 
-                if snapshot.status != .complete && hasApprovedPlan {
+                if snapshot.status != .complete && hasApprovedPlan && goal.plan?.isComplete == true {
                     Button { Task { await goal.complete() } } label: {
                         Label("Complete", systemImage: "checkmark.circle")
                     }
