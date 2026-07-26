@@ -7803,7 +7803,7 @@ final class InstallerViewModel: ObservableObject {
         sendChatMessage(sessionID: activeDeveloperChatSessionID, useDeveloperSession: true)
     }
 
-    func sendGoalAdvance(chatSessionID: String, runtimeSessionID: String, objective: String, starting: Bool) {
+    func sendGoalPlanningRequest(chatSessionID: String, objective: String, outputHint: String) {
         guard !chatIsSending,
               normalChatSessions.contains(where: { $0.id == chatSessionID }),
               !objective.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
@@ -7811,9 +7811,54 @@ final class InstallerViewModel: ObservableObject {
         sendChatMessage(
             sessionID: chatSessionID,
             useDeveloperSession: false,
-            inputOverride: GoalWorkPrompt.make(objective: objective, starting: starting),
+            inputOverride: GoalPlanPrompt.make(objective: objective, outputHint: outputHint),
+            appendVisibleUserMessage: false,
+            runtimeSessionIDOverride: GoalCenterModel.runtimeSessionID(for: chatSessionID)
+        )
+    }
+
+    func sendGoalAdvance(chatSessionID: String, runtimeSessionID: String, plan: GoalExecutionPlan, starting: Bool) {
+        guard !chatIsSending,
+              normalChatSessions.contains(where: { $0.id == chatSessionID }),
+              plan.isApproved,
+              plan.currentStep != nil else { return }
+        selectedChatSessionID = chatSessionID
+        sendChatMessage(
+            sessionID: chatSessionID,
+            useDeveloperSession: false,
+            inputOverride: GoalWorkPrompt.make(plan: plan, starting: starting),
+            appendVisibleUserMessage: false,
             runtimeSessionIDOverride: runtimeSessionID
         )
+    }
+
+    func removeGoalPlanningMessage(sessionID: String, messageID: UUID) {
+        guard let index = chatSessions.firstIndex(where: { $0.id == sessionID }) else { return }
+        chatSessions[index].messages.removeAll { $0.id == messageID }
+        chatSessions[index].updatedAt = Date()
+    }
+
+    func replaceGoalMessageText(sessionID: String, messageID: UUID, text: String) {
+        guard let sessionIndex = chatSessions.firstIndex(where: { $0.id == sessionID }),
+              let messageIndex = chatSessions[sessionIndex].messages.firstIndex(where: { $0.id == messageID }) else { return }
+        let existing = chatSessions[sessionIndex].messages[messageIndex]
+        chatSessions[sessionIndex].messages[messageIndex] = ChatMessage(
+            id: existing.id,
+            role: existing.role,
+            text: text,
+            metadata: existing.metadata,
+            modelName: existing.modelName,
+            imagePath: existing.imagePath,
+            createdAt: existing.createdAt,
+            pinned: existing.pinned
+        )
+        chatSessions[sessionIndex].updatedAt = Date()
+    }
+
+    private func appendChatMessage(_ message: ChatMessage, to sessionID: String) {
+        guard let index = chatSessions.firstIndex(where: { $0.id == sessionID }) else { return }
+        chatSessions[index].messages.append(message)
+        chatSessions[index].updatedAt = Date()
     }
 
     private func sendChatMessage(
@@ -7891,7 +7936,7 @@ final class InstallerViewModel: ObservableObject {
         let agentText = agentTextParts.joined(separator: "\n\n")
         if useDeveloperSession {
             if appendVisibleUserMessage {
-                developerChatMessages.append(ChatMessage(role: "user", text: visibleUserText, imagePath: imagePath.isEmpty ? nil : imagePath))
+                appendChatMessage(ChatMessage(role: "user", text: visibleUserText, imagePath: imagePath.isEmpty ? nil : imagePath), to: sessionID)
                 updateDeveloperChatSession { session in
                     if session.title == "Developer workspace" {
                         let compact = visibleUserText.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -7900,8 +7945,10 @@ final class InstallerViewModel: ObservableObject {
                 }
             }
         } else {
-            chatMessages.append(ChatMessage(role: "user", text: visibleUserText, imagePath: imagePath.isEmpty ? nil : imagePath))
-            renameSelectedChatSession(from: visibleUserText)
+            if appendVisibleUserMessage {
+                appendChatMessage(ChatMessage(role: "user", text: visibleUserText, imagePath: imagePath.isEmpty ? nil : imagePath), to: sessionID)
+                renameSelectedChatSession(from: visibleUserText)
+            }
         }
         if useDeveloperSession,
            imagePath.isEmpty,
@@ -7909,7 +7956,7 @@ final class InstallerViewModel: ObservableObject {
             let files = quickEdit.changedFiles.prefix(5).joined(separator: ", ")
             let suffix = quickEdit.changedFiles.count > 5 ? " and \(quickEdit.changedFiles.count - 5) more" : ""
             let reply = "Applied the \(quickEdit.colorName) theme directly in \(quickEdit.changedFiles.count) file\(quickEdit.changedFiles.count == 1 ? "" : "s"): \(files)\(suffix)."
-            developerChatMessages.append(ChatMessage(role: "assistant", text: reply, metadata: "local quick edit • no model call", modelName: "LocalClaw"))
+            appendChatMessage(ChatMessage(role: "assistant", text: reply, metadata: "local quick edit • no model call", modelName: "LocalClaw"), to: sessionID)
             developerPreviewRefreshID = UUID()
             developerActiveTab = "preview"
             if developerPreviewProcess != nil {
@@ -7961,7 +8008,7 @@ final class InstallerViewModel: ObservableObject {
                 ? "Local model setup is already running. Send again when the status is Ready."
                 : "Local model setup started. Send again when the status is Ready."
             let setupMessage = ChatMessage(role: "assistant", text: setupText, metadata: "local setup • no model call", modelName: "LocalClaw")
-            if useDeveloperSession { developerChatMessages.append(setupMessage) } else { chatMessages.append(setupMessage) }
+            appendChatMessage(setupMessage, to: sessionID)
             chatStatus = "Setting up local model..."
             chatIsSending = false
             return
@@ -8006,7 +8053,7 @@ final class InstallerViewModel: ObservableObject {
                 if allowResult.state == .fail {
                     await MainActor.run {
                         let errorMessage = ChatMessage(role: "error", text: allowResult.message)
-                        if useDeveloperSession { self.developerChatMessages.append(errorMessage) } else { self.chatMessages.append(errorMessage) }
+                        self.appendChatMessage(errorMessage, to: sessionID)
                         self.chatStatus = "Error"
                         if useDeveloperSession { self.finishDeveloperActivity() }
                         self.chatIsSending = false
@@ -8021,7 +8068,7 @@ final class InstallerViewModel: ObservableObject {
             } catch {
                 await MainActor.run {
                     let errorMessage = ChatMessage(role: "error", text: "I couldn’t prepare the message for OpenClaw: \(error.localizedDescription)")
-                    if useDeveloperSession { self.developerChatMessages.append(errorMessage) } else { self.chatMessages.append(errorMessage) }
+                    self.appendChatMessage(errorMessage, to: sessionID)
                     self.chatStatus = "Error"
                     if useDeveloperSession { self.finishDeveloperActivity() }
                     self.chatIsSending = false
@@ -8255,15 +8302,15 @@ final class InstallerViewModel: ObservableObject {
                 }
                 if repairedPlugin && result.0 == 0 {
                     let repairMessage = ChatMessage(role: "assistant", text: "I found and disabled an outdated global WhatsApp plugin that was blocking OpenClaw, then retried automatically.", modelName: responseModel)
-                    if useDeveloperSession { self.developerChatMessages.append(repairMessage) } else { self.chatMessages.append(repairMessage) }
+                    self.appendChatMessage(repairMessage, to: sessionID)
                 }
                 if let automaticRecoveryNote, result.0 == 0 {
                     let repairMessage = ChatMessage(role: "assistant", text: automaticRecoveryNote, modelName: "LocalClaw")
-                    if useDeveloperSession { self.developerChatMessages.append(repairMessage) } else { self.chatMessages.append(repairMessage) }
+                    self.appendChatMessage(repairMessage, to: sessionID)
                 }
                 let role = result.0 == 0 ? "assistant" : "error"
                 let responseMessage = ChatMessage(role: role, text: reply, metadata: metrics, modelName: responseModel)
-                if useDeveloperSession { self.developerChatMessages.append(responseMessage) } else { self.chatMessages.append(responseMessage) }
+                self.appendChatMessage(responseMessage, to: sessionID)
                 if result.0 == 0 {
                     self.recordModelUsage(model: runtimeModel ?? self.currentModel, input: usage.input, output: usage.output, total: usage.total)
                 }

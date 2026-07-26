@@ -1486,12 +1486,141 @@ Created job
     }
 
     @Test func goalWorkPromptAlwaysCarriesTheDurableObjective() {
-        let prompt = GoalWorkPrompt.make(objective: "  Audit the release pipeline  ", starting: false)
+        var plan = GoalExecutionPlan(
+            sessionID: "goal-test",
+            objective: "Audit the release pipeline",
+            output: GoalOutputContract(
+                type: "Technical report",
+                format: "Markdown",
+                location: "/tmp/release-audit.md",
+                launch: "Open the report in LocalClaw",
+                completionCriteria: ["Every release stage has evidence"]
+            ),
+            steps: [
+                GoalPlanStep(
+                    id: "step-1",
+                    title: "Inspect release configuration",
+                    outcome: "Document the current release stages",
+                    completionCriteria: ["Build and publication paths are listed"],
+                    status: .pending,
+                    summary: "",
+                    evidence: [],
+                    attempts: 0,
+                    noProgressTurns: 0
+                ),
+                GoalPlanStep(
+                    id: "step-2",
+                    title: "Write audit",
+                    outcome: "Create the final report",
+                    completionCriteria: ["The report exists at the approved location"],
+                    status: .pending,
+                    summary: "",
+                    evidence: [],
+                    attempts: 0,
+                    noProgressTurns: 0
+                )
+            ],
+            approvedAt: nil,
+            createdAt: Date(),
+            updatedAt: Date(),
+            version: 1,
+            lastCheckpointMessageID: nil
+        )
+        plan.prepareForApproval()
+        let prompt = GoalWorkPrompt.make(plan: plan, starting: false)
 
         #expect(prompt.contains("Objective:\nAudit the release pipeline"))
-        #expect(prompt.contains("Continue working on it now"))
-        #expect(prompt.contains("update_goal with status complete"))
-        #expect(!prompt.contains("repeat the objective?"))
+        #expect(prompt.contains("Format or technology: Markdown"))
+        #expect(prompt.contains("Current step:\nInspect release configuration"))
+        #expect(prompt.contains("<localclaw_progress>"))
+        #expect(prompt.contains("Do not call update_goal yourself"))
+    }
+
+    @Test func goalPlanParserExtractsAnExplicitOutputContract() throws {
+        let response = """
+        ```json
+        {
+          "output": {
+            "type": "Playable browser game",
+            "format": "HTML, CSS and JavaScript",
+            "location": "~/openclaw/workspace/runner",
+            "launch": "Open index.html in LocalClaw Preview",
+            "completionCriteria": ["The game launches without errors", "Keyboard controls work"]
+          },
+          "steps": [
+            {"title":"Create the game shell","outcome":"A runnable project","completionCriteria":["Preview opens"]},
+            {"title":"Implement gameplay","outcome":"A playable level","completionCriteria":["The player can finish the level"]},
+            {"title":"Validate output","outcome":"A stable final build","completionCriteria":["No console errors"]}
+          ]
+        }
+        ```
+        """
+        let plan = try #require(GoalPlanParser.parse(response, sessionID: "session-1", objective: "Build a game"))
+
+        #expect(plan.output.type == "Playable browser game")
+        #expect(plan.output.format == "HTML, CSS and JavaScript")
+        #expect(plan.steps.count == 3)
+        #expect(plan.isReadyForApproval)
+        #expect(!plan.isApproved)
+    }
+
+    @Test func goalPlanParserAcceptsCompactLocalModelOutput() throws {
+        let response = """
+        {
+          "type":"browserGame",
+          "format":"HTML/JS/CSS",
+          "location":"/game/localclaw.html",
+          "launch":"Open localclaw.html",
+          "completionCriteria":"The playable game opens without errors.",
+          "steps":[
+            {"title":"Create shell","outcome":"Runnable files","completionCriteria":"index.html exists"},
+            {"title":"Add gameplay","outcome":"Playable puzzle","completionCriteria":"Controls work"},
+            {"title":"Validate","outcome":"Stable result","completionCriteria":"No console errors"}
+          ]
+        }
+        """
+        let plan = try #require(GoalPlanParser.parse(response, sessionID: "local-session", objective: "Build a puzzle"))
+
+        #expect(plan.output.type == "browserGame")
+        #expect(plan.output.completionCriteria == ["The playable game opens without errors."])
+        #expect(plan.steps[0].completionCriteria == ["index.html exists"])
+        #expect(plan.isReadyForApproval)
+    }
+
+    @Test func goalProgressAdvancesOnlyAfterVerifiableCompletion() throws {
+        var plan = try #require(GoalPlanParser.parse(
+            """
+            {"output":{"type":"Report","format":"Markdown","location":"/tmp/report.md","launch":"Open file","completionCriteria":["Report exists"]},"steps":[{"title":"Research","outcome":"Evidence collected","completionCriteria":["Sources listed"]},{"title":"Write","outcome":"Report created","completionCriteria":["File exists"]}]}
+            """,
+            sessionID: "session-2",
+            objective: "Create a report"
+        ))
+        plan.prepareForApproval()
+        #expect(plan.currentStep?.title == "Research")
+
+        plan.apply(GoalStepProgressReport(status: .working, summary: "Collected one source", evidence: ["source.txt"]))
+        #expect(plan.currentStep?.title == "Research")
+        #expect(plan.completedStepCount == 0)
+
+        plan.apply(GoalStepProgressReport(status: .complete, summary: "Research finished", evidence: ["sources.md"] ))
+        #expect(plan.completedStepCount == 1)
+        #expect(plan.currentStep?.title == "Write")
+    }
+
+    @Test func goalProgressParserHidesItsMachineMarker() throws {
+        let result = GoalProgressParser.parse(
+            """
+            The playable shell is ready.
+            <localclaw_progress>
+            {"status":"complete","summary":"Created the shell","evidence":["index.html","npm test passed"]}
+            </localclaw_progress>
+            """
+        )
+        let report = try #require(result.report)
+
+        #expect(report.status == .complete)
+        #expect(report.evidence == ["index.html", "npm test passed"])
+        #expect(result.cleanedText == "The playable shell is ready.")
     }
 
     @Test func goalControllerResourceLocatorSupportsPackagedAndSwiftPMLayouts() {
