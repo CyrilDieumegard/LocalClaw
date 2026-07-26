@@ -520,6 +520,250 @@ enum GoalWorkPrompt {
     }
 }
 
+struct LocalGoalArtifactGeneration: Equatable, Sendable {
+    let content: String
+    let inputTokens: Int
+    let outputTokens: Int
+}
+
+enum LocalGoalArtifactError: LocalizedError {
+    case unsupportedDestination
+    case invalidResponse(String)
+    case invalidArtifact(String)
+    case server(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedDestination:
+            return "The approved output must be one supported file inside ~/.openclaw/workspace."
+        case .invalidResponse(let message), .invalidArtifact(let message), .server(let message):
+            return message
+        }
+    }
+}
+
+enum LocalGoalArtifactSupport {
+    private static let supportedExtensions = Set([
+        "css", "csv", "html", "htm", "js", "json", "md", "py", "sh", "svg", "swift", "txt", "xml", "yaml", "yml",
+    ])
+
+    static func destination(
+        for plan: GoalExecutionPlan,
+        homeDirectory: String = NSHomeDirectory()
+    ) -> URL? {
+        guard plan.steps.count == 2,
+              let path = GoalOutputVerifier.resolvedLocalPath(plan.output.location) else { return nil }
+        let destination = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
+        let workspace = URL(fileURLWithPath: homeDirectory)
+            .appendingPathComponent(".openclaw/workspace", isDirectory: true)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        guard destination.path.hasPrefix(workspace.path + "/"),
+              supportedExtensions.contains(destination.pathExtension.lowercased()) else { return nil }
+        return destination
+    }
+
+    static func artifactContent(from rawText: String, pathExtension: String) throws -> String {
+        var text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fencedParts = text.components(separatedBy: "```")
+        if fencedParts.count >= 3 {
+            let candidates = stride(from: 1, to: fencedParts.count, by: 2).map { index -> String in
+                var candidate = fencedParts[index]
+                if let newline = candidate.firstIndex(of: "\n") {
+                    let firstLine = candidate[..<newline].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    if firstLine.count <= 16 && !firstLine.contains("<") && !firstLine.contains("{") {
+                        candidate = String(candidate[candidate.index(after: newline)...])
+                    }
+                }
+                return candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if let largest = candidates.max(by: { $0.count < $1.count }), !largest.isEmpty {
+                text = largest
+            }
+        }
+
+        let ext = pathExtension.lowercased()
+        if ext == "html" || ext == "htm" {
+            let lower = text.lowercased()
+            if let start = lower.range(of: "<!doctype html")?.lowerBound ?? lower.range(of: "<html")?.lowerBound {
+                text = String(text[start...])
+            }
+            let normalized = text.lowercased()
+            guard (normalized.contains("<!doctype html") || normalized.contains("<html")),
+                  normalized.contains("</html>") else {
+                throw LocalGoalArtifactError.invalidArtifact("The local model returned incomplete HTML, so LocalClaw did not publish a partial file.")
+            }
+        }
+        guard !text.isEmpty else {
+            throw LocalGoalArtifactError.invalidArtifact("The local model returned an empty artifact.")
+        }
+        return text + (text.hasSuffix("\n") ? "" : "\n")
+    }
+
+    static func parseResponse(_ data: Data) throws -> LocalGoalArtifactGeneration {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw LocalGoalArtifactError.invalidResponse("LM Studio returned an unreadable response.")
+        }
+
+        func strings(in value: Any?) -> [String] {
+            if let value = value as? String { return [value] }
+            if let values = value as? [Any] { return values.flatMap { strings(in: $0) } }
+            if let value = value as? [String: Any] {
+                if let text = value["text"] as? String { return [text] }
+                return strings(in: value["content"])
+            }
+            return []
+        }
+
+        var content = ""
+        if let output = root["output"] as? [[String: Any]] {
+            content = output
+                .filter { ($0["type"] as? String) == "message" || $0["content"] != nil }
+                .flatMap { strings(in: $0["content"]) }
+                .joined(separator: "\n")
+        }
+        if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let choices = root["choices"] as? [[String: Any]],
+           let message = choices.first?["message"] as? [String: Any] {
+            content = strings(in: message["content"]).joined(separator: "\n")
+        }
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            let message = ((root["error"] as? [String: Any])?["message"] as? String)
+                ?? "LM Studio finished without returning file content."
+            throw LocalGoalArtifactError.invalidResponse(message)
+        }
+
+        let stats = root["stats"] as? [String: Any]
+        let usage = root["usage"] as? [String: Any]
+        let inputTokens = (stats?["input_tokens"] as? NSNumber)?.intValue
+            ?? (usage?["prompt_tokens"] as? NSNumber)?.intValue
+            ?? 0
+        let outputTokens = (stats?["output_tokens"] as? NSNumber)?.intValue
+            ?? (stats?["total_output_tokens"] as? NSNumber)?.intValue
+            ?? (usage?["completion_tokens"] as? NSNumber)?.intValue
+            ?? 0
+        return LocalGoalArtifactGeneration(content: content, inputTokens: inputTokens, outputTokens: outputTokens)
+    }
+
+    static func write(_ content: String, to destination: URL, fileManager: FileManager = .default) throws {
+        try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard let data = content.data(using: .utf8) else {
+            throw LocalGoalArtifactError.invalidArtifact("The generated artifact could not be encoded as UTF-8.")
+        }
+        try data.write(to: destination, options: .atomic)
+    }
+}
+
+actor LocalGoalArtifactGenerator {
+    static let shared = LocalGoalArtifactGenerator()
+
+    func generate(
+        modelID: String,
+        plan: GoalExecutionPlan,
+        existingContent: String? = nil
+    ) async throws -> LocalGoalArtifactGeneration {
+        guard let destination = LocalGoalArtifactSupport.destination(for: plan) else {
+            throw LocalGoalArtifactError.unsupportedDestination
+        }
+        let settings = Self.lmStudioSettings()
+        var request = URLRequest(url: settings.endpoint)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 360
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let apiKey = settings.apiKey, !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        let model = modelID.lowercased().hasPrefix("lmstudio/")
+            ? String(modelID.dropFirst("lmstudio/".count))
+            : modelID
+        let criteria = plan.output.completionCriteria.map { "- \($0)" }.joined(separator: "\n")
+        let task = if let existingContent {
+            """
+            Review the existing file below against every completion criterion. Correct all functional, structural, and syntax problems, then return the complete corrected file.
+
+            Existing file:
+            <existing_file>
+            \(existingContent)
+            </existing_file>
+            """
+        } else {
+            "Create the complete approved file now."
+        }
+        let prompt = """
+        \(task)
+
+        Objective:
+        \(plan.objective)
+
+        Output type: \(plan.output.type)
+        Format: \(plan.output.format)
+        Filename: \(destination.lastPathComponent)
+        Completion criteria:
+        \(criteria)
+
+        Return only the exact raw contents of that one file. Do not use Markdown fences, JSON wrappers, commentary, placeholders, TODOs, or tool calls. The file must be complete and usable as delivered.
+        """
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "model": model,
+            "input": prompt,
+            "system_prompt": "You generate complete standalone file contents. Output only the requested file, with no explanation and no tool calls.",
+            "reasoning": "off",
+            "temperature": 0.15,
+            "max_output_tokens": 12_000,
+            "stream": false,
+        ])
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 360
+        configuration.timeoutIntervalForResource = 390
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        do {
+            let (data, response) = try await session.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200...299).contains(status) else {
+                let detail = (try? LocalGoalArtifactSupport.parseResponse(data).content)
+                    ?? String(data: data, encoding: .utf8)
+                    ?? "HTTP \(status)"
+                throw LocalGoalArtifactError.server("LM Studio could not generate the approved file: \(detail.prefix(500))")
+            }
+            return try LocalGoalArtifactSupport.parseResponse(data)
+        } catch let error as LocalGoalArtifactError {
+            throw error
+        } catch {
+            throw LocalGoalArtifactError.server("LM Studio did not finish the direct file generation: \(error.localizedDescription)")
+        }
+    }
+
+    private static func lmStudioSettings() -> (endpoint: URL, apiKey: String?) {
+        var baseURL = URL(string: "http://127.0.0.1:1234/v1")!
+        var apiKey: String?
+        let configURL = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".openclaw/openclaw.json")
+        if let data = try? Data(contentsOf: configURL),
+           let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let models = root["models"] as? [String: Any],
+           let providers = models["providers"] as? [String: Any],
+           let lmStudio = providers["lmstudio"] as? [String: Any] {
+            if let configured = lmStudio["baseUrl"] as? String, let url = URL(string: configured) {
+                baseURL = url
+            }
+            apiKey = lmStudio["apiKey"] as? String
+        }
+        if baseURL.path.hasSuffix("/v1") {
+            baseURL.deleteLastPathComponent()
+        }
+        return (baseURL.appendingPathComponent("api/v1/chat"), apiKey)
+    }
+}
+
+private enum LocalGoalDirectTurnResult {
+    case unsupported
+    case progressed
+    case finished
+    case failed
+}
+
 enum GoalCapabilityAdvisor {
     static func cloud(openClawInstalled: Bool, authReady: Bool, modelID: String, modeName: String) -> GoalRuntimeReadiness {
         guard openClawInstalled else {
@@ -1059,6 +1303,87 @@ final class GoalCenterModel: ObservableObject {
         enabled && status == .active && latestMessageRole != "error"
     }
 
+    private func executeDirectLocalArtifactTurn(
+        using viewModel: InstallerViewModel,
+        plan currentPlan: GoalExecutionPlan,
+        sessionID: String
+    ) async -> LocalGoalDirectTurnResult {
+        guard let destination = LocalGoalArtifactSupport.destination(for: currentPlan),
+              let currentIndex = currentPlan.currentStepIndex else { return .unsupported }
+
+        do {
+            var generatedTokens = 0
+            var verification = GoalOutputVerifier.verify(currentPlan.output)
+            if currentIndex == 0 || !verification.isSatisfied || currentIndex == currentPlan.steps.indices.last {
+                let existingContent: String?
+                if currentIndex == currentPlan.steps.indices.last, verification.isSatisfied {
+                    existingContent = try String(contentsOf: destination, encoding: .utf8)
+                    statusMessage = "Reviewing and correcting the approved file with the local model..."
+                } else {
+                    existingContent = nil
+                    statusMessage = "Generating the approved file directly with the local model..."
+                }
+                let generation = try await LocalGoalArtifactGenerator.shared.generate(
+                    modelID: viewModel.selectedGoalModelID,
+                    plan: currentPlan,
+                    existingContent: existingContent
+                )
+                let content = try LocalGoalArtifactSupport.artifactContent(
+                    from: generation.content,
+                    pathExtension: destination.pathExtension
+                )
+                try LocalGoalArtifactSupport.write(content, to: destination)
+                generatedTokens = generation.outputTokens
+                verification = GoalOutputVerifier.verify(currentPlan.output)
+                guard verification.isSatisfied else {
+                    throw LocalGoalArtifactError.invalidArtifact(verification.detail)
+                }
+            }
+
+            var updatedPlan = currentPlan
+            let isVerificationStep = currentIndex == updatedPlan.steps.indices.last
+            let tokenEvidence = generatedTokens > 0 ? " · \(generatedTokens.formatted()) output tokens" : ""
+            let report = GoalStepProgressReport(
+                status: .complete,
+                summary: isVerificationStep
+                    ? "LocalClaw verified the approved artifact on disk."
+                    : "The local model generated the complete artifact and LocalClaw saved it atomically.",
+                evidence: ["\(destination.path) exists and is not empty\(tokenEvidence)"]
+            )
+            updatedPlan.apply(report)
+            plan = updatedPlan
+            GoalPlanStore.save(updatedPlan)
+            automaticTurns += 1
+
+            viewModel.appendGoalStatusMessage(
+                sessionID: sessionID,
+                text: isVerificationStep
+                    ? "Verified the approved output at `\(destination.path)`."
+                    : "Generated and saved the approved output at `\(destination.path)`. LocalClaw wrote the file directly so the local model did not need to serialize a large `write` tool call.",
+                metadata: "local artifact · verified",
+                modelName: viewModel.selectedGoalModelID
+            )
+
+            if updatedPlan.isComplete {
+                statusMessage = "Every approved step is complete. Finalizing the Goal..."
+                await complete()
+                return .finished
+            }
+            statusMessage = "Artifact created. Running the deterministic verification step..."
+            return .progressed
+        } catch {
+            let reason = error.localizedDescription
+            viewModel.appendGoalStatusMessage(
+                sessionID: sessionID,
+                text: "Local file generation stopped safely: \(reason)",
+                metadata: "local artifact · stopped",
+                modelName: viewModel.selectedGoalModelID
+            )
+            await pauseForSafety("Local Goal paused because LM Studio could not produce a complete approved file. \(reason)")
+            return .failed
+        }
+    }
+
     func startContinuousRun(using viewModel: InstallerViewModel, starting: Bool) {
         guard !selectedChatSessionID.isEmpty,
               snapshot?.status == .active,
@@ -1122,6 +1447,22 @@ final class GoalCenterModel: ObservableObject {
                 guard let currentPlan = self.plan, currentPlan.isApproved, currentPlan.currentStep != nil else {
                     self.stopContinuousRun(message: "Continuous run stopped because the approved plan is unavailable.")
                     return
+                }
+                if localExecution {
+                    let directResult = await self.executeDirectLocalArtifactTurn(
+                        using: viewModel,
+                        plan: currentPlan,
+                        sessionID: sessionID
+                    )
+                    switch directResult {
+                    case .progressed:
+                        isStartingTurn = false
+                        continue
+                    case .finished, .failed:
+                        return
+                    case .unsupported:
+                        break
+                    }
                 }
                 if localExecution {
                     self.statusMessage = "Reducing local context before the next step..."

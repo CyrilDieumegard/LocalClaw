@@ -689,8 +689,9 @@ final class InstallerEngine: @unchecked Sendable {
 
         let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
 
+        let originalData = FileManager.default.contents(atPath: configPath)
         var config: [String: Any] = [:]
-        if let data = FileManager.default.contents(atPath: configPath),
+        if let data = originalData,
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             config = json
         }
@@ -704,6 +705,12 @@ final class InstallerEngine: @unchecked Sendable {
 
         do {
             let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
+            if let originalData,
+               let original = try? JSONSerialization.jsonObject(with: originalData) as? NSDictionary,
+               let updated = try? JSONSerialization.jsonObject(with: data) as? NSDictionary,
+               original == updated {
+                return StepResult(state: .skip, message: "Model already allowed: \(modelIdentifier)")
+            }
             try data.write(to: URL(fileURLWithPath: configPath), options: .atomic)
             return StepResult(state: .ok, message: "Model allowed: \(modelIdentifier)")
         } catch {
@@ -716,7 +723,9 @@ final class InstallerEngine: @unchecked Sendable {
         var models = updated["models"] as? [String: Any] ?? [:]
         var entry = models[modelIdentifier] as? [String: Any] ?? [:]
         var runtime = entry["agentRuntime"] as? [String: Any] ?? [:]
-        if runtime["id"] == nil {
+        if modelIdentifier.lowercased().hasPrefix("lmstudio/") {
+            runtime["id"] = "openclaw"
+        } else if runtime["id"] == nil {
             runtime["id"] = modelIdentifier.hasPrefix("openai/") ? "codex" : "auto"
         }
         entry["agentRuntime"] = runtime

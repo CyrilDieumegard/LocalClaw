@@ -1692,6 +1692,65 @@ Created job
         #expect(plan.currentStep?.status == .inProgress)
     }
 
+    @Test func localGoalDirectArtifactAcceptsOnlyApprovedWorkspaceFiles() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("localclaw-goal-home-\(UUID().uuidString)", isDirectory: true)
+        let approvedPath = home.appendingPathComponent(".openclaw/workspace/games/sudoku.html").path
+        let outsidePath = home.appendingPathComponent("Desktop/sudoku.html").path
+
+        func plan(path: String) -> GoalExecutionPlan {
+            GoalExecutionPlan(
+                sessionID: "direct-local-goal",
+                objective: "Build Sudoku",
+                output: GoalOutputContract(
+                    type: "Browser game",
+                    format: "HTML",
+                    location: path,
+                    launch: "Open the file",
+                    completionCriteria: ["The game is playable"]
+                ),
+                steps: [
+                    GoalPlanStep(id: "1", title: "Create", outcome: "Complete file", completionCriteria: ["File exists"], status: .inProgress, summary: "", evidence: [], attempts: 0, noProgressTurns: 0),
+                    GoalPlanStep(id: "2", title: "Verify", outcome: "Verified file", completionCriteria: ["File is not empty"], status: .pending, summary: "", evidence: [], attempts: 0, noProgressTurns: 0),
+                ],
+                approvedAt: Date(),
+                createdAt: Date(),
+                updatedAt: Date(),
+                version: 1,
+                lastCheckpointMessageID: nil
+            )
+        }
+
+        #expect(LocalGoalArtifactSupport.destination(for: plan(path: approvedPath), homeDirectory: home.path)?.path == approvedPath)
+        #expect(LocalGoalArtifactSupport.destination(for: plan(path: outsidePath), homeDirectory: home.path) == nil)
+    }
+
+    @Test func localGoalDirectArtifactParsesLMStudioOutputAndRejectsPartialHTML() throws {
+        let payload: [String: Any] = [
+            "output": [[
+                "type": "message",
+                "content": "```html\n<!doctype html><html><body><script>const game = true;</script></body></html>\n```",
+            ]],
+            "stats": ["input_tokens": 120, "total_output_tokens": 240],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let response = try LocalGoalArtifactSupport.parseResponse(data)
+        let artifact = try LocalGoalArtifactSupport.artifactContent(from: response.content, pathExtension: "html")
+
+        #expect(artifact.hasPrefix("<!doctype html>"))
+        #expect(artifact.contains("const game = true"))
+        #expect(response.inputTokens == 120)
+        #expect(response.outputTokens == 240)
+
+        var rejectedPartialHTML = false
+        do {
+            _ = try LocalGoalArtifactSupport.artifactContent(from: "<!doctype html><html><body>", pathExtension: "html")
+        } catch {
+            rejectedPartialHTML = true
+        }
+        #expect(rejectedPartialHTML)
+    }
+
     @Test func goalPlanParserExtractsAnExplicitOutputContract() throws {
         let response = """
         ```json

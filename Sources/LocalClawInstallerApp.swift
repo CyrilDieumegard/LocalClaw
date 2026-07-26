@@ -7855,6 +7855,13 @@ final class InstallerViewModel: ObservableObject {
         chatSessions[sessionIndex].updatedAt = Date()
     }
 
+    func appendGoalStatusMessage(sessionID: String, text: String, metadata: String, modelName: String) {
+        appendChatMessage(
+            ChatMessage(role: "assistant", text: text, metadata: metadata, modelName: modelName),
+            to: sessionID
+        )
+    }
+
     private func appendChatMessage(_ message: ChatMessage, to sessionID: String) {
         guard let index = chatSessions.firstIndex(where: { $0.id == sessionID }) else { return }
         chatSessions[index].messages.append(message)
