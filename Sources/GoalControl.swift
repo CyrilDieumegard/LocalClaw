@@ -300,8 +300,11 @@ final class GoalCenterModel: ObservableObject {
     @Published var isBusy = false
     @Published var showClearConfirmation = false
     @Published var lastRefresh: Date?
+    @Published private(set) var continuousRunEnabled = false
+    @Published private(set) var automaticTurns = 0
 
     private let bridge = OpenClawGoalBridge.shared
+    private var continuousTask: Task<Void, Never>?
 
     static func runtimeSessionID(for chatSessionID: String) -> String {
         let cleaned = chatSessionID.map { character -> Character in
@@ -315,6 +318,9 @@ final class GoalCenterModel: ObservableObject {
     }
 
     func selectSession(_ sessionID: String) async {
+        if sessionID != selectedChatSessionID {
+            stopContinuousRun(message: "Waiting for the next step.")
+        }
         guard !sessionID.isEmpty else {
             selectedChatSessionID = ""
             snapshot = nil
@@ -347,11 +353,151 @@ final class GoalCenterModel: ObservableObject {
         return await perform(action: "edit", objective: trimmed)
     }
 
-    func pause() async { _ = await perform(action: "pause", note: note) }
+    func pause() async {
+        stopContinuousRun(message: "Pausing Goal...")
+        _ = await perform(action: "pause", note: note)
+    }
     func resume() async { _ = await perform(action: "resume", note: note) }
-    func complete() async { _ = await perform(action: "complete", note: note) }
-    func block() async { _ = await perform(action: "block", note: note) }
-    func clear() async { _ = await perform(action: "clear") }
+    func complete() async {
+        stopContinuousRun(message: "Completing Goal...")
+        _ = await perform(action: "complete", note: note)
+    }
+    func block() async {
+        stopContinuousRun(message: "Blocking Goal...")
+        _ = await perform(action: "block", note: note)
+    }
+    func clear() async {
+        stopContinuousRun(message: "Clearing Goal...")
+        _ = await perform(action: "clear")
+    }
+
+    static func shouldContinueAutomatically(
+        enabled: Bool,
+        status: GoalLifecycleStatus?,
+        latestMessageRole: String?
+    ) -> Bool {
+        enabled && status == .active && latestMessageRole != "error"
+    }
+
+    func startContinuousRun(using viewModel: InstallerViewModel, starting: Bool) {
+        guard !selectedChatSessionID.isEmpty,
+              snapshot?.status == .active,
+              !viewModel.chatIsSending else {
+            statusMessage = "The Goal is not ready to run yet."
+            return
+        }
+
+        continuousTask?.cancel()
+        continuousRunEnabled = true
+        automaticTurns = 0
+        let sessionID = selectedChatSessionID
+        statusMessage = "Continuous run started. The model is preparing the next step."
+
+        continuousTask = Task { @MainActor [weak self, weak viewModel] in
+            guard let self, let viewModel else { return }
+            defer {
+                if self.selectedChatSessionID != sessionID {
+                    self.continuousTask = nil
+                    self.continuousRunEnabled = false
+                    self.statusMessage = "Continuous run stopped because the selected discussion changed."
+                }
+            }
+            var isStartingTurn = starting
+
+            while !Task.isCancelled && self.continuousRunEnabled && self.selectedChatSessionID == sessionID {
+                await self.refresh()
+                guard Self.shouldContinueAutomatically(
+                    enabled: self.continuousRunEnabled,
+                    status: self.snapshot?.status,
+                    latestMessageRole: nil
+                ) else {
+                    self.finishContinuousRunForCurrentStatus()
+                    return
+                }
+
+                if viewModel.chatIsSending {
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    continue
+                }
+
+                guard viewModel.goalRuntimeReadiness.canStart else {
+                    self.stopContinuousRun(message: "Continuous run stopped because the selected runtime is not ready.")
+                    return
+                }
+
+                let previousMessageID = viewModel.normalChatSessions
+                    .first(where: { $0.id == sessionID })?
+                    .messages.last?.id
+                self.statusMessage = "The model is working on step \(self.automaticTurns + 1)..."
+                viewModel.sendGoalAdvance(
+                    chatSessionID: sessionID,
+                    runtimeSessionID: Self.runtimeSessionID(for: sessionID),
+                    objective: self.snapshot?.objective ?? self.objective,
+                    starting: isStartingTurn
+                )
+
+                guard viewModel.chatIsSending else {
+                    self.stopContinuousRun(message: "Continuous run could not start the next model request.")
+                    return
+                }
+
+                while viewModel.chatIsSending && !Task.isCancelled && self.continuousRunEnabled {
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                }
+                guard !Task.isCancelled && self.continuousRunEnabled else { return }
+
+                await self.refresh()
+                let latestMessage = viewModel.normalChatSessions
+                    .first(where: { $0.id == sessionID })?
+                    .messages.last
+                let latestRole = latestMessage?.id == previousMessageID ? nil : latestMessage?.role
+                self.automaticTurns += 1
+
+                guard Self.shouldContinueAutomatically(
+                    enabled: self.continuousRunEnabled,
+                    status: self.snapshot?.status,
+                    latestMessageRole: latestRole
+                ) else {
+                    if latestRole == "error" {
+                        self.stopContinuousRun(message: "Continuous run stopped after an error. Review the latest progress, then retry when ready.")
+                    } else {
+                        self.finishContinuousRunForCurrentStatus()
+                    }
+                    return
+                }
+
+                self.statusMessage = "Step \(self.automaticTurns) finished. Continuing automatically..."
+                isStartingTurn = false
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+            }
+        }
+    }
+
+    func stopContinuousRun(message: String = "Continuous run stopped. The Goal remains active.") {
+        continuousTask?.cancel()
+        continuousTask = nil
+        continuousRunEnabled = false
+        statusMessage = message
+    }
+
+    private func finishContinuousRunForCurrentStatus() {
+        continuousTask = nil
+        continuousRunEnabled = false
+        switch snapshot?.status {
+        case .complete:
+            statusMessage = "Goal complete."
+        case .blocked:
+            statusMessage = "Continuous run stopped because the Goal is blocked."
+        case .paused:
+            statusMessage = "Goal paused."
+        case .usageLimited:
+            statusMessage = "Continuous run stopped at the usage limit."
+        case .budgetLimited:
+            statusMessage = "Continuous run stopped at the token budget."
+        default:
+            statusMessage = "Waiting for the next step."
+        }
+    }
 
     @discardableResult
     private func perform(action: String, objective: String? = nil, note: String? = nil) async -> Bool {

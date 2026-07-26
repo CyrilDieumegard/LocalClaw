@@ -313,7 +313,7 @@ struct GoalCenterView: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
 
             HStack(spacing: 12) {
-                Label("Runs only when started or continued", systemImage: "hand.tap")
+                Label("Runs continuously until complete, blocked, paused, or an error occurs", systemImage: "repeat")
                     .font(AppFont.body(11))
                     .foregroundStyle(UI.muted)
                 Label("Use Cron Jobs for schedules", systemImage: "calendar.badge.clock")
@@ -323,16 +323,11 @@ struct GoalCenterView: View {
                 Button {
                     Task {
                         if await goal.start() {
-                            vm.sendGoalAdvance(
-                                chatSessionID: goal.selectedChatSessionID,
-                                runtimeSessionID: GoalCenterModel.runtimeSessionID(for: goal.selectedChatSessionID),
-                                objective: goal.snapshot?.objective ?? goal.objective,
-                                starting: true
-                            )
+                            goal.startContinuousRun(using: vm, starting: true)
                         }
                     }
                 } label: {
-                    Label("Start Goal", systemImage: "play.fill")
+                    Label("Start Continuous Goal", systemImage: "play.fill")
                 }
                 .buttonStyle(CTAButton(primary: true))
                 .disabled(!readiness.canStart || goal.isBusy || vm.chatIsSending || goal.objective.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -350,9 +345,17 @@ struct GoalCenterView: View {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
-                        Label(snapshot.status.label, systemImage: statusIcon(snapshot.status))
-                            .font(AppFont.bodySemi(12))
-                            .foregroundStyle(statusColor(snapshot.status))
+                        if vm.chatIsSending && goal.continuousRunEnabled {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Working now")
+                                .font(AppFont.bodySemi(12))
+                                .foregroundStyle(Color(NSColor.systemGreen))
+                        } else {
+                            Label(goalStatusLabel(snapshot), systemImage: statusIcon(snapshot.status))
+                                .font(AppFont.bodySemi(12))
+                                .foregroundStyle(statusColor(snapshot.status))
+                        }
                         Text("\(snapshot.tokensUsed.formatted()) tokens")
                             .font(AppFont.bodySemi(10))
                             .foregroundStyle(UI.muted)
@@ -390,21 +393,41 @@ struct GoalCenterView: View {
 
             HStack(spacing: 10) {
                 if snapshot.status == .active {
-                    Button {
-                        vm.sendGoalAdvance(
-                            chatSessionID: goal.selectedChatSessionID,
-                            runtimeSessionID: GoalCenterModel.runtimeSessionID(for: goal.selectedChatSessionID),
-                            objective: snapshot.objective,
-                            starting: false
+                    if goal.continuousRunEnabled {
+                        Label(
+                            vm.chatIsSending ? "Model working" : "Continuing automatically",
+                            systemImage: vm.chatIsSending ? "sparkles" : "repeat"
                         )
-                    } label: {
-                        Label("Continue", systemImage: "arrow.right.circle.fill")
+                        .font(AppFont.bodySemi(12))
+                        .foregroundStyle(Color(NSColor.systemGreen))
+                        .padding(.horizontal, 12)
+                        .frame(height: 34)
+                        .background(RoundedRectangle(cornerRadius: 7).fill(Color(NSColor.systemGreen).opacity(0.10)))
+                    } else {
+                        Button {
+                            goal.startContinuousRun(using: vm, starting: false)
+                        } label: {
+                            Label("Run continuously", systemImage: "repeat")
+                        }
+                        .buttonStyle(CTAButton(primary: true))
+                        .disabled(goal.isBusy || vm.chatIsSending || !readiness.canStart)
+
+                        Button {
+                            vm.sendGoalAdvance(
+                                chatSessionID: goal.selectedChatSessionID,
+                                runtimeSessionID: GoalCenterModel.runtimeSessionID(for: goal.selectedChatSessionID),
+                                objective: snapshot.objective,
+                                starting: false
+                            )
+                        } label: {
+                            Label("Run one step", systemImage: "forward.frame.fill")
+                        }
+                        .buttonStyle(CompactChatButton(primary: false))
+                        .disabled(goal.isBusy || vm.chatIsSending || !readiness.canStart)
                     }
-                    .buttonStyle(CTAButton(primary: true))
-                    .disabled(goal.isBusy || vm.chatIsSending || !readiness.canStart)
 
                     Button { Task { await goal.pause() } } label: {
-                        Label("Pause", systemImage: "pause.fill")
+                        Label(goal.continuousRunEnabled ? "Stop & Pause" : "Pause", systemImage: "pause.fill")
                     }
                     .buttonStyle(CompactChatButton(primary: false))
                     .disabled(goal.isBusy)
@@ -413,15 +436,10 @@ struct GoalCenterView: View {
                         Task {
                             await goal.resume()
                             guard goal.snapshot?.status == .active else { return }
-                            vm.sendGoalAdvance(
-                                chatSessionID: goal.selectedChatSessionID,
-                                runtimeSessionID: GoalCenterModel.runtimeSessionID(for: goal.selectedChatSessionID),
-                                objective: snapshot.objective,
-                                starting: false
-                            )
+                            goal.startContinuousRun(using: vm, starting: false)
                         }
                     } label: {
-                        Label("Resume & Continue", systemImage: "play.fill")
+                        Label("Resume continuously", systemImage: "play.fill")
                     }
                     .buttonStyle(CTAButton(primary: true))
                     .disabled(goal.isBusy || vm.chatIsSending || !readiness.canStart)
@@ -458,9 +476,16 @@ struct GoalCenterView: View {
         if let latestResult {
             VStack(alignment: .leading, spacing: 9) {
                 HStack {
-                    Label("Latest progress", systemImage: "text.bubble")
+                    Label(
+                        vm.chatIsSending && goal.continuousRunEnabled ? "Model is working now" : "Latest progress",
+                        systemImage: vm.chatIsSending && goal.continuousRunEnabled ? "sparkles" : "text.bubble"
+                    )
                         .font(AppFont.bodySemi(13))
                         .foregroundStyle(UI.text)
+                    if vm.chatIsSending && goal.continuousRunEnabled {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
                     Spacer()
                     Button("Open discussion") { vm.screen = .chat }
                         .buttonStyle(CompactChatButton(primary: false))
@@ -509,6 +534,12 @@ struct GoalCenterView: View {
         case .blocked, .usageLimited, .budgetLimited: return "exclamationmark.octagon.fill"
         case .complete: return "checkmark.seal.fill"
         }
+    }
+
+    private func goalStatusLabel(_ snapshot: OpenClawGoalSnapshot) -> String {
+        guard snapshot.status == .active else { return snapshot.status.label }
+        if goal.continuousRunEnabled { return "Continuing automatically" }
+        return "Waiting"
     }
 
     private func statusColor(_ status: GoalLifecycleStatus) -> Color {

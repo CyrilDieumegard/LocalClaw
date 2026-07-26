@@ -14418,8 +14418,8 @@ struct ContentView: View {
                 active: false,
                 help: "Open Goals"
             ) {
-                goalCenter.selectedChatSessionID = vm.activeChatSessionID
                 vm.screen = .goals
+                Task { await goalCenter.selectSession(vm.activeChatSessionID) }
             }
             chatToolsMenu
             chatHeaderIconButton(

@@ -1447,6 +1447,39 @@ Created job
         #expect(GoalCenterModel.openClawSessionKey(for: chatID) == "agent:main:explicit:\(first)")
     }
 
+    @Test @MainActor func continuousGoalRunsOnlyWhileActiveAndHealthy() {
+        #expect(GoalCenterModel.shouldContinueAutomatically(
+            enabled: true,
+            status: .active,
+            latestMessageRole: "assistant"
+        ))
+        #expect(!GoalCenterModel.shouldContinueAutomatically(
+            enabled: true,
+            status: .active,
+            latestMessageRole: "error"
+        ))
+        #expect(!GoalCenterModel.shouldContinueAutomatically(
+            enabled: true,
+            status: .complete,
+            latestMessageRole: "assistant"
+        ))
+        #expect(!GoalCenterModel.shouldContinueAutomatically(
+            enabled: true,
+            status: .blocked,
+            latestMessageRole: nil
+        ))
+        #expect(!GoalCenterModel.shouldContinueAutomatically(
+            enabled: true,
+            status: .paused,
+            latestMessageRole: nil
+        ))
+        #expect(!GoalCenterModel.shouldContinueAutomatically(
+            enabled: false,
+            status: .active,
+            latestMessageRole: "assistant"
+        ))
+    }
+
     @Test func goalModelIdentityMatchesLMStudioQuantVariants() {
         #expect(GoalModelIdentity.matches("lmstudio/nvidia/nemotron-3-nano-4b@q4_k_m", "nvidia/nemotron-3-nano-4b"))
         #expect(!GoalModelIdentity.matches("google/gemma-4-e2b", "qwen/qwen3.5-4b"))
