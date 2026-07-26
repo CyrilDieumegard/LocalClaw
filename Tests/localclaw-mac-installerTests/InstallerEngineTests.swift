@@ -1526,6 +1526,7 @@ Created job
             version: 1,
             lastCheckpointMessageID: nil
         )
+        #expect(plan.isReadyForApproval)
         plan.prepareForApproval()
         let prompt = GoalWorkPrompt.make(plan: plan, starting: false)
 
@@ -1579,9 +1580,38 @@ Created job
     @Test func goalPlanningPromptRejectsManualBlockingChecks() {
         let prompt = GoalPlanPrompt.make(objective: "Build a game", outputHint: "Playable browser game")
 
+        #expect(prompt.contains("Use 2 to 8 meaningful steps"))
         #expect(prompt.contains("Never make manual user input"))
         #expect(prompt.contains("deterministic automated smoke tests"))
         #expect(prompt.contains("concrete absolute destination"))
+    }
+
+    @Test func goalApprovalExplainsWhenAPlanHasTooFewSteps() throws {
+        var plan = try #require(GoalPlanParser.parse(
+            """
+            {"output":{"type":"HTML game","format":"HTML","location":"/tmp/pong.html","launch":"Open file","completionCriteria":["Game is playable"]},"steps":[{"title":"Build Pong","outcome":"Playable game","completionCriteria":["File exists"]}]}
+            """,
+            sessionID: "pong-plan",
+            objective: "Build Pong"
+        ))
+
+        #expect(!plan.isReadyForApproval)
+        #expect(plan.approvalIssue == "Add at least two concrete plan steps before approval.")
+
+        plan.steps.append(GoalPlanStep(
+            id: "step-2",
+            title: "Verify Pong",
+            outcome: "A tested game",
+            completionCriteria: ["Output exists on disk"],
+            status: .pending,
+            summary: "",
+            evidence: [],
+            attempts: 0,
+            noProgressTurns: 0
+        ))
+
+        #expect(plan.isReadyForApproval)
+        #expect(plan.approvalIssue == nil)
     }
 
     @Test func goalCompletionRequiresTheRealOutputOnDisk() throws {

@@ -154,9 +154,15 @@ struct GoalExecutionPlan: Codable, Equatable, Sendable {
     var lastCheckpointMessageID: UUID?
 
     var isApproved: Bool { approvedAt != nil }
-    var isReadyForApproval: Bool {
-        !objective.trimmed.isEmpty && output.isDefined && (3...8).contains(steps.count) && steps.allSatisfy(\.isDefined)
+    var approvalIssue: String? {
+        if objective.trimmed.isEmpty { return "Describe the Goal before approval." }
+        if !output.isDefined { return "Complete every expected output field before approval." }
+        if steps.count < 2 { return "Add at least two concrete plan steps before approval." }
+        if steps.count > 8 { return "Keep the plan to eight steps or fewer." }
+        if !steps.allSatisfy(\.isDefined) { return "Complete the outcome and definition of done for every step." }
+        return nil
     }
+    var isReadyForApproval: Bool { approvalIssue == nil }
     var completedStepCount: Int { steps.filter { $0.status == .complete }.count }
     var currentStepIndex: Int? {
         steps.firstIndex { $0.status == .inProgress } ??
@@ -283,7 +289,7 @@ enum GoalPlanPrompt {
           ]
         }
 
-        Use 3 to 8 meaningful steps. The output contract must make it unambiguous what files or result the user receives and how completion is verified. Use a concrete absolute destination inside the user's workspace when the output is a file or folder.
+        Use 2 to 8 meaningful steps. Prefer 2 or 3 steps for a small, focused deliverable. The output contract must make it unambiguous what files or result the user receives and how completion is verified. Use a concrete absolute destination inside the user's workspace when the output is a file or folder.
 
         Every step must be verifiable with local files, commands, tests, or other tools available to the agent. Never make manual user input, browser clicking, visual inspection, or unavailable UI automation a blocking completion criterion. For an interactive app or game, require deterministic automated smoke tests or static checks; a manual playthrough may be mentioned only as an optional handoff check after the automated criteria pass.
 
@@ -891,7 +897,7 @@ final class GoalCenterModel: ObservableObject {
     }
 
     func removeDraftStep(id: String) {
-        guard var plan, !plan.isApproved, plan.steps.count > 3 else { return }
+        guard var plan, !plan.isApproved, plan.steps.count > 2 else { return }
         plan.steps.removeAll { $0.id == id }
         updateDraftPlan(plan)
     }

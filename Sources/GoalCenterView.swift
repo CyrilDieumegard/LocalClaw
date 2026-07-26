@@ -493,7 +493,7 @@ struct GoalCenterView: View {
                             Button { goal.moveDraftStep(id: step.id, offset: 1) } label: { Image(systemName: "chevron.down") }
                                 .buttonStyle(.plain).disabled(index == plan.steps.count - 1).help("Move down")
                             Button { goal.removeDraftStep(id: step.id) } label: { Image(systemName: "trash") }
-                                .buttonStyle(.plain).disabled(plan.steps.count <= 3).help("Remove step")
+                                .buttonStyle(.plain).disabled(plan.steps.count <= 2).help("Remove step")
                         }
                         .foregroundStyle(UI.muted)
                     }
@@ -504,9 +504,15 @@ struct GoalCenterView: View {
             }
 
             HStack(spacing: 12) {
-                Label("The plan is saved and can be resumed after an interruption", systemImage: "externaldrive.badge.checkmark")
-                    .font(AppFont.body(11))
-                    .foregroundStyle(UI.muted)
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("The plan is saved and can be resumed after an interruption", systemImage: "externaldrive.badge.checkmark")
+                        .foregroundStyle(UI.muted)
+                    if let issue = plan.approvalIssue {
+                        Label(issue, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(Color(NSColor.systemOrange))
+                    }
+                }
+                .font(AppFont.body(11))
                 Spacer()
                 Button {
                     goal.plan = nil
