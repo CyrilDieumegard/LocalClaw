@@ -424,6 +424,12 @@ enum GoalPlanStore {
             UserDefaults.standard.set(encoded, forKey: defaultsKey)
         }
     }
+
+    static func sessionIDsByMostRecentUpdate() -> [String] {
+        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
+              let plans = try? JSONDecoder().decode([String: GoalExecutionPlan].self, from: data) else { return [] }
+        return plans.values.sorted { $0.updatedAt > $1.updatedAt }.map(\.sessionID)
+    }
 }
 
 enum GoalReadinessLevel: String, Equatable, Sendable {
@@ -994,13 +1000,18 @@ actor OpenClawGoalBridge {
 
 @MainActor
 final class GoalCenterModel: ObservableObject {
-    @Published var selectedChatSessionID = ""
+    private static let selectedSessionDefaultsKey = "localclaw.goal.selectedSessionID"
+
+    @Published var selectedChatSessionID = UserDefaults.standard.string(forKey: GoalCenterModel.selectedSessionDefaultsKey) ?? "" {
+        didSet { UserDefaults.standard.set(selectedChatSessionID, forKey: Self.selectedSessionDefaultsKey) }
+    }
+    @Published var projectName = ""
     @Published var objective = ""
     @Published var outputHint = ""
     @Published var note = ""
     @Published var snapshot: OpenClawGoalSnapshot?
     @Published var plan: GoalExecutionPlan?
-    @Published var statusMessage = "Choose a discussion to create a durable objective."
+    @Published var statusMessage = "Name the project and describe the result you want."
     @Published var isBusy = false
     @Published var isGeneratingPlan = false
     @Published var showClearConfirmation = false
@@ -1026,7 +1037,7 @@ final class GoalCenterModel: ObservableObject {
         "agent:main:explicit:\(runtimeSessionID(for: chatSessionID))"
     }
 
-    func selectSession(_ sessionID: String) async {
+    func selectSession(_ sessionID: String, projectName: String? = nil) async {
         if sessionID != selectedChatSessionID {
             stopContinuousRun(message: "Waiting for the next step.")
         }
@@ -1037,6 +1048,9 @@ final class GoalCenterModel: ObservableObject {
             return
         }
         selectedChatSessionID = sessionID
+        if let projectName, !projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            self.projectName = projectName
+        }
         var loadedPlan = GoalPlanStore.load(sessionID: sessionID)
         let outputRecovery = loadedPlan?.reopenFinalStepWhenOutputIsMissing()
         if let loadedPlan, outputRecovery != nil {
@@ -1050,6 +1064,18 @@ final class GoalCenterModel: ObservableObject {
         } else if let plan, plan.isApproved, plan.currentStep?.status == .inProgress, snapshot?.status == .active {
             statusMessage = "Goal interrupted during \(plan.currentStep?.title ?? "the current step"). Resume when ready."
         }
+    }
+
+    func beginNewGoal() {
+        stopContinuousRun(message: "Name the project and describe the result you want.")
+        selectedChatSessionID = ""
+        projectName = ""
+        objective = ""
+        outputHint = ""
+        note = ""
+        snapshot = nil
+        plan = nil
+        statusMessage = "Name the project and describe the result you want."
     }
 
     func refresh() async {
@@ -1068,9 +1094,18 @@ final class GoalCenterModel: ObservableObject {
 
     func generatePlan(using viewModel: InstallerViewModel) {
         let trimmedObjective = objective.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedObjective.isEmpty, !selectedChatSessionID.isEmpty else {
+        guard !trimmedObjective.isEmpty else {
             statusMessage = "Describe the result you want first."
             return
+        }
+        if selectedChatSessionID.isEmpty {
+            let trimmedProjectName = projectName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedProjectName.isEmpty else {
+                statusMessage = "Name this Goal project first."
+                return
+            }
+            selectedChatSessionID = viewModel.createGoalDiscussion(projectName: trimmedProjectName)
+            projectName = trimmedProjectName
         }
         guard !viewModel.chatIsSending, !isGeneratingPlan else { return }
 
@@ -1290,6 +1325,8 @@ final class GoalCenterModel: ObservableObject {
         stopContinuousRun(message: "Clearing Goal...")
         _ = await perform(action: "clear")
         GoalPlanStore.remove(sessionID: selectedChatSessionID)
+        selectedChatSessionID = ""
+        projectName = ""
         plan = nil
         objective = ""
         outputHint = ""

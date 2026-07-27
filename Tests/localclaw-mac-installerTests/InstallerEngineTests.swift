@@ -725,6 +725,21 @@ struct InstallerEngineTests {
     }
 
     @MainActor
+    @Test func creatingAGoalCreatesItsOwnNamedDiscussion() {
+        let vm = InstallerViewModel()
+        vm.chatSessions = []
+        vm.inferenceMode = .local
+
+        let sessionID = vm.createGoalDiscussion(projectName: "  Coastal Speed Level  ")
+        let session = vm.normalChatSessions.first { $0.id == sessionID }
+
+        #expect(vm.selectedChatSessionID == sessionID)
+        #expect(session?.title == "Coastal Speed Level")
+        #expect(session?.subtitle == "Goal · Local LLM")
+        #expect(session?.messages.first?.role == "assistant")
+    }
+
+    @MainActor
     @Test func projectMemoryIsIsolatedBetweenProjects() {
         let vm = InstallerViewModel()
         let projectA = InstallerViewModel.ChatProject.fresh(index: 1)

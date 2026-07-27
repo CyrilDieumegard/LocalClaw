@@ -125,6 +125,11 @@ struct GoalCenterView: View {
         vm.normalChatSessions.first { $0.id == goal.selectedChatSessionID }
     }
 
+    private var existingGoalSessions: [InstallerViewModel.ChatSession] {
+        let sessionsByID = Dictionary(uniqueKeysWithValues: vm.normalChatSessions.map { ($0.id, $0) })
+        return GoalPlanStore.sessionIDsByMostRecentUpdate().compactMap { sessionsByID[$0] }
+    }
+
     private var latestResult: InstallerViewModel.ChatMessage? {
         selectedSession?.messages.last { $0.role == "assistant" || $0.role == "error" }
     }
@@ -156,10 +161,12 @@ struct GoalCenterView: View {
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(UI.lineSoft, lineWidth: 1))
         .task {
             vm.refreshRuntimeSnapshot()
-            if goal.selectedChatSessionID.isEmpty {
-                await goal.selectSession(vm.activeChatSessionID)
+            if !goal.selectedChatSessionID.isEmpty,
+               let session = vm.normalChatSessions.first(where: { $0.id == goal.selectedChatSessionID }),
+               GoalPlanStore.load(sessionID: session.id) != nil {
+                await goal.selectSession(session.id, projectName: session.title)
             } else {
-                await goal.refresh()
+                goal.beginNewGoal()
             }
             await goal.reconcileLatestCheckpoint(using: vm)
         }
@@ -193,33 +200,51 @@ struct GoalCenterView: View {
 
             Spacer()
 
+            if !existingGoalSessions.isEmpty {
+                Menu {
+                    ForEach(existingGoalSessions) { session in
+                        Button(session.title) {
+                            Task { await goal.selectSession(session.id, projectName: session.title) }
+                        }
+                    }
+                } label: {
+                    Label("Open Existing Goal", systemImage: "clock.arrow.circlepath")
+                }
+                .buttonStyle(CompactChatButton(primary: false))
+                .disabled(vm.chatIsSending || goal.isGeneratingPlan || goal.continuousRunEnabled)
+            }
+
+            Button {
+                goal.beginNewGoal()
+            } label: {
+                Label("New Goal", systemImage: "plus")
+            }
+            .buttonStyle(CompactChatButton(primary: goal.selectedChatSessionID.isEmpty))
+            .disabled(vm.chatIsSending || goal.isGeneratingPlan || goal.continuousRunEnabled)
+
             Button {
                 Task { await goal.refresh() }
             } label: {
                 Label(goal.isBusy ? "Checking" : "Refresh", systemImage: "arrow.clockwise")
             }
             .buttonStyle(CompactChatButton(primary: false))
-            .disabled(goal.isBusy)
+            .disabled(goal.isBusy || goal.selectedChatSessionID.isEmpty)
         }
     }
 
     private var workspaceAndRuntime: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .bottom, spacing: 14) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Discussion")
-                        .font(AppFont.bodySemi(12))
-                        .foregroundStyle(UI.muted)
-                    Picker("Discussion", selection: $goal.selectedChatSessionID) {
-                        ForEach(vm.normalChatSessions) { session in
-                            Text(session.title).tag(session.id)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(minWidth: 260, maxWidth: .infinity)
-                    .disabled(vm.chatIsSending || goal.isGeneratingPlan || goal.continuousRunEnabled)
-                    .onChange(of: goal.selectedChatSessionID) { sessionID in
-                        Task { await goal.selectSession(sessionID) }
+                if let selectedSession {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Goal project")
+                            .font(AppFont.bodySemi(12))
+                            .foregroundStyle(UI.muted)
+                        Label(selectedSession.title, systemImage: "target")
+                            .font(AppFont.bodySemi(13))
+                            .foregroundStyle(UI.text)
+                            .lineLimit(1)
+                            .frame(minWidth: 240, maxWidth: .infinity, minHeight: 30, alignment: .leading)
                     }
                 }
 
@@ -238,6 +263,7 @@ struct GoalCenterView: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
                     .frame(width: 260)
+                    .disabled(goal.continuousRunEnabled)
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
@@ -251,6 +277,7 @@ struct GoalCenterView: View {
                     }
                     .labelsHidden()
                     .frame(minWidth: 300, maxWidth: .infinity)
+                    .disabled(goal.continuousRunEnabled)
                     .onChange(of: vm.selectedChatModel) { _ in
                         vm.handleChatModelSelectionChanged(useDeveloperSession: false)
                     }
@@ -303,15 +330,31 @@ struct GoalCenterView: View {
                     Text("New goal")
                         .font(AppFont.heading(19))
                         .foregroundStyle(UI.text)
-                    Text("Describe the result, not every individual step.")
+                    Text("Name the project and describe the result. LocalClaw creates its discussion automatically.")
                         .font(AppFont.body(11))
                         .foregroundStyle(UI.muted)
                 }
                 Spacer()
-                Text("1 objective per discussion")
+                Text("1 Goal · 1 dedicated discussion")
                     .font(AppFont.bodySemi(10))
                     .foregroundStyle(UI.muted)
             }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Project name")
+                    .font(AppFont.bodySemi(12))
+                    .foregroundStyle(UI.muted)
+                TextField("For example: Coastal Speed Level", text: $goal.projectName)
+                    .textFieldStyle(.plain)
+                    .font(AppFont.body(13))
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+            }
+
+            Text("Goal objective")
+                .font(AppFont.bodySemi(12))
+                .foregroundStyle(UI.muted)
 
             TextEditor(text: $goal.objective)
                 .font(AppFont.body(14))
@@ -348,7 +391,14 @@ struct GoalCenterView: View {
                     Label(goal.isGeneratingPlan ? "Generating Plan" : "Generate Output & Plan", systemImage: "wand.and.stars")
                 }
                 .buttonStyle(CTAButton(primary: true))
-                .disabled(!readiness.canStart || goal.isBusy || goal.isGeneratingPlan || vm.chatIsSending || goal.objective.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(
+                    !readiness.canStart ||
+                    goal.isBusy ||
+                    goal.isGeneratingPlan ||
+                    vm.chatIsSending ||
+                    goal.projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                    goal.objective.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
             }
 
             statusText

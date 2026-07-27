@@ -7229,6 +7229,19 @@ final class InstallerViewModel: ObservableObject {
         chatStatus = "Ready"
     }
 
+    @discardableResult
+    func createGoalDiscussion(projectName: String) -> String {
+        let trimmed = projectName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = String((trimmed.isEmpty ? "New Goal" : trimmed).prefix(60))
+        var session = ChatSession.fresh(title: title)
+        session.subtitle = "Goal · \(openClawChatModeLabel)"
+        chatSessions.insert(session, at: 0)
+        selectedChatSessionID = session.id
+        chatInput = ""
+        chatStatus = "Ready"
+        return session.id
+    }
+
     func newChatProject() {
         let project = ChatProject.fresh(index: chatProjects.count + 1)
         chatProjects.append(project)
