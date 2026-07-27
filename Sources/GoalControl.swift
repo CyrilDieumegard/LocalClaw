@@ -1065,7 +1065,7 @@ final class GoalCenterModel: ObservableObject {
         "\(runtimeSessionID(for: chatSessionID))-plan-\(String(nonce.prefix(12)))"
     }
 
-    static func localWorkRuntimeSessionID(chatSessionID: String, stepID: String, turn: Int) -> String {
+    static func workRuntimeSessionID(chatSessionID: String, stepID: String, turn: Int) -> String {
         let cleanedStep = stepID.map { character -> Character in
             character.isLetter || character.isNumber || character == "-" ? character : "-"
         }
@@ -1190,7 +1190,7 @@ final class GoalCenterModel: ObservableObject {
             }
             self.plan = proposal
             GoalPlanStore.save(proposal)
-            viewModel.removeGoalPlanningMessage(sessionID: sessionID, messageID: latest.id)
+            viewModel.removeGoalMessage(sessionID: sessionID, messageID: latest.id)
             self.isGeneratingPlan = false
             self.statusMessage = proposal.isReadyForApproval
                 ? "Review the output and plan before starting."
@@ -1549,9 +1549,9 @@ final class GoalCenterModel: ObservableObject {
                         break
                     }
                 }
-                if localExecution {
-                    self.statusMessage = "Starting this step with a fresh local context..."
-                }
+                self.statusMessage = localExecution
+                    ? "Starting this step with a fresh local context..."
+                    : "Starting this step with a fresh model context..."
                 let previousMessageID = viewModel.normalChatSessions
                     .first(where: { $0.id == sessionID })?
                     .messages.last?.id
@@ -1559,13 +1559,11 @@ final class GoalCenterModel: ObservableObject {
                 self.statusMessage = "Working on Step \(stepNumber) of \(currentPlan.steps.count): \(currentPlan.currentStep?.title ?? "Current step")"
                 viewModel.sendGoalAdvance(
                     chatSessionID: sessionID,
-                    runtimeSessionID: localExecution
-                        ? Self.localWorkRuntimeSessionID(
-                            chatSessionID: sessionID,
-                            stepID: currentPlan.currentStep?.id ?? "step",
-                            turn: self.automaticTurns
-                        )
-                        : Self.runtimeSessionID(for: sessionID),
+                    runtimeSessionID: Self.workRuntimeSessionID(
+                        chatSessionID: sessionID,
+                        stepID: currentPlan.currentStep?.id ?? "step",
+                        turn: self.automaticTurns
+                    ),
                     plan: currentPlan,
                     starting: isStartingTurn
                 )
@@ -1588,26 +1586,21 @@ final class GoalCenterModel: ObservableObject {
                 self.automaticTurns += 1
 
                 if latestRole == "error", let latestMessage,
-                   localExecution,
-                   (GoalSessionMaintenance.isTimeoutMessage(latestMessage.text) ||
-                    GoalSessionMaintenance.isContextOverflowMessage(latestMessage.text)) {
+                   GoalSessionMaintenance.isTimeoutMessage(latestMessage.text) ||
+                    GoalSessionMaintenance.isContextOverflowMessage(latestMessage.text) {
                     consecutiveTimeouts += 1
                     if consecutiveTimeouts == 1 {
-                        viewModel.replaceGoalMessageText(
-                            sessionID: sessionID,
-                            messageID: latestMessage.id,
-                            text: "The local model exceeded the time or context available for this turn. LocalClaw will retry once in a fresh step session using the saved workspace."
-                        )
-                        self.statusMessage = "Local model limit detected. Retrying once with a fresh step context..."
+                        viewModel.removeGoalMessage(sessionID: sessionID, messageID: latestMessage.id)
+                        self.statusMessage = "The model reached a run limit. Retrying once with a fresh step context and the saved workspace..."
                         isStartingTurn = false
                         continue
                     }
                     viewModel.replaceGoalMessageText(
                         sessionID: sessionID,
                         messageID: latestMessage.id,
-                        text: "The local model timed out twice on the same Goal step. LocalClaw paused safely without deleting project files. Choose the recommended local model or switch runtime before resuming."
+                        text: "The selected model reached its run limit twice on the same Goal step. LocalClaw paused safely without deleting project files. Choose another model or runtime before resuming."
                     )
-                    await self.pauseForSafety("This local model timed out twice on the current step. Project files are preserved; choose the recommended model or another runtime before resuming.")
+                    await self.pauseForSafety("This model reached its run limit twice on the current step. Project files are preserved; choose another model or runtime before resuming.")
                     return
                 }
 

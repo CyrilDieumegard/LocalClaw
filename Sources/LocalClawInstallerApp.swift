@@ -7826,7 +7826,8 @@ final class InstallerViewModel: ObservableObject {
             useDeveloperSession: false,
             inputOverride: GoalPlanPrompt.make(objective: objective, outputHint: outputHint),
             appendVisibleUserMessage: false,
-            runtimeSessionIDOverride: GoalCenterModel.planningRuntimeSessionID(for: chatSessionID)
+            runtimeSessionIDOverride: GoalCenterModel.planningRuntimeSessionID(for: chatSessionID),
+            agentTimeoutOverride: Self.goalAgentTimeoutSeconds
         )
     }
 
@@ -7841,11 +7842,12 @@ final class InstallerViewModel: ObservableObject {
             useDeveloperSession: false,
             inputOverride: GoalWorkPrompt.make(plan: plan, starting: starting),
             appendVisibleUserMessage: false,
-            runtimeSessionIDOverride: runtimeSessionID
+            runtimeSessionIDOverride: runtimeSessionID,
+            agentTimeoutOverride: Self.goalAgentTimeoutSeconds
         )
     }
 
-    func removeGoalPlanningMessage(sessionID: String, messageID: UUID) {
+    func removeGoalMessage(sessionID: String, messageID: UUID) {
         guard let index = chatSessions.firstIndex(where: { $0.id == sessionID }) else { return }
         chatSessions[index].messages.removeAll { $0.id == messageID }
         chatSessions[index].updatedAt = Date()
@@ -7887,7 +7889,8 @@ final class InstallerViewModel: ObservableObject {
         inputOverride: String? = nil,
         imagePathOverride: String? = nil,
         appendVisibleUserMessage: Bool = true,
-        runtimeSessionIDOverride: String? = nil
+        runtimeSessionIDOverride: String? = nil,
+        agentTimeoutOverride: Int? = nil
     ) {
         let rawInput = inputOverride ?? (useDeveloperSession ? developerInput : chatInput)
         let rawImagePath = imagePathOverride ?? (useDeveloperSession ? developerImagePath : chatImagePath)
@@ -8042,7 +8045,10 @@ final class InstallerViewModel: ObservableObject {
             responseMode: selectedChatResponseMode,
             isSimpleDeveloperEdit: isSimpleDeveloperEdit
         )
-        let agentTimeout = isSimpleDeveloperEdit ? Self.simpleDeveloperEditTimeoutSeconds : Self.agentTimeoutSeconds(for: selectedChatResponseMode, useDeveloperSession: useDeveloperSession)
+        let agentTimeout = agentTimeoutOverride
+            ?? (isSimpleDeveloperEdit
+                ? Self.simpleDeveloperEditTimeoutSeconds
+                : Self.agentTimeoutSeconds(for: selectedChatResponseMode, useDeveloperSession: useDeveloperSession))
         let wallClockTimeout = Self.wallClockTimeoutSeconds(forAgentTimeout: agentTimeout)
         let activityModelName = availableChatModels.first(where: { $0.id == selectedModelForRequest || $0.id == modelOverride })?.displayName
             ?? (selectedModelForRequest.isEmpty ? openClawChatModelLabel : selectedModelForRequest)
@@ -8870,6 +8876,8 @@ final class InstallerViewModel: ObservableObject {
             return 420
         }
     }
+
+    nonisolated static let goalAgentTimeoutSeconds = 840
 
     nonisolated static func wallClockTimeoutSeconds(forAgentTimeout timeout: Int) -> Int {
         min(max(timeout + 120, 90), 900)
@@ -14108,9 +14116,12 @@ struct ContentView: View {
     @ViewBuilder
     private func chatRecoveryContent(_ message: InstallerViewModel.ChatMessage, useDeveloperSession: Bool) -> some View {
         if let plan = vm.chatRecoveryPlan(for: message) {
-            let primaryActionLabel = useDeveloperSession && plan.kind == .timeout
-                ? "Continue Safely"
-                : plan.primaryActionLabel
+            let isGoalRecovery = !useDeveloperSession &&
+                plan.kind == .timeout &&
+                GoalPlanStore.load(sessionID: vm.activeChatSessionID) != nil
+            let primaryActionLabel = isGoalRecovery
+                ? "Resume Goal"
+                : (useDeveloperSession && plan.kind == .timeout ? "Continue Safely" : plan.primaryActionLabel)
             VStack(alignment: .leading, spacing: 10) {
                 Label(plan.title, systemImage: plan.systemImage)
                     .font(AppFont.bodySemi(14))
@@ -14122,7 +14133,19 @@ struct ContentView: View {
 
                 HStack(spacing: 8) {
                     Button {
-                        vm.performChatRecovery(for: message, useDeveloperSession: useDeveloperSession)
+                        if isGoalRecovery {
+                            let sessionID = vm.activeChatSessionID
+                            vm.removeGoalMessage(sessionID: sessionID, messageID: message.id)
+                            vm.screen = .goals
+                            Task {
+                                await goalCenter.selectSession(sessionID)
+                                if await goalCenter.resumeForExecution(using: vm) {
+                                    goalCenter.startContinuousRun(using: vm, starting: false)
+                                }
+                            }
+                        } else {
+                            vm.performChatRecovery(for: message, useDeveloperSession: useDeveloperSession)
+                        }
                     } label: {
                         if vm.chatRecoveryIsRunning(for: message) {
                             HStack(spacing: 7) {

@@ -582,6 +582,7 @@ struct InstallerEngineTests {
         #expect(InstallerViewModel.agentTimeoutSeconds(for: .fast, useDeveloperSession: true) == 180)
         #expect(InstallerViewModel.agentTimeoutSeconds(for: .cloud, useDeveloperSession: true) == 840)
         #expect(InstallerViewModel.agentTimeoutSeconds(for: .deep, useDeveloperSession: true) == 840)
+        #expect(InstallerViewModel.goalAgentTimeoutSeconds == 840)
         #expect(InstallerViewModel.wallClockTimeoutSeconds(forAgentTimeout: 840) == 900)
     }
 
@@ -1461,10 +1462,10 @@ Created job
         #expect(first.hasSuffix("-goal"))
         #expect(GoalCenterModel.openClawSessionKey(for: chatID) == "agent:main:explicit:\(first)")
 
-        let localFirst = GoalCenterModel.localWorkRuntimeSessionID(chatSessionID: chatID, stepID: "step-1", turn: 0)
-        let localRetry = GoalCenterModel.localWorkRuntimeSessionID(chatSessionID: chatID, stepID: "step-1", turn: 1)
-        #expect(localFirst != localRetry)
-        #expect(localFirst.contains("-work-step-1-0"))
+        let firstWorkTurn = GoalCenterModel.workRuntimeSessionID(chatSessionID: chatID, stepID: "step-1", turn: 0)
+        let retryWorkTurn = GoalCenterModel.workRuntimeSessionID(chatSessionID: chatID, stepID: "step-1", turn: 1)
+        #expect(firstWorkTurn != retryWorkTurn)
+        #expect(firstWorkTurn.contains("-work-step-1-0"))
     }
 
     @Test @MainActor func continuousGoalRunsOnlyWhileActiveAndHealthy() {
