@@ -1460,6 +1460,11 @@ Created job
         #expect(first == second)
         #expect(first.hasSuffix("-goal"))
         #expect(GoalCenterModel.openClawSessionKey(for: chatID) == "agent:main:explicit:\(first)")
+
+        let localFirst = GoalCenterModel.localWorkRuntimeSessionID(chatSessionID: chatID, stepID: "step-1", turn: 0)
+        let localRetry = GoalCenterModel.localWorkRuntimeSessionID(chatSessionID: chatID, stepID: "step-1", turn: 1)
+        #expect(localFirst != localRetry)
+        #expect(localFirst.contains("-work-step-1-0"))
     }
 
     @Test @MainActor func continuousGoalRunsOnlyWhileActiveAndHealthy() {
@@ -1611,6 +1616,7 @@ Created job
         #expect(command.contains("sessions compact 'agent:main:explicit:localclaw-ui-chat-ABC-goal'"))
         #expect(command.contains("--max-lines 12"))
         #expect(GoalSessionMaintenance.isTimeoutMessage("OpenClaw timed out before the selected model finished"))
+        #expect(GoalSessionMaintenance.isContextOverflowMessage("Context overflow: prompt too large for the model"))
         #expect(GoalSessionMaintenance.exceededRunBudget(startTokens: 784_119, currentTokens: 844_119))
         #expect(!GoalSessionMaintenance.exceededRunBudget(startTokens: 784_119, currentTokens: 800_000))
     }
@@ -1738,6 +1744,40 @@ Created job
 
         #expect(LocalGoalArtifactSupport.destination(for: plan(path: approvedPath), homeDirectory: home.path)?.path == approvedPath)
         #expect(LocalGoalArtifactSupport.destination(for: plan(path: outsidePath), homeDirectory: home.path) == nil)
+
+        var threeStepPlan = plan(path: approvedPath)
+        threeStepPlan.steps.insert(
+            GoalPlanStep(id: "middle", title: "Polish", outcome: "Polished file", completionCriteria: ["File remains complete"], status: .pending, summary: "", evidence: [], attempts: 0, noProgressTurns: 0),
+            at: 1
+        )
+        #expect(LocalGoalArtifactSupport.destination(for: threeStepPlan, homeDirectory: home.path)?.path == approvedPath)
+    }
+
+    @Test func localGoalDirectArtifactBudgetsOutputInsideTheLoadedContext() throws {
+        let budget = try LocalGoalArtifactSupport.outputTokenBudget(
+            prompt: String(repeating: "x", count: 4_000),
+            contextTokens: 16_000
+        )
+        #expect(budget <= 6_400)
+        #expect(budget >= 1_024)
+
+        let smallContextBudget = try LocalGoalArtifactSupport.outputTokenBudget(
+            prompt: String(repeating: "x", count: 2_000),
+            contextTokens: 8_192
+        )
+        #expect(smallContextBudget <= 3_276)
+        #expect(smallContextBudget >= 1_024)
+
+        var rejectedOversizedPrompt = false
+        do {
+            _ = try LocalGoalArtifactSupport.outputTokenBudget(
+                prompt: String(repeating: "x", count: 64_000),
+                contextTokens: 16_000
+            )
+        } catch {
+            rejectedOversizedPrompt = true
+        }
+        #expect(rejectedOversizedPrompt)
     }
 
     @Test func localGoalDirectArtifactParsesLMStudioOutputAndRejectsPartialHTML() throws {

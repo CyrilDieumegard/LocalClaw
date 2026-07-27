@@ -144,6 +144,13 @@ enum GoalSessionMaintenance {
         return lower.contains("timed out before") || lower.contains("request timed out") || lower.contains("deadline exceeded")
     }
 
+    static func isContextOverflowMessage(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        return lower.contains("context overflow") ||
+            lower.contains("prompt too large") ||
+            (lower.contains("context length") && lower.contains("exceed"))
+    }
+
     static func exceededRunBudget(startTokens: Int, currentTokens: Int, budget: Int = localRunTokenBudget) -> Bool {
         max(currentTokens - startTokens, 0) >= budget
     }
@@ -536,13 +543,14 @@ enum LocalGoalArtifactError: LocalizedError {
     case unsupportedDestination
     case invalidResponse(String)
     case invalidArtifact(String)
+    case contextBudget(String)
     case server(String)
 
     var errorDescription: String? {
         switch self {
         case .unsupportedDestination:
             return "The approved output must be one supported file inside ~/.openclaw/workspace."
-        case .invalidResponse(let message), .invalidArtifact(let message), .server(let message):
+        case .invalidResponse(let message), .invalidArtifact(let message), .contextBudget(let message), .server(let message):
             return message
         }
     }
@@ -557,8 +565,7 @@ enum LocalGoalArtifactSupport {
         for plan: GoalExecutionPlan,
         homeDirectory: String = NSHomeDirectory()
     ) -> URL? {
-        guard plan.steps.count == 2,
-              let path = GoalOutputVerifier.resolvedLocalPath(plan.output.location) else { return nil }
+        guard let path = GoalOutputVerifier.resolvedLocalPath(plan.output.location) else { return nil }
         let destination = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
         let workspace = URL(fileURLWithPath: homeDirectory)
             .appendingPathComponent(".openclaw/workspace", isDirectory: true)
@@ -567,6 +574,23 @@ enum LocalGoalArtifactSupport {
         guard destination.path.hasPrefix(workspace.path + "/"),
               supportedExtensions.contains(destination.pathExtension.lowercased()) else { return nil }
         return destination
+    }
+
+    static func estimatedTokenCount(_ text: String) -> Int {
+        max(1, Int(ceil(Double(text.count) / 4.0)))
+    }
+
+    static func outputTokenBudget(prompt: String, contextTokens: Int) throws -> Int {
+        let context = max(contextTokens, 4_096)
+        let promptTokens = estimatedTokenCount(prompt)
+        let safetyReserve = max(768, context / 16)
+        let available = context - promptTokens - safetyReserve
+        guard available >= 1_024 else {
+            throw LocalGoalArtifactError.contextBudget(
+                "The approved specification itself is too large for the loaded local context. Shorten the Goal or reload the model with a larger context window."
+            )
+        }
+        return min(12_000, min(context * 2 / 5, available))
     }
 
     static func artifactContent(from rawText: String, pathExtension: String) throws -> String {
@@ -666,7 +690,8 @@ actor LocalGoalArtifactGenerator {
     func generate(
         modelID: String,
         plan: GoalExecutionPlan,
-        existingContent: String? = nil
+        existingContent: String? = nil,
+        contextTokens: Int = 32_768
     ) async throws -> LocalGoalArtifactGeneration {
         guard let destination = LocalGoalArtifactSupport.destination(for: plan) else {
             throw LocalGoalArtifactError.unsupportedDestination
@@ -696,11 +721,14 @@ actor LocalGoalArtifactGenerator {
         } else {
             "Create the complete approved file now."
         }
+        let objective = existingContent == nil
+            ? plan.objective
+            : String(plan.objective.prefix(1_200))
         let prompt = """
         \(task)
 
         Objective:
-        \(plan.objective)
+        \(objective)
 
         Output type: \(plan.output.type)
         Format: \(plan.output.format)
@@ -710,13 +738,17 @@ actor LocalGoalArtifactGenerator {
 
         Return only the exact raw contents of that one file. Do not use Markdown fences, JSON wrappers, commentary, placeholders, TODOs, or tool calls. The file must be complete and usable as delivered.
         """
+        let maxOutputTokens = try LocalGoalArtifactSupport.outputTokenBudget(
+            prompt: prompt,
+            contextTokens: contextTokens
+        )
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "model": model,
             "input": prompt,
             "system_prompt": "You generate complete standalone file contents. Output only the requested file, with no explanation and no tool calls.",
             "reasoning": "off",
             "temperature": 0.15,
-            "max_output_tokens": 12_000,
+            "max_output_tokens": maxOutputTokens,
             "stream": false,
         ])
 
@@ -1031,6 +1063,13 @@ final class GoalCenterModel: ObservableObject {
 
     static func planningRuntimeSessionID(for chatSessionID: String, nonce: String = UUID().uuidString) -> String {
         "\(runtimeSessionID(for: chatSessionID))-plan-\(String(nonce.prefix(12)))"
+    }
+
+    static func localWorkRuntimeSessionID(chatSessionID: String, stepID: String, turn: Int) -> String {
+        let cleanedStep = stepID.map { character -> Character in
+            character.isLetter || character.isNumber || character == "-" ? character : "-"
+        }
+        return "\(runtimeSessionID(for: chatSessionID))-work-\(String(cleanedStep).prefix(32))-\(max(turn, 0))"
     }
 
     static func openClawSessionKey(for chatSessionID: String) -> String {
@@ -1350,11 +1389,14 @@ final class GoalCenterModel: ObservableObject {
 
         do {
             var generatedTokens = 0
+            var generatedArtifact = false
+            var reviewedArtifact = false
             var verification = GoalOutputVerifier.verify(currentPlan.output)
             if currentIndex == 0 || !verification.isSatisfied || currentIndex == currentPlan.steps.indices.last {
                 let existingContent: String?
                 if currentIndex == currentPlan.steps.indices.last, verification.isSatisfied {
                     existingContent = try String(contentsOf: destination, encoding: .utf8)
+                    reviewedArtifact = true
                     statusMessage = "Reviewing and correcting the approved file with the local model..."
                 } else {
                     existingContent = nil
@@ -1363,7 +1405,8 @@ final class GoalCenterModel: ObservableObject {
                 let generation = try await LocalGoalArtifactGenerator.shared.generate(
                     modelID: viewModel.selectedGoalModelID,
                     plan: currentPlan,
-                    existingContent: existingContent
+                    existingContent: existingContent,
+                    contextTokens: viewModel.activeLocalLMStudioContext ?? 32_768
                 )
                 let content = try LocalGoalArtifactSupport.artifactContent(
                     from: generation.content,
@@ -1371,6 +1414,7 @@ final class GoalCenterModel: ObservableObject {
                 )
                 try LocalGoalArtifactSupport.write(content, to: destination)
                 generatedTokens = generation.outputTokens
+                generatedArtifact = true
                 verification = GoalOutputVerifier.verify(currentPlan.output)
                 guard verification.isSatisfied else {
                     throw LocalGoalArtifactError.invalidArtifact(verification.detail)
@@ -1383,8 +1427,12 @@ final class GoalCenterModel: ObservableObject {
             let report = GoalStepProgressReport(
                 status: .complete,
                 summary: isVerificationStep
-                    ? "LocalClaw verified the approved artifact on disk."
-                    : "The local model generated the complete artifact and LocalClaw saved it atomically.",
+                    ? (reviewedArtifact
+                        ? "The local model reviewed the artifact and LocalClaw verified it on disk."
+                        : "The local model generated the artifact and LocalClaw verified it on disk.")
+                    : (generatedArtifact
+                        ? "The local model generated the complete artifact and LocalClaw saved it atomically."
+                        : "The complete artifact already satisfies this approved checkpoint."),
                 evidence: ["\(destination.path) exists and is not empty\(tokenEvidence)"]
             )
             updatedPlan.apply(report)
@@ -1406,7 +1454,7 @@ final class GoalCenterModel: ObservableObject {
                 await complete()
                 return .finished
             }
-            statusMessage = "Artifact created. Running the deterministic verification step..."
+            statusMessage = "Checkpoint complete. Continuing with a fresh bounded step..."
             return .progressed
         } catch {
             let reason = error.localizedDescription
@@ -1502,8 +1550,7 @@ final class GoalCenterModel: ObservableObject {
                     }
                 }
                 if localExecution {
-                    self.statusMessage = "Reducing local context before the next step..."
-                    _ = await self.compactGoalTranscript(maxLines: GoalSessionMaintenance.localTranscriptLines)
+                    self.statusMessage = "Starting this step with a fresh local context..."
                 }
                 let previousMessageID = viewModel.normalChatSessions
                     .first(where: { $0.id == sessionID })?
@@ -1512,7 +1559,13 @@ final class GoalCenterModel: ObservableObject {
                 self.statusMessage = "Working on Step \(stepNumber) of \(currentPlan.steps.count): \(currentPlan.currentStep?.title ?? "Current step")"
                 viewModel.sendGoalAdvance(
                     chatSessionID: sessionID,
-                    runtimeSessionID: Self.runtimeSessionID(for: sessionID),
+                    runtimeSessionID: localExecution
+                        ? Self.localWorkRuntimeSessionID(
+                            chatSessionID: sessionID,
+                            stepID: currentPlan.currentStep?.id ?? "step",
+                            turn: self.automaticTurns
+                        )
+                        : Self.runtimeSessionID(for: sessionID),
                     plan: currentPlan,
                     starting: isStartingTurn
                 )
@@ -1535,15 +1588,17 @@ final class GoalCenterModel: ObservableObject {
                 self.automaticTurns += 1
 
                 if latestRole == "error", let latestMessage,
-                   localExecution, GoalSessionMaintenance.isTimeoutMessage(latestMessage.text) {
+                   localExecution,
+                   (GoalSessionMaintenance.isTimeoutMessage(latestMessage.text) ||
+                    GoalSessionMaintenance.isContextOverflowMessage(latestMessage.text)) {
                     consecutiveTimeouts += 1
                     if consecutiveTimeouts == 1 {
                         viewModel.replaceGoalMessageText(
                             sessionID: sessionID,
                             messageID: latestMessage.id,
-                            text: "The local model timed out on this Goal turn. LocalClaw is reducing the session context and will retry the current step once from the saved workspace."
+                            text: "The local model exceeded the time or context available for this turn. LocalClaw will retry once in a fresh step session using the saved workspace."
                         )
-                        self.statusMessage = "Local model timeout detected. Compacting context and retrying once..."
+                        self.statusMessage = "Local model limit detected. Retrying once with a fresh step context..."
                         isStartingTurn = false
                         continue
                     }
