@@ -13480,7 +13480,7 @@ struct ContentView: View {
                     fontSize: 14,
                     onSubmit: { vm.sendDeveloperChatMessage() }
                 )
-                    .frame(minHeight: 58, maxHeight: 112)
+                    .frame(height: 46)
                     .onPasteCommand(of: [.image]) { _ in
                         vm.pasteDeveloperImageFromClipboard()
                     }
@@ -14243,6 +14243,7 @@ struct ContentView: View {
         let bubbleFill = isError ? Color(NSColor.systemRed).opacity(0.08) : (isUser ? UI.accent.opacity(0.15) : UI.card)
         let bubbleStroke = isError ? Color(NSColor.systemRed).opacity(0.35) : (isUser ? UI.accent.opacity(0.28) : UI.lineSoft)
         let modelName = message.modelName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayText = isUser ? message.text : SecretRedactor.redactConfigText(message.text)
 
         return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 7) {
@@ -14267,10 +14268,11 @@ struct ContentView: View {
             if isError {
                 chatRecoveryContent(message, useDeveloperSession: true)
             } else {
-                ExpandablePromptText(text: message.text)
+                Text(displayText)
                     .font(AppFont.body(13))
                     .foregroundStyle(UI.text)
                     .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if let metadata = message.metadata, !metadata.isEmpty {
                 Text(metadata)
@@ -14801,7 +14803,7 @@ struct ContentView: View {
                 fontSize: 15,
                 onSubmit: { vm.sendChatMessage() }
             )
-                .frame(minHeight: 54, maxHeight: 128)
+                .frame(height: 42)
             PromptSizeIndicator(text: vm.chatInput)
 
             HStack(spacing: 14) {
@@ -15280,8 +15282,15 @@ struct ContentView: View {
                 }
                 if isError {
                     chatRecoveryContent(message, useDeveloperSession: false)
+                } else if isUser {
+                    Text(message.text)
+                        .font(AppFont.body(14))
+                        .foregroundStyle(UI.text)
+                        .lineSpacing(3)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
                 } else {
-                    ExpandablePromptText(text: message.text, supportsMarkdown: !isUser)
+                    renderedChatText(SecretRedactor.redactConfigText(message.text))
                         .font(AppFont.body(14))
                         .foregroundStyle(UI.text)
                         .lineSpacing(3)

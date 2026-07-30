@@ -740,14 +740,10 @@ struct GoalCenterView: View {
                             .font(AppFont.bodySemi(10))
                             .foregroundStyle(UI.muted)
                     }
-                    ExpandablePromptText(
-                        text: snapshot.objective,
-                        supportsMarkdown: false,
-                        redactSecrets: true,
-                        previewCharacterLimit: 2_000
-                    )
+                    Text(SecretRedactor.redactConfigText(snapshot.objective))
                         .font(AppFont.heading(18))
                         .foregroundStyle(UI.text)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
                 Text(snapshot.createdDate, style: .relative)
