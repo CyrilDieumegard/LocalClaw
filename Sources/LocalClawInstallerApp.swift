@@ -7379,9 +7379,8 @@ final class InstallerViewModel: ObservableObject {
         }
 
         for sibling in siblings {
-            let lastUseful = sibling.messages.reversed().first { $0.role == "user" || $0.role == "assistant" }?.text
-                .replacingOccurrences(of: "\n", with: " ")
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let lastUseful = sibling.messages.reversed().first { $0.role == "user" || $0.role == "assistant" }
+                .map { PromptTextPolicy.compactPreview($0.text, limit: 180) } ?? ""
             if lastUseful.isEmpty {
                 lines.append("- \(sibling.title)")
             } else {
@@ -7404,9 +7403,9 @@ final class InstallerViewModel: ObservableObject {
                 session.messages
                     .filter(\.pinned)
                     .map { message in
-                        let cleaned = message.text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                        let cleaned = PromptTextPolicy.compactPreview(message.text, limit: 180)
                         let role = message.role == "user" ? "You" : "OpenClaw"
-                        return "\(session.title) · \(role): \(String(cleaned.prefix(180)))"
+                        return "\(session.title) · \(role): \(cleaned)"
                     }
             }
     }
@@ -7433,16 +7432,16 @@ final class InstallerViewModel: ObservableObject {
             let pinned = session.messages
                 .filter(\.pinned)
                 .map { message in
-                    let cleaned = message.text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-                    return "Pinned · \(message.role == "user" ? "You" : "OpenClaw"): \(String(cleaned.prefix(140)))"
+                    let cleaned = PromptTextPolicy.compactPreview(message.text, limit: 140)
+                    return "Pinned · \(message.role == "user" ? "You" : "OpenClaw"): \(cleaned)"
                 }
             notes.append(contentsOf: pinned)
             let recent = session.messages
                 .filter { $0.role == "user" || $0.role == "assistant" }
                 .suffix(4)
                 .map { message in
-                    let cleaned = message.text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-                    return "\(message.role == "user" ? "You" : "OpenClaw"): \(String(cleaned.prefix(110)))"
+                    let cleaned = PromptTextPolicy.compactPreview(message.text, limit: 110)
+                    return "\(message.role == "user" ? "You" : "OpenClaw"): \(cleaned)"
                 }
             notes.append(contentsOf: recent)
         }
@@ -7466,8 +7465,8 @@ final class InstallerViewModel: ObservableObject {
             .filter { $0.role == "user" || $0.role == "assistant" }
             .suffix(12)
             .map { message -> String in
-                let cleaned = message.text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-                return "\(message.role == "user" ? "You" : "OpenClaw"): \(String(cleaned.prefix(180)))"
+                let cleaned = PromptTextPolicy.compactPreview(message.text, limit: 180)
+                return "\(message.role == "user" ? "You" : "OpenClaw"): \(cleaned)"
             }
             .filter { !$0.isEmpty }
         guard !usefulMessages.isEmpty else {
@@ -7497,7 +7496,8 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func chatToolOption(for message: ChatMessage) -> ChatToolVisibilityOption? {
-        let haystack = "\(message.role) \(message.metadata ?? "") \(message.text)".lowercased()
+        let searchableText = String(message.text.prefix(8_000))
+        let haystack = "\(message.role) \(message.metadata ?? "") \(searchableText)".lowercased()
         let looksTechnical = haystack.contains("tool") ||
             haystack.contains("stdout") ||
             haystack.contains("stderr") ||
@@ -7727,8 +7727,15 @@ final class InstallerViewModel: ObservableObject {
     }
 
     var chatContextUsage: ChatContextUsage {
-        let contextText = chatContextTextForUsage()
-        let used = Self.estimatedTokenCount(for: contextText)
+        var byteCount = chatProjectContext(for: activeChatSessionID).utf8.count
+        if chatMemoryEnabled {
+            byteCount += chatMemoryPreview.reduce(0) { $0 + $1.utf8.count + 1 }
+        }
+        byteCount += chatMessages.reduce(0) { partial, message in
+            partial + message.role.utf8.count + message.text.utf8.count + 2
+        }
+        byteCount += chatInput.utf8.count
+        let used = byteCount == 0 ? 0 : max(1, Int(ceil(Double(byteCount) / 4.0)))
         return ChatContextUsage(usedTokens: used, maxTokens: chatContextLimitTokens)
     }
 
@@ -7737,19 +7744,6 @@ final class InstallerViewModel: ObservableObject {
             return max(activeLocalLMStudioContext ?? 32768, 16000)
         }
         return 400_000
-    }
-
-    private func chatContextTextForUsage() -> String {
-        var parts: [String] = []
-        let project = chatProjectContext(for: activeChatSessionID)
-        if !project.isEmpty { parts.append(project) }
-        if chatMemoryEnabled {
-            parts.append(contentsOf: chatMemoryPreview)
-        }
-        parts.append(contentsOf: chatMessages.map { "\($0.role): \($0.text)" })
-        let pending = chatInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !pending.isEmpty { parts.append("draft: \(pending)") }
-        return parts.joined(separator: "\n")
     }
 
     nonisolated static func estimatedTokenCount(for text: String) -> Int {
@@ -7800,8 +7794,8 @@ final class InstallerViewModel: ObservableObject {
     func renameSelectedChatSession(from firstUserMessage: String) {
         updateSelectedChatSession { session in
             if session.title.hasPrefix("Discussion") || session.title == "New discussion" || session.title == "Main setup" {
-                let compact = firstUserMessage.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-                session.title = String(compact.prefix(34)) + (compact.count > 34 ? "…" : "")
+                let compact = PromptTextPolicy.compactPreview(firstUserMessage, limit: 34)
+                session.title = compact + (firstUserMessage.utf8.count > 34 ? "…" : "")
                 session.subtitle = openClawChatModeLabel
             }
         }
@@ -7894,7 +7888,8 @@ final class InstallerViewModel: ObservableObject {
     ) {
         let rawInput = inputOverride ?? (useDeveloperSession ? developerInput : chatInput)
         let rawImagePath = imagePathOverride ?? (useDeveloperSession ? developerImagePath : chatImagePath)
-        let text = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasText = rawInput.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.inverted) != nil
+        let text = hasText ? rawInput : ""
         let imagePath = rawImagePath.trimmingCharacters(in: .whitespacesAndNewlines)
         if (text.isEmpty && imagePath.isEmpty) || chatIsSending { return }
 
@@ -7955,15 +7950,15 @@ final class InstallerViewModel: ObservableObject {
                 """)
             }
         }
-        agentTextParts.append(imagePath.isEmpty ? text : "\(userText)\n\n[Attached image: \(imagePath)]")
-        let agentText = agentTextParts.joined(separator: "\n\n")
+        if !text.isEmpty { agentTextParts.append(text) }
+        if !imagePath.isEmpty { agentTextParts.append("[Attached image: \(imagePath)]") }
         if useDeveloperSession {
             if appendVisibleUserMessage {
                 appendChatMessage(ChatMessage(role: "user", text: visibleUserText, imagePath: imagePath.isEmpty ? nil : imagePath), to: sessionID)
                 updateDeveloperChatSession { session in
                     if session.title == "Developer workspace" {
-                        let compact = visibleUserText.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-                        session.title = String(compact.prefix(34)) + (compact.count > 34 ? "…" : "")
+                        let compact = PromptTextPolicy.compactPreview(visibleUserText, limit: 34)
+                        session.title = compact + (visibleUserText.utf8.count > 34 ? "…" : "")
                     }
                 }
             }
@@ -7975,6 +7970,7 @@ final class InstallerViewModel: ObservableObject {
         }
         if useDeveloperSession,
            imagePath.isEmpty,
+           !PromptTextPolicy.isLarge(text),
            let quickEdit = Self.applyQuickDeveloperColorEdit(projectPath: developerProjectPath, requestText: text) {
             let files = quickEdit.changedFiles.prefix(5).joined(separator: ", ")
             let suffix = quickEdit.changedFiles.count > 5 ? " and \(quickEdit.changedFiles.count - 5) more" : ""
@@ -8038,7 +8034,7 @@ final class InstallerViewModel: ObservableObject {
         }
         let developerWorkdir = developerProjectPath
         let useFreshDeveloperContext = useDeveloperSession && developerFreshContextEnabled
-        let isSimpleDeveloperEdit = useDeveloperSession && Self.isSimpleDeveloperEdit(text)
+        let isSimpleDeveloperEdit = useDeveloperSession && text.utf8.count < 4_096 && Self.isSimpleDeveloperEdit(text)
         let agentThinking = Self.agentThinkingLevel(
             for: modelOverride,
             inferenceMode: requestInferenceMode,
@@ -8090,7 +8086,7 @@ final class InstallerViewModel: ObservableObject {
 
             let tempMessagePath = NSTemporaryDirectory() + "localclaw-chat-message-\(UUID().uuidString).txt"
             do {
-                try agentText.write(toFile: tempMessagePath, atomically: true, encoding: .utf8)
+                try Self.writePromptParts(agentTextParts, toPath: tempMessagePath)
             } catch {
                 await MainActor.run {
                     let errorMessage = ChatMessage(role: "error", text: "I couldn’t prepare the message for OpenClaw: \(error.localizedDescription)")
@@ -8128,7 +8124,7 @@ final class InstallerViewModel: ObservableObject {
             var effectiveThinking = agentThinking
             var result = Self.openClawAgentCancellable(
                 sessionID: runtimeSessionID,
-                message: agentText,
+                messageFilePath: tempMessagePath,
                 model: modelOverride,
                 thinking: effectiveThinking,
                 agentTimeout: agentTimeout,
@@ -8151,7 +8147,7 @@ final class InstallerViewModel: ObservableObject {
                 effectiveThinking = "off"
                 result = Self.openClawAgentCancellable(
                     sessionID: runtimeSessionID,
-                    message: agentText,
+                    messageFilePath: tempMessagePath,
                     model: modelOverride,
                     thinking: effectiveThinking,
                     agentTimeout: agentTimeout,
@@ -8174,7 +8170,7 @@ final class InstallerViewModel: ObservableObject {
                 }
                 result = Self.openClawAgentCancellable(
                     sessionID: runtimeSessionID,
-                    message: agentText,
+                    messageFilePath: tempMessagePath,
                     model: "",
                     thinking: effectiveThinking,
                     agentTimeout: agentTimeout,
@@ -8202,7 +8198,7 @@ final class InstallerViewModel: ObservableObject {
                     }
                     result = Self.openClawAgentCancellable(
                         sessionID: runtimeSessionID,
-                        message: agentText,
+                        messageFilePath: tempMessagePath,
                         model: modelOverride,
                         thinking: effectiveThinking,
                         agentTimeout: agentTimeout,
@@ -8246,7 +8242,7 @@ final class InstallerViewModel: ObservableObject {
                     if serviceRepair.state == .ok {
                         result = Self.openClawAgentCancellable(
                             sessionID: runtimeSessionID,
-                            message: agentText,
+                            messageFilePath: tempMessagePath,
                             model: modelOverride,
                             thinking: effectiveThinking,
                             agentTimeout: agentTimeout,
@@ -8284,7 +8280,7 @@ final class InstallerViewModel: ObservableObject {
                         if packageRepair.state == .ok {
                             result = Self.openClawAgentCancellable(
                                 sessionID: runtimeSessionID,
-                                message: agentText,
+                                messageFilePath: tempMessagePath,
                                 model: modelOverride,
                                 thinking: effectiveThinking,
                                 agentTimeout: agentTimeout,
@@ -9852,21 +9848,33 @@ final class InstallerViewModel: ObservableObject {
         return (process.terminationStatus, trimmed)
     }
 
-    nonisolated private static func openClawAgentCancellable(
+    nonisolated static func writePromptParts(_ parts: [String], toPath path: String) throws {
+        let url = URL(fileURLWithPath: path)
+        guard FileManager.default.createFile(atPath: path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        for (index, part) in parts.enumerated() {
+            if index > 0 {
+                try handle.write(contentsOf: Data("\n\n".utf8))
+            }
+            try handle.write(contentsOf: Data(part.utf8))
+        }
+    }
+
+    nonisolated static func openClawAgentArguments(
         sessionID: String,
-        message: String,
+        messageFilePath: String,
         model: String,
         thinking: String,
-        agentTimeout: Int,
-        currentDirectory: String?,
-        timeoutSeconds: Int? = nil,
-        onStart: @escaping (Process) -> Void
-    ) -> (Int32, String) {
+        agentTimeout: Int
+    ) -> [String] {
         var arguments = [
             "openclaw",
             "agent",
             "--session-id", sessionID,
-            "-m", message,
+            "--message-file", messageFilePath,
             "--json",
             "--timeout", String(agentTimeout)
         ]
@@ -9876,13 +9884,55 @@ final class InstallerViewModel: ObservableObject {
         if !thinking.isEmpty {
             arguments.append(contentsOf: ["--thinking", thinking])
         }
-        return processCancellable(
+        return arguments
+    }
+
+    nonisolated private static func openClawAgentCancellable(
+        sessionID: String,
+        messageFilePath: String,
+        model: String,
+        thinking: String,
+        agentTimeout: Int,
+        currentDirectory: String?,
+        timeoutSeconds: Int? = nil,
+        onStart: @escaping (Process) -> Void
+    ) -> (Int32, String) {
+        var arguments = openClawAgentArguments(
+            sessionID: sessionID,
+            messageFilePath: messageFilePath,
+            model: model,
+            thinking: thinking,
+            agentTimeout: agentTimeout
+        )
+        var result = processCancellable(
             executable: "/usr/bin/env",
             arguments: arguments,
             currentDirectory: currentDirectory,
             timeoutSeconds: timeoutSeconds,
             onStart: onStart
         )
+        let cleanError = stripANSI(result.1).lowercased()
+        guard result.0 != 0,
+              cleanError.contains("unknown option '--message-file'") || cleanError.contains("unknown option: --message-file") else {
+            return result
+        }
+
+        let fileSize = ((try? FileManager.default.attributesOfItem(atPath: messageFilePath)[.size]) as? NSNumber)?.intValue ?? 0
+        guard fileSize <= 64 * 1_024,
+              let inlineMessage = try? String(contentsOfFile: messageFilePath, encoding: .utf8),
+              let flagIndex = arguments.firstIndex(of: "--message-file"),
+              arguments.indices.contains(flagIndex + 1) else {
+            return (1, "This OpenClaw version cannot receive large prompts safely. Update OpenClaw, then retry; LocalClaw kept the complete prompt unchanged.")
+        }
+        arguments.replaceSubrange(flagIndex...(flagIndex + 1), with: ["-m", inlineMessage])
+        result = processCancellable(
+            executable: "/usr/bin/env",
+            arguments: arguments,
+            currentDirectory: currentDirectory,
+            timeoutSeconds: timeoutSeconds,
+            onStart: onStart
+        )
+        return result
     }
 
     nonisolated private static func processCancellable(
@@ -13424,14 +13474,17 @@ struct ContentView: View {
                 if !vm.developerImagePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     chatImagePreview(path: vm.developerImagePath, developer: true)
                 }
-                TextField("Ask OpenClaw to build, fix, or improve the app...", text: $vm.developerInput, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(AppFont.body(14))
-                    .lineLimit(2...5)
-                    .onSubmit { vm.sendDeveloperChatMessage() }
+                LargePromptEditor(
+                    text: $vm.developerInput,
+                    placeholder: "Ask OpenClaw to build, fix, or improve the app...",
+                    fontSize: 14,
+                    onSubmit: { vm.sendDeveloperChatMessage() }
+                )
+                    .frame(minHeight: 58, maxHeight: 112)
                     .onPasteCommand(of: [.image]) { _ in
                         vm.pasteDeveloperImageFromClipboard()
                     }
+                PromptSizeIndicator(text: vm.developerInput)
                 HStack(spacing: 10) {
                     developerIconButton("paperclip") { vm.attachDeveloperImage() }
                     developerIconButton("clipboard") { vm.pasteDeveloperImageFromClipboard() }
@@ -13451,7 +13504,7 @@ struct ContentView: View {
                         Label(vm.chatIsSending ? "Stop" : "Send", systemImage: vm.chatIsSending ? "stop.fill" : "arrow.up")
                     }
                     .buttonStyle(SheetActionButton(primary: true))
-                    .disabled(!vm.chatIsSending && vm.developerInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && vm.developerImagePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(!vm.chatIsSending && vm.developerInput.isEmpty && vm.developerImagePath.isEmpty)
                     .help("Send with \(vm.selectedChatModel.isEmpty ? vm.openClawChatModelLabel : vm.selectedChatModel)")
                 }
             }
@@ -14214,11 +14267,10 @@ struct ContentView: View {
             if isError {
                 chatRecoveryContent(message, useDeveloperSession: true)
             } else {
-                Text(SecretRedactor.redactConfigText(message.text))
+                ExpandablePromptText(text: message.text)
                     .font(AppFont.body(13))
                     .foregroundStyle(UI.text)
                     .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
             }
             if let metadata = message.metadata, !metadata.isEmpty {
                 Text(metadata)
@@ -14735,20 +14787,22 @@ struct ContentView: View {
     }
 
     var chatComposer: some View {
-        let hasImage = !vm.chatImagePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let canSend = !vm.chatIsSending && (!vm.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasImage)
+        let hasImage = !vm.chatImagePath.isEmpty
+        let canSend = !vm.chatIsSending && (!vm.chatInput.isEmpty || hasImage)
 
         return VStack(alignment: .leading, spacing: 12) {
             if hasImage {
                 chatImagePreview(path: vm.chatImagePath)
             }
 
-            TextField("Message OpenClaw...", text: $vm.chatInput, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(AppFont.body(15))
-                .foregroundStyle(UI.text)
-                .lineLimit(2...7)
-                .onSubmit { vm.sendChatMessage() }
+            LargePromptEditor(
+                text: $vm.chatInput,
+                placeholder: "Message OpenClaw...",
+                fontSize: 15,
+                onSubmit: { vm.sendChatMessage() }
+            )
+                .frame(minHeight: 54, maxHeight: 128)
+            PromptSizeIndicator(text: vm.chatInput)
 
             HStack(spacing: 14) {
                 chatComposerIcon("plus", help: "Attach image") { vm.attachChatImage() }
@@ -15150,7 +15204,7 @@ struct ContentView: View {
         let bubbleFill = isError ? Color(NSColor.systemRed).opacity(0.08) : (isUser ? UI.accent.opacity(0.16) : UI.card)
         let bubbleStroke = isError ? Color(NSColor.systemRed).opacity(0.35) : (isUser ? UI.accent.opacity(0.22) : Color.black.opacity(0.06))
         let modelName = message.modelName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let toolOption = vm.chatToolOption(for: message)
+        let toolOption = isUser || isError ? nil : vm.chatToolOption(for: message)
         return HStack {
             if isUser { Spacer(minLength: 80) }
             VStack(alignment: .leading, spacing: 8) {
@@ -15227,7 +15281,7 @@ struct ContentView: View {
                 if isError {
                     chatRecoveryContent(message, useDeveloperSession: false)
                 } else {
-                    renderedChatText(SecretRedactor.redactConfigText(message.text))
+                    ExpandablePromptText(text: message.text, supportsMarkdown: !isUser)
                         .font(AppFont.body(14))
                         .foregroundStyle(UI.text)
                         .lineSpacing(3)

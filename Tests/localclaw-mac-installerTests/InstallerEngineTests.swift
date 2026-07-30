@@ -586,6 +586,41 @@ struct InstallerEngineTests {
         #expect(InstallerViewModel.wallClockTimeoutSeconds(forAgentTimeout: 840) == 900)
     }
 
+    @Test func largePromptsUseMessageFileTransportWithoutCommandArgumentCopies() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("localclaw-large-prompt-\(UUID().uuidString).txt")
+            .path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let largeBody = String(repeating: "large prompt content ", count: 12_000)
+
+        try InstallerViewModel.writePromptParts(["context", largeBody], toPath: path)
+        let saved = try String(contentsOfFile: path, encoding: .utf8)
+        let arguments = InstallerViewModel.openClawAgentArguments(
+            sessionID: "large-prompt-session",
+            messageFilePath: path,
+            model: "openrouter/z-ai/glm-5.2",
+            thinking: "medium",
+            agentTimeout: 840
+        )
+
+        #expect(saved == "context\n\n\(largeBody)")
+        #expect(arguments.contains("--message-file"))
+        #expect(arguments.contains(path))
+        #expect(!arguments.contains("-m"))
+        #expect(!arguments.contains(largeBody))
+    }
+
+    @Test func largePromptPreviewsStayBounded() {
+        let prompt = String(repeating: "abcdefghij", count: 2_000)
+        let preview = PromptTextPolicy.compactPreview(prompt, limit: 120)
+
+        #expect(PromptTextPolicy.isLarge(prompt))
+        #expect(preview.count == 120)
+        #expect(!PromptTextPolicy.isLarge("short prompt"))
+        #expect(PromptTextPolicy.hasContent(prompt))
+        #expect(!PromptTextPolicy.hasContent("  \n\t"))
+    }
+
     @Test func localModelsAlwaysDisableUnsupportedThinkingLevels() {
         #expect(InstallerViewModel.agentThinkingLevel(
             for: "lmstudio/nvidia/nemotron-3-nano-4b",

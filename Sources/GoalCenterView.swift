@@ -356,14 +356,15 @@ struct GoalCenterView: View {
                 .font(AppFont.bodySemi(12))
                 .foregroundStyle(UI.muted)
 
-            TextEditor(text: $goal.objective)
-                .font(AppFont.body(14))
-                .foregroundStyle(UI.text)
-                .scrollContentBackground(.hidden)
-                .padding(10)
+            LargePromptEditor(
+                text: $goal.objective,
+                placeholder: "Describe the complete result you want...",
+                fontSize: 14
+            )
                 .frame(minHeight: 110, maxHeight: 170)
                 .background(RoundedRectangle(cornerRadius: 8).fill(UI.card))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(UI.lineSoft, lineWidth: 1))
+            PromptSizeIndicator(text: goal.objective)
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("Expected output")
@@ -396,8 +397,8 @@ struct GoalCenterView: View {
                     goal.isBusy ||
                     goal.isGeneratingPlan ||
                     vm.chatIsSending ||
-                    goal.projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                    goal.objective.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    !PromptTextPolicy.hasContent(goal.projectName) ||
+                    !PromptTextPolicy.hasContent(goal.objective)
                 )
             }
 
@@ -739,10 +740,14 @@ struct GoalCenterView: View {
                             .font(AppFont.bodySemi(10))
                             .foregroundStyle(UI.muted)
                     }
-                    Text(snapshot.objective)
+                    ExpandablePromptText(
+                        text: snapshot.objective,
+                        supportsMarkdown: false,
+                        redactSecrets: true,
+                        previewCharacterLimit: 2_000
+                    )
                         .font(AppFont.heading(18))
                         .foregroundStyle(UI.text)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
                 Text(snapshot.createdDate, style: .relative)
