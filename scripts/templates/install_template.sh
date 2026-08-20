@@ -25,14 +25,14 @@ INSTALL_LM_STUDIO_PLACEHOLDER
 
 echo ""
 echo "[4/7] Installing Node.js..."
-if command -v node &>/dev/null && node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 19) ? 0 : 1)' &>/dev/null; then
+if command -v node &>/dev/null && node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); const ok = (major === 22 && (minor > 22 || (minor === 22 && patch >= 3))) || (major === 24 && minor >= 15) || (major === 25 && minor >= 9) || major >= 26; process.exit(ok ? 0 : 1)' &>/dev/null; then
     echo "  ✓ Node $(node --version) ready"
     echo "node:OK" >> /tmp/localclaw_status
 else
-    echo "  → Installing/upgrading Node.js 22.19+..."
+    echo "  → Installing/upgrading a supported Node.js version..."
     brew upgrade node || brew install node
-    if ! command -v node &>/dev/null || ! node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 19) ? 0 : 1)' &>/dev/null; then
-        echo "  ✗ Node 22.19+ is required for OpenClaw"
+    if ! command -v node &>/dev/null || ! node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); const ok = (major === 22 && (minor > 22 || (minor === 22 && patch >= 3))) || (major === 24 && minor >= 15) || (major === 25 && minor >= 9) || major >= 26; process.exit(ok ? 0 : 1)' &>/dev/null; then
+        echo "  ✗ OpenClaw requires Node 22.22.3+, 24.15+, 25.9+, or 26+"
         echo "node:FAIL" >> /tmp/localclaw_status
         exit 1
     fi

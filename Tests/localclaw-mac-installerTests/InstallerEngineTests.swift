@@ -213,10 +213,23 @@ struct InstallerEngineTests {
     }
 
     @Test func nodeVersionSupportMatchesOpenClawRequirement() {
-        #expect(!InstallerEngine.isNodeVersionSupported("v22.18.0"))
-        #expect(InstallerEngine.isNodeVersionSupported("v22.19.0"))
+        #expect(!InstallerEngine.isNodeVersionSupported("v22.22.2"))
+        #expect(InstallerEngine.isNodeVersionSupported("v22.22.3"))
+        #expect(!InstallerEngine.isNodeVersionSupported("v23.11.0"))
+        #expect(!InstallerEngine.isNodeVersionSupported("v24.14.0"))
+        #expect(InstallerEngine.isNodeVersionSupported("v24.15.0"))
+        #expect(!InstallerEngine.isNodeVersionSupported("v25.8.0"))
+        #expect(InstallerEngine.isNodeVersionSupported("v25.9.0"))
         #expect(InstallerEngine.isNodeVersionSupported("v26.0.0"))
         #expect(!InstallerEngine.isNodeVersionSupported("Not installed"))
+    }
+
+    @Test func oauthFallbackIncludesCurrentOpenAIModels() {
+        let ids = Set(InstallerViewModel.oauthFallbackModels.map(\.id))
+        #expect(ids.contains("openai/gpt-5.6"))
+        #expect(ids.contains("openai/gpt-5.6-sol"))
+        #expect(ids.contains("openai/gpt-5.6-luna"))
+        #expect(ids.contains("openai/gpt-5.6-terra"))
     }
 
     @Test func providerAuthDetectsNamedOAuthProfiles() {

@@ -111,7 +111,8 @@ struct ProcessUsageItem: Identifiable {
 
 final class InstallerEngine: @unchecked Sendable {
     static let shellPathPrefix = #"export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"; "#
-    static let minimumNodeVersion = "22.19.0"
+    static let minimumNodeVersion = "22.22.3"
+    static let nodeRequirementDescription = "Node 22.22.3+, 24.15+, 25.9+, or 26+"
     private let providerAuthCacheLock = NSLock()
     private var providerAuthCache: (checkedAt: Date, configuredProviders: Set<String>)?
 
@@ -291,10 +292,19 @@ final class InstallerEngine: @unchecked Sendable {
     }
 
     static func isNodeVersionSupported(_ version: String) -> Bool {
-        guard let comparison = compareVersion(version, minimumNodeVersion) else {
+        guard let components = versionComponents(from: version) else { return false }
+        switch components[0] {
+        case 22:
+            return (compareVersion(version, "22.22.3") ?? -1) >= 0
+        case 24:
+            return (compareVersion(version, "24.15.0") ?? -1) >= 0
+        case 25:
+            return (compareVersion(version, "25.9.0") ?? -1) >= 0
+        case 26...:
+            return true
+        default:
             return false
         }
-        return comparison >= 0
     }
 
     private func lmsCommandPath() -> String {
@@ -580,7 +590,7 @@ final class InstallerEngine: @unchecked Sendable {
 
             return StepResult(
                 state: .fail,
-                message: "OpenClaw requires Node \(Self.minimumNodeVersion)+. Current: \(current). \(out)"
+                message: "OpenClaw requires \(Self.nodeRequirementDescription). Current: \(current). \(out)"
             )
         }
         let (code, out) = shell("brew install node")
@@ -590,7 +600,7 @@ final class InstallerEngine: @unchecked Sendable {
         }
         return StepResult(
             state: .fail,
-            message: "OpenClaw requires Node \(Self.minimumNodeVersion)+. \(out)"
+            message: "OpenClaw requires \(Self.nodeRequirementDescription). \(out)"
         )
     }
 

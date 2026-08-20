@@ -887,6 +887,10 @@ final class InstallerViewModel: ObservableObject {
 
     nonisolated static let oauthFallbackModels: [OpenRouterModel] = [
         OpenRouterModel(id: "openai-codex/gpt-5.5", displayName: "GPT 5.5"),
+        OpenRouterModel(id: "openai/gpt-5.6", displayName: "GPT 5.6"),
+        OpenRouterModel(id: "openai/gpt-5.6-sol", displayName: "GPT 5.6 Sol"),
+        OpenRouterModel(id: "openai/gpt-5.6-luna", displayName: "GPT 5.6 Luna"),
+        OpenRouterModel(id: "openai/gpt-5.6-terra", displayName: "GPT 5.6 Terra"),
         OpenRouterModel(id: "openai-codex/gpt-5.4", displayName: "GPT 5.4"),
         OpenRouterModel(id: "openai-codex/gpt-5.4-mini", displayName: "GPT 5.4 Mini")
     ]
@@ -1876,6 +1880,11 @@ final class InstallerViewModel: ObservableObject {
             LocalModelCandidate(name: "Qwen 3.5 0.8B Q4_K_M", query: "qwen3.5-0.8b@q4_k_m", providerId: "qwen3.5-0.8b", family: "qwen", summary: "Smallest local fallback", fileSizeGB: 0.8, maxContextK: 256, qualityScore: 2.4, codingScore: 2.5, reasoningScore: 2.2, speedScore: 5.0, toolUseScore: 2.8, multimodal: true, badges: ["Low RAM"]),
             LocalModelCandidate(name: "Qwen 3 14B Q4_K_M", query: "qwen-3-14b@q4_k_m", providerId: "qwen3-14b", family: "qwen", summary: "Established reasoning model", fileSizeGB: 8.9, maxContextK: 128, qualityScore: 3.8, codingScore: 4.2, reasoningScore: 4.0, speedScore: 3.4, toolUseScore: 4.0, multimodal: false, badges: ["Legacy"]),
             LocalModelCandidate(name: "Qwen 3 8B Q4_K_M", query: "qwen-3-8b@q4_k_m", providerId: "qwen3-8b", family: "qwen", summary: "Reliable compact coder", fileSizeGB: 5.0, maxContextK: 128, qualityScore: 3.5, codingScore: 4.1, reasoningScore: 3.6, speedScore: 4.0, toolUseScore: 3.9, multimodal: false, badges: ["Legacy"]),
+            LocalModelCandidate(name: "Ornith 1.5 9B Q4_K_M", query: "ornith-1.5-9b@q4_k_m", providerId: "ornith-ai/ornith-1.5-9b", family: "ornith", summary: "Long-context coding and agentic reasoning", fileSizeGB: 5.63, maxContextK: 262, qualityScore: 4.0, codingScore: 4.5, reasoningScore: 4.0, speedScore: 3.5, toolUseScore: 4.5, multimodal: false, badges: ["New", "Recommended"]),
+            LocalModelCandidate(name: "Ornith 1.5 35B-A3B Q4_K_M", query: "ornith-1.5-35b-a3b@q4_k_m", providerId: "ornith-ai/ornith-1.5-35b-a3b", family: "ornith", summary: "High-quality MoE model for agentic coding", fileSizeGB: 21.72, maxContextK: 262, qualityScore: 4.5, codingScore: 4.5, reasoningScore: 4.5, speedScore: 2.5, toolUseScore: 4.7, multimodal: false, badges: ["New", "High Performance", "May be slow"]),
+            LocalModelCandidate(name: "Ling 3.0 Tiny Q4_K_M", query: "ling-3.0-tiny@q4_k_m", providerId: "inclusionai/ling-3.0-tiny", family: "ling", summary: "Fast MoE reasoning with a compact active footprint", fileSizeGB: 4.82, maxContextK: 131, qualityScore: 3.5, codingScore: 3.5, reasoningScore: 4.0, speedScore: 4.5, toolUseScore: 4.0, multimodal: false, badges: ["New", "Low RAM"]),
+            LocalModelCandidate(name: "LFM 2.5 2.6B Q4_K_M", query: "lfm2.5-2.6b@q4_k_m", providerId: "liquidai/lfm2.5-2.6b", family: "liquid", summary: "Compact hybrid model for everyday local tasks", fileSizeGB: 1.8, maxContextK: 128, qualityScore: 3.5, codingScore: 3.5, reasoningScore: 3.5, speedScore: 4.5, toolUseScore: 3.6, multimodal: false, badges: ["New", "Low RAM"]),
+            LocalModelCandidate(name: "LFM 2.5 VL 3B Q4_K_M", query: "lfm2.5-vl-3b@q4_k_m", providerId: "liquidai/lfm2.5-vl-3b", family: "liquid", summary: "Small vision-language model for image chat and OCR", fileSizeGB: 2.3, maxContextK: 32, qualityScore: 3.5, codingScore: 2.0, reasoningScore: 3.0, speedScore: 4.5, toolUseScore: 3.0, multimodal: true, badges: ["New", "Vision", "Low RAM"]),
             LocalModelCandidate(name: "Nemotron 3 Nano 4B Q4_K_M", query: "nemotron-3-nano-4b@q4_k_m", providerId: "nvidia/nemotron-3-nano-4b", family: "nvidia", summary: "Efficient reasoning and tool use", fileSizeGB: 4.2, maxContextK: 256, qualityScore: 3.9, codingScore: 4.0, reasoningScore: 4.1, speedScore: 4.4, toolUseScore: 4.3, multimodal: false, badges: []),
             LocalModelCandidate(name: "Nemotron 3 Nano 30B-A3B Q4_K_M", query: "nemotron-3-nano-30b-a3b@q4_k_m", providerId: "nvidia/nemotron-3-nano-30b-a3b", family: "nvidia", summary: "Long-context MoE reasoning", fileSizeGB: 24.6, maxContextK: 1_000, qualityScore: 4.8, codingScore: 4.6, reasoningScore: 4.9, speedScore: 3.6, toolUseScore: 4.8, multimodal: false, badges: ["Long Context", "May be slow"]),
             LocalModelCandidate(name: "GLM 4.7 Flash 30B Q4_K_M", query: "glm-4.7-flash-30b@q4_k_m", providerId: "zai/glm-4.7-flash-30b", family: "zai", summary: "Agentic coding and reasoning", fileSizeGB: 19.0, maxContextK: 128, qualityScore: 4.4, codingScore: 4.5, reasoningScore: 4.5, speedScore: 3.8, toolUseScore: 4.6, multimodal: false, badges: []),
@@ -10558,13 +10567,13 @@ final class InstallerViewModel: ObservableObject {
         
         echo ""
         echo "[3/6] Installing Node.js..."
-        if command -v node &>/dev/null && node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 19) ? 0 : 1)' &>/dev/null; then
+        if command -v node &>/dev/null && node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); const ok = (major === 22 && (minor > 22 || (minor === 22 && patch >= 3))) || (major === 24 && minor >= 15) || (major === 25 && minor >= 9) || major >= 26; process.exit(ok ? 0 : 1)' &>/dev/null; then
             echo "  ✓ Node $(node --version) ready"
         else
-            echo "  → Installing/upgrading Node.js 22.19+..."
+            echo "  → Installing/upgrading a supported Node.js version..."
             brew upgrade node || brew install node
-            if ! command -v node &>/dev/null || ! node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 19) ? 0 : 1)' &>/dev/null; then
-                echo "  ✗ Node 22.19+ is required for OpenClaw"
+            if ! command -v node &>/dev/null || ! node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); const ok = (major === 22 && (minor > 22 || (minor === 22 && patch >= 3))) || (major === 24 && minor >= 15) || (major === 25 && minor >= 9) || major >= 26; process.exit(ok ? 0 : 1)' &>/dev/null; then
+                echo "  ✗ OpenClaw requires Node 22.22.3+, 24.15+, 25.9+, or 26+"
                 exit 1
             fi
         fi
@@ -10772,14 +10781,14 @@ final class InstallerViewModel: ObservableObject {
         lines.append("")
         lines.append("echo \"\"")
         lines.append("echo \"[4/7] Installing Node.js...\"")
-        lines.append("if command -v node &>/dev/null && node -e 'const [major, minor] = process.versions.node.split(\".\").map(Number); process.exit(major > 22 || (major === 22 && minor >= 19) ? 0 : 1)' &>/dev/null; then")
+        lines.append("if command -v node &>/dev/null && node -e 'const [major, minor, patch] = process.versions.node.split(\".\").map(Number); const ok = (major === 22 && (minor > 22 || (minor === 22 && patch >= 3))) || (major === 24 && minor >= 15) || (major === 25 && minor >= 9) || major >= 26; process.exit(ok ? 0 : 1)' &>/dev/null; then")
         lines.append("    echo \"  ✓ Node $(node --version) ready\"")
         lines.append("    echo \"node:OK\" >> /tmp/localclaw_status")
         lines.append("else")
-        lines.append("    echo \"  → Installing/upgrading Node.js 22.19+...\"")
+        lines.append("    echo \"  → Installing/upgrading a supported Node.js version...\"")
         lines.append("    brew upgrade node || brew install node")
-        lines.append("    if ! command -v node &>/dev/null || ! node -e 'const [major, minor] = process.versions.node.split(\".\").map(Number); process.exit(major > 22 || (major === 22 && minor >= 19) ? 0 : 1)' &>/dev/null; then")
-        lines.append("        echo \"  ✗ Node 22.19+ is required for OpenClaw\"")
+        lines.append("    if ! command -v node &>/dev/null || ! node -e 'const [major, minor, patch] = process.versions.node.split(\".\").map(Number); const ok = (major === 22 && (minor > 22 || (minor === 22 && patch >= 3))) || (major === 24 && minor >= 15) || (major === 25 && minor >= 9) || major >= 26; process.exit(ok ? 0 : 1)' &>/dev/null; then")
+        lines.append("        echo \"  ✗ OpenClaw requires Node 22.22.3+, 24.15+, 25.9+, or 26+\"")
         lines.append("        echo \"node:FAIL\" >> /tmp/localclaw_status")
         lines.append("        exit 1")
         lines.append("    fi")
@@ -16301,7 +16310,7 @@ struct ContentView: View {
                 VStack(spacing: 8) {
                     versionRow("OpenClaw", vm.openclawInstalledVersion, vm.openclawLatestVersion, isUpToDate: vm.openclawUpdateStatus == "Up to date")
                     versionRow("Homebrew", vm.brewVersion, "latest via brew update", isUpToDate: vm.brewUpToDate)
-                    versionRow("Node", vm.nodeVersion, "22.19+ required for OpenClaw", isUpToDate: vm.nodeUpToDate)
+                    versionRow("Node", vm.nodeVersion, "22.22.3+, 24.15+, 25.9+, or 26+", isUpToDate: vm.nodeUpToDate)
                     versionRow("LM Studio", vm.lmStudioVersion, "latest via brew cask", isUpToDate: vm.lmStudioUpToDate)
                     versionRow("LocalClaw", "\(vm.installerCurrentVersion) (build \(vm.installerBuildNumber))", vm.installerLatestBuild.isEmpty ? vm.installerLatestVersion : "\(vm.installerLatestVersion) (build \(vm.installerLatestBuild))", isUpToDate: vm.installerUpdateStatus == "Up to date")
                 }
