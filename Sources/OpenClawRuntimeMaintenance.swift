@@ -539,13 +539,26 @@ final class OpenClawRuntimeMaintenance {
             throw MaintenanceError("Could not confirm the Gateway service state.\n\(loaded.1)")
         }
         // Do not take a raw SQLite/WAL snapshot while another app or helper owns the files.
-        var owners = run("/usr/sbin/lsof -t +D \(q(state)) 2>&1")
-        for _ in 0..<4 where owners.0 == 0 {
-            Thread.sleep(forTimeInterval: 1)
-            owners = run("/usr/sbin/lsof -t +D \(q(state)) 2>&1")
+        func inspect() -> OpenClawStateInspection {
+            let result = run(OpenClawStateInspection.command(state: state))
+            return OpenClawStateInspection.parse(code: result.0, output: result.1)
         }
-        guard owners.0 == 1, owners.1.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw MaintenanceError("OpenClaw state is still open in another process. Close other OpenClaw clients and retry. No runtime was replaced.")
+        report("Checking for processes with open OpenClaw data files...")
+        var inspection = inspect()
+        for _ in 0..<4 {
+            guard case .busy = inspection else { break }
+            wait(1)
+            inspection = inspect()
+        }
+        switch inspection {
+        case .clear:
+            break
+        case .busy(let owners):
+            let details = owners.prefix(8).map(\.summary).joined(separator: "\n")
+            let remaining = owners.count > 8 ? "\nAnd \(owners.count - 8) more open file handles." : ""
+            throw MaintenanceError("OpenClaw data files are still open. Close the listed app or stop its task, then retry. No process was killed and no runtime was replaced.\n\(details)\(remaining)")
+        case .failed(let diagnostic):
+            throw MaintenanceError("LocalClaw could not verify whether OpenClaw data files are in use. This does not confirm a database lock. Backup and update stopped.\n\(diagnostic)")
         }
         _ = try checked("umask 077; /usr/bin/tar -czf \(q(archive.path)) -C \(q(state)) .", stage: "Back up migrated state")
         _ = try checked("/usr/bin/tar -tzf \(q(archive.path)) >/dev/null", stage: "Verify offline recovery archive")

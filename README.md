@@ -39,7 +39,7 @@ swift test
 
 ## OpenClaw compatibility
 
-LocalClaw 1.0.195 targets OpenClaw 2026.8.1 and retains the 2026.7.1 runtime path.
+LocalClaw 1.0.196 targets OpenClaw 2026.8.1 and retains the 2026.7.1 runtime path.
 Update LocalClaw first, then use Updates to upgrade OpenClaw. Before replacing
 the runtime, LocalClaw creates and verifies a state backup under
 `~/Library/Application Support/LocalClaw/runtime-backups/`. The normal portable
@@ -73,6 +73,13 @@ migrations. LocalClaw does not manually strip configuration keys. It refuses a
 release older than the installed runtime or a newer recorded config version.
 Historical startup logs cannot override the current failure or trigger a model
 retry. Repair failures retain their redacted cause instead of a generic message.
+
+Offline recovery uses structured file-inspection results. A process whose only
+reference is a working/root directory no longer blocks the backup. Actual file
+handles, including read-only SQLite/WAL handles, remain protected. Blocking
+diagnostics identify the process, PID and file; inspection errors are reported
+separately rather than claiming another client owns the database. No process is
+killed automatically, and a failed inspection still prevents backup and update.
 
 This release handles canonical `openai/*` routes, keyed agent ownership, SQLite
 credential imports, Goals, and incremental Developer activity. Existing explicit

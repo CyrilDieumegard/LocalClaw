@@ -236,6 +236,47 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(OpenClawRuntimeMaintenance.verifiedGateway(#"{"service":{"runtime":{"status":"running"}},"rpc":{"ok":true,"server":{"version":"2026.8.1"}}}"#, expectedVersion: "2026.8.1"))
     }
 
+    @Test func inspectionErrorIncludesTheCauseWithoutInventingAnOwner() throws {
+        let fixture = try Fixture(failure: .activeWriter)
+        defer { fixture.cleanUp() }
+        let result = fixture.maintenance().update()
+        #expect(result.state == .fail)
+        #expect(result.message.contains("could not verify"))
+        #expect(result.message.contains("cannot inspect open files"))
+        #expect(!result.message.contains("still open in another process"))
+        #expect(!fixture.commands.contains { $0.contains("tar -czf") || $0.contains("npm install") })
+    }
+
+    @Test func confirmedFileOwnerIsNamedAndNeverKilled() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        fixture.inspections = [(0, "p123\0cnode\0\nf7\0tREG\0n\(fixture.database.path)\0\n")]
+        let result = fixture.maintenance().update()
+        #expect(result.state == .fail)
+        #expect(result.message.contains("node (PID 123)"))
+        #expect(result.message.contains(fixture.database.path))
+        #expect(fixture.commands.filter { $0.contains("lsof") }.count == 5)
+        #expect(!fixture.commands.contains { $0.contains("tar -czf") || $0.contains("npm install") || $0.contains("kill") })
+    }
+
+    @Test func transientOwnerCanExitBeforeBackup() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        fixture.inspections = [(0, "p123\0cnode\0\nf7\0tREG\0n\(fixture.database.path)\0\n"), (1, "")]
+        let result = fixture.maintenance().update()
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(fixture.commands.filter { $0.contains("lsof") }.count == 2)
+    }
+
+    @Test func workingDirectoryAloneAllowsOfflineRecovery() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        fixture.inspections = [(0, "p123\0czsh\0\nfcwd\0tDIR\0n\(fixture.database.deletingLastPathComponent().path)\0\n")]
+        let result = fixture.maintenance().update()
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(fixture.commands.filter { $0.contains("lsof") }.count == 1)
+    }
+
     @Test func npmLifecycleFlagsMatchSupportedNpmVersions() {
         #expect(OpenClawRuntimeMaintenance.npmLifecycleFlags(version: "10.9.3") == "")
         #expect(OpenClawRuntimeMaintenance.npmLifecycleFlags(version: "11.15.0") == "")
@@ -255,6 +296,7 @@ struct OpenClawRuntimeMaintenanceTests {
         let failure: Failure?
         var commands: [String] = []
         var didUpdate = false
+        var inspections: [(Int32, String)] = []
 
         init(schemaMismatch: Bool = true, invalidConfig: Bool = false, failure: Failure? = nil) throws {
             self.schemaMismatch = schemaMismatch
@@ -281,7 +323,7 @@ struct OpenClawRuntimeMaintenanceTests {
             try data.write(to: plist)
         }
 
-        func maintenance() -> OpenClawRuntimeMaintenance { .init(home: home, run: execute) }
+        func maintenance() -> OpenClawRuntimeMaintenance { .init(home: home, run: execute, wait: { _ in }) }
         func cleanUp() { try? FileManager.default.removeItem(at: home) }
         func archives() throws -> [URL] { try FileManager.default.contentsOfDirectory(at: backups, includingPropertiesForKeys: nil).filter { $0.pathExtension == "gz" } }
         func writeVersion(_ version: String) throws {
@@ -344,7 +386,10 @@ struct OpenClawRuntimeMaintenanceTests {
                     return (0, "{}")
                 }
                 if command.contains("launchctl") { return (0, "") }
-                if command.contains("lsof") { return failure == .activeWriter ? (1, "cannot inspect open files") : (1, "") }
+                if command.contains("lsof") {
+                    if !inspections.isEmpty { return inspections.count > 1 ? inspections.removeFirst() : inspections[0] }
+                    return failure == .activeWriter ? (1, "cannot inspect open files") : (1, "")
+                }
                 if command.contains("tar -tzf"), failure == .corruptArchive { return (1, "archive corrupt") }
                 if command.contains("/usr/bin/tar") {
                     let process = Process()
