@@ -1377,6 +1377,8 @@ final class InstallerViewModel: ObservableObject {
     @Published var kanbanHideCompleted = false
     @Published var healthLogs: String = ""
     @Published var showStorageRecovery = false
+    @Published var showPluginRecovery = false
+    @Published var pluginRecoveryDiagnostic = ""
     @Published var storageRecoveryDiagnostic = ""
     let storageRecoveryModel = StorageRecoveryModel()
     @Published var healthStatus: String = "Unknown"
@@ -2524,7 +2526,7 @@ final class InstallerViewModel: ObservableObject {
         controlCenterLogs = "Running doctor repair...\n"
         let result = engine.runDoctorRepair()
         controlCenterLogs += "[\(result.state.rawValue)] \(result.message)\n"
-        if result.state == .fail { presentStorageFailure(result.message) }
+        if result.state == .fail { presentMaintenanceFailure(result.message) }
         refreshControlCenter()
     }
 
@@ -4163,7 +4165,7 @@ final class InstallerViewModel: ObservableObject {
                     self.isRunning = false
                     self.refreshVersions()
                     self.append("OpenClaw runtime update failed.")
-                    self.presentStorageFailure(update.message)
+                    self.presentMaintenanceFailure(update.message)
                 }
                 return
             }
@@ -6303,7 +6305,7 @@ final class InstallerViewModel: ObservableObject {
                 self.isRunning = false
                 self.chatGatewayPrepared = false
                 self.healthLogs += "Repair: [\(repair.state.rawValue)] \(SecretRedactor.redactConfigText(repair.message))\n"
-                if repair.state == .fail { self.presentStorageFailure(repair.message) }
+                if repair.state == .fail { self.presentMaintenanceFailure(repair.message) }
                 self.refreshVersions()
             }
         }
@@ -6313,7 +6315,12 @@ final class InstallerViewModel: ObservableObject {
         _ = createRecoveryPoint(reason: "Manual backup")
     }
 
-    func presentStorageFailure(_ diagnostic: String) {
+    func presentMaintenanceFailure(_ diagnostic: String) {
+        if OpenClawUpdateResult.needsPluginApproval(diagnostic) {
+            pluginRecoveryDiagnostic = SecretRedactor.redactConfigText(diagnostic)
+            showPluginRecovery = true
+            return
+        }
         guard OpenClawStorageRecovery.isStorageFailure(diagnostic) else { return }
         storageRecoveryDiagnostic = SecretRedactor.redactConfigText(diagnostic)
         showStorageRecovery = true
@@ -7677,7 +7684,9 @@ final class InstallerViewModel: ObservableObject {
             chatStatus = "Update or reinstall LocalClaw to restore its repair resources"
             screen = .updates
         case .storage:
-            presentStorageFailure(message.text)
+            presentMaintenanceFailure(message.text)
+        case .pluginPermissions:
+            presentMaintenanceFailure(message.text)
         case .runtimeVersion:
             screen = .updates
             updateOpenClawRuntime()
@@ -7720,7 +7729,7 @@ final class InstallerViewModel: ObservableObject {
                         self.retryChatMessage(message, useDeveloperSession: useDeveloperSession)
                     } else {
                         self.chatStatus = "Recovery needs attention"
-                        self.presentStorageFailure(repair.message)
+                        self.presentMaintenanceFailure(repair.message)
                         let recoveryMessage = ChatMessage(
                             role: "error",
                             text: "Recovery could not finish.\n\n\(SecretRedactor.redactConfigText(repair.message))",
@@ -7764,7 +7773,7 @@ final class InstallerViewModel: ObservableObject {
                 let detail = SecretRedactor.redactConfigText(repair.message)
                 self.healthLogs += "\nGateway recovery: [\(repair.state.rawValue)] \(detail)\n"
                 self.chatStatus = repair.state == .ok ? "Ready" : "Recovery needs attention"
-                if repair.state == .fail { self.presentStorageFailure(detail) }
+                if repair.state == .fail { self.presentMaintenanceFailure(detail) }
                 let response = repair.state == .ok
                     ? "\(detail)\nCheck the discussion before sending the previous message again."
                     : detail
@@ -12226,6 +12235,14 @@ struct ContentView: View {
         .sheet(isPresented: $vm.showStorageRecovery) {
             StorageRecoveryView(model: vm.storageRecoveryModel, diagnostic: vm.storageRecoveryDiagnostic) {
                 vm.showStorageRecovery = false
+                vm.screen = .healthCenter
+                helpTab = .healthCommands
+                vm.runQuickRepair()
+            }
+        }
+        .sheet(isPresented: $vm.showPluginRecovery) {
+            PluginRecoveryView(diagnostic: vm.pluginRecoveryDiagnostic) {
+                vm.showPluginRecovery = false
                 vm.screen = .healthCenter
                 helpTab = .healthCommands
                 vm.runQuickRepair()

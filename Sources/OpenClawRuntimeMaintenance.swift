@@ -149,7 +149,9 @@ struct OpenClawRuntimeInstallation {
     }
 
     func command(_ arguments: String, cli override: URL? = nil) -> String {
-        environmentPrefix + Self.quote(node.path) + " " + Self.quote((override ?? cli).path) + " " + arguments
+        let entry = override ?? cli
+        return environmentPrefix + "OPENCLAW_DIST_DIR=\(Self.quote(entry.deletingLastPathComponent().appendingPathComponent("dist").path)) " +
+            Self.quote(node.path) + " " + Self.quote(entry.path) + " " + arguments
     }
 
     func applying(to environment: [String: String]) -> [String: String] {
@@ -241,6 +243,16 @@ final class OpenClawRuntimeMaintenance {
         return hasLegacyExecApprovals(runtime)
     }
 
+    func hasPendingUpdate() -> Bool {
+        guard let runtime = try? installation() else { return false }
+        return OpenClawUpdateCheckpoint.load(home: home, runtime: runtime) != nil
+    }
+
+    static func supportsPostCoreRepair(_ version: String?) -> Bool {
+        guard let version else { return false }
+        return version.compare("2026.8.1", options: .numeric) != .orderedAscending
+    }
+
     private func hasLegacyExecApprovals(_ runtime: OpenClawRuntimeInstallation) -> Bool {
         ["exec-approvals.json", "exec-approvals.json.doctor-importing"].contains { name in
             let path = runtime.state.appendingPathComponent(name).path
@@ -254,6 +266,10 @@ final class OpenClawRuntimeMaintenance {
         defer { Self.lock.unlock() }
         do {
             var runtime = try installation()
+            if OpenClawUpdateCheckpoint.load(home: home, runtime: runtime) != nil {
+                return allowRuntimeUpdate ? updateUnlocked()
+                    : StepResult(state: .fail, message: "OpenClaw post-update repair is pending. Use Repair Gateway to finish. No request was sent.")
+            }
             report("Checking the Gateway used by this chat...")
             var probe = probeGateway(runtime)
             let pendingApprovals = runtime.version == "2026.8.1" && hasLegacyExecApprovals(runtime)
@@ -309,6 +325,10 @@ final class OpenClawRuntimeMaintenance {
                     if OpenClawRecoveryDiagnostic.hasInvalidConfiguration(start.1) {
                         return configurationRecovery(runtime, evidence: start.1, allowed: allowRuntimeUpdate)
                     }
+                    if allowRuntimeUpdate, Self.supportsPostCoreRepair(runtime.version),
+                       OpenClawUpdateResult.needsPluginApproval(start.1) {
+                        return updateUnlocked()
+                    }
                     throw MaintenanceError("Gateway start failed (\(start.0)).\n\(start.1)\n\(gatewayFailureDetails(runtime, status: probe.1))")
                 }
             } else {
@@ -360,11 +380,11 @@ final class OpenClawRuntimeMaintenance {
     }
 
     private func probeGateway(_ runtime: OpenClawRuntimeInstallation) -> (Int32, String) {
-        run(bounded(runtime.command("gateway status --json --require-rpc --timeout 5000 2>&1"), seconds: 25))
+        run(bounded(runtime.command("gateway status --json --require-rpc --timeout 5000"), seconds: 25))
     }
 
     private func validateConfiguration(_ runtime: OpenClawRuntimeInstallation) -> (Int32, String) {
-        run(bounded(runtime.command("config validate --json 2>&1"), seconds: 30))
+        run(bounded(runtime.command("config validate --json"), seconds: 30))
     }
 
     private func configurationRecovery(_ runtime: OpenClawRuntimeInstallation, evidence: String, allowed: Bool) -> StepResult {
@@ -447,6 +467,12 @@ final class OpenClawRuntimeMaintenance {
             let runtime = try installation()
             for directory in [runtime.prefix, runtime.state] where fm.fileExists(atPath: directory.path) {
                 try OpenClawStorageRecovery.requireSpace(at: directory, freeBytes: freeBytes)
+            }
+            if let checkpoint = OpenClawUpdateCheckpoint.load(home: home, runtime: runtime),
+               Self.supportsPostCoreRepair(runtime.version) {
+                backupPath = checkpoint.archive
+                report("Resuming OpenClaw \(checkpoint.target) repair with the existing verified backup. No core reinstall...")
+                return try finishUpdate(runtime, target: checkpoint.target, updater: runtime.cli, repairOnly: true)
             }
             report("Checking the Gateway installation: \(runtime.package.path)")
             let validation = validateConfiguration(runtime)
@@ -545,40 +571,72 @@ final class OpenClawRuntimeMaintenance {
                 }
             }
 
-            report("Updating the Gateway, synchronizing plugins and checking startup...")
-            let update = run(runtime.command("update --tag \(q(target)) --yes --json", cli: updater))
-            guard update.0 == 0 else {
-                let installed = runtime.version == target ? "OpenClaw \(target) is installed, but post-update maintenance did not finish.\n" : ""
-                throw MaintenanceError("\(installed)OpenClaw update failed (\(update.0)).\n\(update.1)")
-            }
-            let output = update.1
-            guard let result = InstallerEngine.firstJSONObject(in: output), result["status"] as? String == "ok" else {
-                throw MaintenanceError("OpenClaw did not confirm a successful update.\n\(output)")
-            }
-            if let plugins = (result["postUpdate"] as? [String: Any])?["plugins"] as? [String: Any],
-               let pluginStatus = plugins["status"] as? String, ["error", "warning"].contains(pluginStatus) {
-                throw MaintenanceError("The core update finished, but plugin convergence needs attention. No task was replayed.\n\(output)")
-            }
-            guard runtime.version == target else { throw MaintenanceError("The Gateway package is not version \(target) after updating. No task was replayed.") }
-            let configCheck = validateConfiguration(runtime)
-            guard configCheck.0 == 0, InstallerEngine.firstJSONObject(in: configCheck.1)?["valid"] as? Bool == true else {
-                throw MaintenanceError("Configuration validation failed after updating OpenClaw.\n\(configCheck.1)")
-            }
-            if runtime.serviceLabel != nil {
-                guard let installed = try OpenClawRuntimeInstallation.managed(home: home), installed.package == runtime.package else {
-                    throw MaintenanceError("The Gateway service points to a different installation after updating.")
-                }
-            }
-            let verified = try checked(runtime.command("gateway status --json --require-rpc --timeout 10000"), stage: "Verify Gateway")
-            guard Self.verifiedGateway(verified, expectedVersion: target) else {
-                throw MaintenanceError("The Gateway is not running the expected version with healthy RPC.\n\(verified)")
-            }
-            return StepResult(state: .ok, message: "OpenClaw \(target) updated; Gateway version and RPC verified.\nRecovery backup: \(archive.path)")
+            return try finishUpdate(runtime, target: target, updater: updater,
+                                    repairOnly: current == target && Self.supportsPostCoreRepair(current))
         } catch {
             let backup = backupPath.map { "\nRecovery backup: \($0)" } ?? ""
             let guidance = OpenClawStorageRecovery.isStorageFailure(error.localizedDescription) ? "\(OpenClawStorageRecovery.explanation)\n\n" : ""
             return StepResult(state: .fail, message: SecretRedactor.redactConfigText("\(guidance)OpenClaw maintenance stopped: \(error.localizedDescription)\(backup)\nYour database was not deleted or downgraded. No chat request was replayed."))
         }
+    }
+
+    private func finishUpdate(_ runtime: OpenClawRuntimeInstallation, target: String, updater: URL, repairOnly: Bool) throws -> StepResult {
+        report(repairOnly ? "Finishing Doctor and plugin repair without reinstalling OpenClaw..."
+               : "Updating the Gateway, synchronizing plugins and checking startup...")
+        let arguments = repairOnly ? "update repair --yes --json" : "update --tag \(q(target)) --yes --json"
+        let update = run(bounded(runtime.command(arguments + " --timeout 600", cli: updater), seconds: 1800))
+        // Keep a resumable checkpoint even if Doctor fails after the package swap.
+        if runtime.version == target, let backupPath {
+            try OpenClawUpdateCheckpoint.save(home: home, runtime: runtime, target: target, archive: URL(fileURLWithPath: backupPath))
+        }
+        let output = update.1
+        guard let result = OpenClawUpdateResult.envelope(in: output),
+              let root = result["root"] as? String,
+              URL(fileURLWithPath: root).resolvingSymlinksInPath() == runtime.package.resolvingSymlinksInPath() else {
+            throw MaintenanceError("OpenClaw maintenance returned no verifiable result for this installation (exit \(update.0)).\n\(output)")
+        }
+        guard runtime.version == target else {
+            throw MaintenanceError("The Gateway package is not version \(target) after updating. No task was replayed.\n\(output)")
+        }
+        if let pluginFailure = OpenClawUpdateResult.pluginFailure(in: result) {
+            throw MaintenanceError(pluginFailure)
+        }
+        guard update.0 == 0, result["status"] as? String == "ok" else {
+            throw MaintenanceError("OpenClaw \(target) is installed, but post-update maintenance did not finish (exit \(update.0)).\n\(output)")
+        }
+        let configCheck = validateConfiguration(runtime)
+        guard configCheck.0 == 0, InstallerEngine.firstJSONObject(in: configCheck.1)?["valid"] as? Bool == true else {
+            throw MaintenanceError("Configuration validation failed after updating OpenClaw.\n\(configCheck.1)")
+        }
+        if repairOnly {
+            // Unlike `update`, native `update repair` deliberately never restarts.
+            report("Installing the repaired Gateway service and restarting it...")
+            _ = try checked(bounded(runtime.command("gateway install --force --json"), seconds: 90), stage: "Install repaired Gateway")
+        }
+        if runtime.serviceLabel != nil || repairOnly {
+            guard let installed = try OpenClawRuntimeInstallation.managed(home: home),
+                  installed.package == runtime.package, installed.node.resolvingSymlinksInPath() == runtime.node.resolvingSymlinksInPath(),
+                  installed.state == runtime.state, installed.config == runtime.config else {
+                throw MaintenanceError("The Gateway service points to a different installation after updating.")
+            }
+        }
+        if repairOnly {
+            _ = try checked(bounded(runtime.command("gateway restart --json"), seconds: 90), stage: "Restart repaired Gateway")
+        }
+        report("Verifying Gateway version and RPC health...")
+        var samples = 0
+        var verified = ""
+        for delay in [0.0, 1.0, 2.0, 3.0, 5.0, 5.0] {
+            wait(delay)
+            let probe = probeGateway(runtime)
+            verified = probe.1
+            samples = probe.0 == 0 && Self.verifiedGateway(probe.1, expectedVersion: target) ? samples + 1 : 0
+            if samples == 2 {
+                try fm.removeItem(at: OpenClawUpdateCheckpoint.location(home: home))
+                return StepResult(state: .ok, message: "OpenClaw \(target) ready; configuration, Gateway version and two RPC checks verified.\nRecovery backup: \(backupPath ?? "unknown")\nNo chat request was replayed.")
+            }
+        }
+        throw MaintenanceError("The Gateway is not running the expected version with healthy RPC.\n\(verified)")
     }
 
     private func updateTarget(_ runtime: OpenClawRuntimeInstallation, cli: URL, tag: String) throws -> String {

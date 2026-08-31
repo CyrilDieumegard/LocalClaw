@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import localclaw_mac_installer
 
+extension RuntimeRecoveryTests {
 struct OpenClawStorageRecoveryTests {
     @Test(arguments: ["npm error code ENOSPC", "tar: Write error: No space left on device", "Not enough free disk space for a safe recovery backup", "EDQUOT: disk quota exceeded"])
     func storageFailureWinsOverConfigurationAndNeverReplays(_ error: String) {
@@ -114,4 +115,5 @@ struct OpenClawStorageRecoveryTests {
         }
         func cleanUp() { try? FileManager.default.removeItem(at: home) }
     }
+}
 }

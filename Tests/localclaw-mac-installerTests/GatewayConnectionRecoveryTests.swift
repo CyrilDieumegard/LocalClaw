@@ -3,9 +3,9 @@ import Testing
 
 @testable import localclaw_mac_installer
 
-extension OpenClawRuntimeMaintenanceTests {
-  @Suite(.serialized)
-  struct GatewayConnectionRecoveryTests {
+extension RuntimeRecoveryTests.OpenClawRuntimeMaintenanceTests {
+@Suite(.serialized)
+struct GatewayConnectionRecoveryTests {
     @Test func exactCustomerErrorOffersRecoveryWithoutResending() {
       let error = #"""
         Gateway agent call connection closed; the Gateway may still be running this turn. Check `openclaw gateway status` and the session transcript before retrying or rerunning with --local, so the turn does not execute twice.

@@ -39,7 +39,7 @@ swift test
 
 ## OpenClaw compatibility
 
-LocalClaw 1.0.200 targets OpenClaw 2026.8.1 and retains the 2026.7.1 runtime path.
+LocalClaw 1.0.201 targets OpenClaw 2026.8.1 and retains the 2026.7.1 runtime path.
 Update LocalClaw first, then use Updates to upgrade OpenClaw. Before replacing
 the runtime, LocalClaw creates and verifies a state backup under
 `~/Library/Application Support/LocalClaw/runtime-backups/`. The normal portable
@@ -87,9 +87,30 @@ ownership lock, validation, import receipt and read-back checks remain active.
 LocalClaw does not write authorization rows itself or relax permissions.
 Malformed/conflicting sources remain blocked and preserved. The compatibility
 adapter is restricted to 2026.8.1 and refuses an unknown module/export contract.
-An already-installed target release does not need another staged updater.
-The normal update still owns Doctor, plugin convergence and Gateway activation;
-successful import alone is never reported as a healthy Gateway.
+An already-installed target release uses native `update repair`, not another core
+installation. Maintenance drains stdout and stderr separately and recognizes the
+final update or finalization envelope; JSON examples printed by Doctor cannot
+mask that result. A private checkpoint binds the verified backup to the installed
+runtime and state, so a later attempt can resume without duplicating the archive.
+Missing or changed backups cannot be reused. Native repair never restarts the
+Gateway, so LocalClaw explicitly installs/restarts the repaired service and checks
+its binding, configuration, version and two RPC samples before reporting success.
+
+Widened plugin capabilities are never accepted automatically. A dedicated Plugin
+Permissions sheet opens native OpenClaw review in Terminal, where each staged
+plugin's exact capability surface can be accepted or declined. It does not pass
+`--accept-capabilities` or `--yes`. Finish Repair then resumes verification without
+replaying chat. Other plugin warnings remain failures with their original details.
+
+```bash
+node scripts/test-openclaw-post-update.mjs /path/to/openclaw-2026.8.1-package
+dist/LocalClaw.app/Contents/MacOS/LocalClaw --check-update-output /path/to/diagnostic.txt
+```
+
+The native test runs finalization twice on disposable state with network and
+host-home reads denied. Only that fixture's hashed native coordinator locks are
+allowed outside its directory. The app diagnostic only parses the supplied file;
+it explicitly does not confirm live Gateway health.
 
 The migration helper is resolved from the packaged app's `Contents/Resources`,
 without SwiftPM's fatal `Bundle.module` accessor or any developer build fallback.

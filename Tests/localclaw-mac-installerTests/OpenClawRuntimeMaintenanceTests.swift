@@ -3,6 +3,10 @@ import Testing
 @testable import localclaw_mac_installer
 
 @Suite(.serialized)
+struct RuntimeRecoveryTests {}
+
+extension RuntimeRecoveryTests {
+@Suite(.serialized)
 struct OpenClawRuntimeMaintenanceTests {
     private let mismatch = "OpenClaw state database /Users/bot/.openclaw/state/openclaw.sqlite uses newer schema version 15; this OpenClaw build supports 1."
 
@@ -220,7 +224,7 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(runtime?.version == "2026.7.1-2")
     }
 
-    @Test(arguments: [Failure.update, .wrongVersion, .unhealthy, .schemaRemains, .pluginWarning, .configRemains])
+    @Test(arguments: [Failure.update, .wrongVersion, .unhealthy, .schemaRemains, .pluginWarning, .configRemains, .consent, .malformedResult, .wrongResultRoot, .nonzeroSuccess])
     func PostUpdateFailuresAreNotReportedAsSuccess(_ failure: Failure) throws {
         let fixture = try Fixture(failure: failure)
         defer { fixture.cleanUp() }
@@ -443,7 +447,64 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(result.state == .ok, Comment(rawValue: result.message))
     }
 
-    enum Failure: String, Sendable { case backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, pluginWarning, configRemains, registryUnavailable, registryNoSpace, invalidRegistryVersion, approvalsMigration, unverifiedApprovalsMigration }
+    @Test func installedCoreUsesPostUpdateRepairThenExplicitActivation() throws {
+        let fixture = try Fixture(schemaMismatch: false)
+        defer { fixture.cleanUp() }
+        try fixture.writeVersion("2026.8.1")
+        let result = fixture.maintenance().update()
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        let repair = try #require(fixture.commands.firstIndex { $0.contains("update repair --yes --json") })
+        let install = try #require(fixture.commands.firstIndex { $0.contains("gateway install --force --json") })
+        let restart = try #require(fixture.commands.firstIndex { $0.contains("gateway restart --json") })
+        #expect(repair < install && install < restart)
+        #expect(fixture.commands.suffix(from: restart).filter { $0.contains("gateway status") }.count == 2)
+        #expect(!fixture.commands.contains { $0.contains("npm install") || ($0.contains("update --tag") && $0.contains("--yes")) })
+    }
+
+    @Test func pluginConsentSurvivesRelaunchAndReusesBackupWithoutCoreReinstall() throws {
+        let fixture = try Fixture(failure: .consent)
+        defer { fixture.cleanUp() }
+        let first = fixture.maintenance().update()
+        #expect(first.state == .fail)
+        #expect(ChatRecoveryPlan.classify(error: first.message).kind == .pluginPermissions)
+        let runtime = try #require(try OpenClawRuntimeInstallation.managed(home: fixture.home))
+        #expect(OpenClawUpdateCheckpoint.load(home: fixture.home, runtime: runtime) != nil)
+        let script = try OpenClawPluginReview.prepare(home: fixture.home, runtime: runtime)
+        #expect((try FileManager.default.attributesOfItem(atPath: script.path)[.posixPermissions] as? NSNumber)?.intValue == 0o700)
+        fixture.commands.removeAll()
+        #expect(fixture.maintenance().prepareGateway().state == .fail)
+        #expect(fixture.commands.isEmpty)
+        fixture.failure = nil
+        let result = fixture.maintenance().prepareGateway(allowRuntimeUpdate: true)
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(try fixture.archives().count == 1)
+        #expect(!fixture.maintenance().hasPendingUpdate())
+        #expect(fixture.commands.contains { $0.contains("update repair --yes --json") })
+        #expect(!fixture.commands.contains { $0.contains("backup create") || $0.contains("npm ") || $0.contains("--dry-run") || $0.contains("tar ") || $0.contains("--accept-capabilities") })
+    }
+
+    @Test func changedOrMissingBackupCannotBeReused() throws {
+        let fixture = try Fixture(failure: .pluginWarning)
+        defer { fixture.cleanUp() }
+        #expect(fixture.maintenance().update().state == .fail)
+        let runtime = try #require(try OpenClawRuntimeInstallation.managed(home: fixture.home))
+        let checkpoint = try #require(OpenClawUpdateCheckpoint.load(home: fixture.home, runtime: runtime))
+        try Data("changed".utf8).write(to: URL(fileURLWithPath: checkpoint.archive))
+        #expect(OpenClawUpdateCheckpoint.load(home: fixture.home, runtime: runtime) == nil)
+        #expect(throws: MaintenanceError.self) { try OpenClawPluginReview.prepare(home: fixture.home, runtime: runtime) }
+    }
+
+    @Test func failedGatewayRestartKeepsCheckpointAndDoesNotClaimSuccess() throws {
+        let fixture = try Fixture(schemaMismatch: false, failure: .restart)
+        defer { fixture.cleanUp() }
+        try fixture.writeVersion("2026.8.1")
+        let result = fixture.maintenance().update()
+        #expect(result.state == .fail)
+        #expect(result.message.contains("Restart repaired Gateway failed"))
+        #expect(fixture.maintenance().hasPendingUpdate())
+    }
+
+    enum Failure: String, Sendable { case backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, pluginWarning, configRemains, registryUnavailable, registryNoSpace, invalidRegistryVersion, approvalsMigration, unverifiedApprovalsMigration, consent, malformedResult, wrongResultRoot, nonzeroSuccess, restart }
 
     private final class Fixture {
         let home: URL
@@ -452,7 +513,7 @@ struct OpenClawRuntimeMaintenanceTests {
         let backups: URL
         let schemaMismatch: Bool
         let invalidConfig: Bool
-        let failure: Failure?
+        var failure: Failure?
         var commands: [String] = []
         var didUpdate = false
         var inspections: [(Int32, String)] = []
@@ -564,6 +625,8 @@ struct OpenClawRuntimeMaintenanceTests {
                     return (process.terminationStatus, "")
                 }
                 if command.contains("npm --version") { return (0, "12.0.0") }
+                if command.contains("gateway install --force --json") { return (0, #"{"ok":true}"#) }
+                if command.contains("gateway restart --json") { return failure == .restart ? (1, "restart refused") : (0, #"{"ok":true}"#) }
                 if command.contains("exec-approvals-migration.mjs") {
                     if failure == .approvalsMigration { return (1, "Preserved malformed legacy exec approvals for operator recovery.") }
                     if failure != .unverifiedApprovalsMigration {
@@ -585,11 +648,26 @@ struct OpenClawRuntimeMaintenanceTests {
                     if failure == .update { return (1, "post-core repair failed") }
                     didUpdate = true
                     if failure != .wrongVersion { try writeVersion("2026.8.1") }
-                    try wrapService()
-                    return (0, failure == .pluginWarning ? #"{"status":"ok","postUpdate":{"plugins":{"status":"warning"}}}"# : #"{"status":"ok"}"#)
+                    if !command.contains("update repair") { try wrapService() }
+                    if failure == .malformedResult { return (0, #"{"status":"ok"}"#) }
+                    var result: [String: Any] = ["status": "ok", "mode": "npm", "root": failure == .wrongResultRoot ? "/wrong/package" : package.path, "steps": []]
+                    if command.contains("update repair") {
+                        result["mode"] = "finalize"
+                        result.removeValue(forKey: "steps")
+                        result["restart"] = false
+                        result["phaseTimings"] = [["phase": "doctor", "outcome": "completed", "durationMs": 42]]
+                        result["postUpdate"] = ["doctor": ["status": "ok"], "plugins": ["status": "ok"]]
+                    }
+                    if failure == .pluginWarning { result["postUpdate"] = ["plugins": ["status": "warning"]] }
+                    if failure == .consent {
+                        result["postUpdate"] = ["plugins": ["status": "warning", "npm": ["outcomes": [["pluginId": "codex", "status": "error", "code": "PLUGIN_CAPABILITY_CONSENT_REQUIRED"]]]]]
+                    }
+                    let diagnostic = #"Doctor: openclaw config set commands.ownerAllowFrom '["telegram:123456789"]'"#
+                    return (failure == .nonzeroSuccess ? 1 : 0, diagnostic + "\n" + String(decoding: try JSONSerialization.data(withJSONObject: result), as: UTF8.self))
                 }
                 return (1, "Unexpected fixture command")
             } catch { return (1, error.localizedDescription) }
         }
     }
+}
 }

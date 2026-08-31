@@ -343,13 +343,29 @@ final class InstallerEngine: @unchecked Sendable {
     }
 
     func shell(_ command: String) -> (Int32, String) {
+        runShell(command, separateDiagnostics: false)
+    }
+
+    func maintenanceShell(_ command: String) -> (Int32, String) {
+        runShell(command, separateDiagnostics: true)
+    }
+
+    private final class DiagnosticOutput: @unchecked Sendable {
+        private let lock = NSLock()
+        private var data = Data()
+        func set(_ value: Data) { lock.lock(); defer { lock.unlock() }; data = value }
+        func get() -> Data { lock.lock(); defer { lock.unlock() }; return data }
+    }
+
+    private func runShell(_ command: String, separateDiagnostics: Bool) -> (Int32, String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = ["-lc", Self.shellPathPrefix + command]
 
         let pipe = Pipe()
+        let errors = separateDiagnostics ? Pipe() : nil
         process.standardOutput = pipe
-        process.standardError = pipe
+        process.standardError = errors ?? pipe
 
         do {
             try process.run()
@@ -357,15 +373,28 @@ final class InstallerEngine: @unchecked Sendable {
             return (1, "Failed command: \(command)\n\(error.localizedDescription)")
         }
 
+        // Drain both pipes concurrently. Doctor writes prose to stderr while the
+        // update result is JSON on stdout; merging live bytes can corrupt JSON.
+        let group = DispatchGroup()
+        let diagnostics = DiagnosticOutput()
+        if let errors {
+            group.enter()
+            DispatchQueue.global(qos: .utility).async {
+                diagnostics.set(errors.fileHandleForReading.readDataToEndOfFile())
+                group.leave()
+            }
+        }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        group.wait()
         process.waitUntilExit()
-        let output = String(data: data, encoding: .utf8) ?? ""
+        let stderr = String(decoding: diagnostics.get(), as: UTF8.self)
+        let output = (stderr.isEmpty ? "" : stderr + "\n") + String(decoding: data, as: UTF8.self)
         return (process.terminationStatus, output.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     private func gatewayCLI(_ arguments: String, timeout: Int = 90) -> (Int32, String) {
         do {
-            let runtime = try OpenClawRuntimeMaintenance(run: shell).installation()
+            let runtime = try OpenClawRuntimeMaintenance(run: maintenanceShell).installation()
             return shell("perl -e 'alarm \(timeout); exec @ARGV' " + runtime.command(arguments))
         } catch {
             return (1, "Could not use the Gateway installation: \(error.localizedDescription)")
@@ -948,17 +977,17 @@ final class InstallerEngine: @unchecked Sendable {
 
     /// Run doctor repair
     func runDoctorRepair() -> StepResult {
-        let maintenance = OpenClawRuntimeMaintenance(run: shell)
-        if maintenance.schemaMismatch() != nil || maintenance.configurationNeedsRepair() || maintenance.execApprovalsNeedMigration() { return maintenance.update() }
+        let maintenance = OpenClawRuntimeMaintenance(run: maintenanceShell)
+        if maintenance.hasPendingUpdate() || maintenance.schemaMismatch() != nil || maintenance.configurationNeedsRepair() || maintenance.execApprovalsNeedMigration() { return maintenance.update() }
         return runDoctorRepairDetailed().result
     }
 
     func prepareChatGateway(allowRuntimeUpdate: Bool = false, report: @escaping (String) -> Void = { _ in }) -> StepResult {
-        OpenClawRuntimeMaintenance(run: shell, report: report).prepareGateway(allowRuntimeUpdate: allowRuntimeUpdate)
+        OpenClawRuntimeMaintenance(run: maintenanceShell, report: report).prepareGateway(allowRuntimeUpdate: allowRuntimeUpdate)
     }
 
     func gatewayConnectionDiagnostic() -> String {
-        OpenClawRuntimeMaintenance(run: shell).gatewayDiagnostic()
+        OpenClawRuntimeMaintenance(run: maintenanceShell).gatewayDiagnostic()
     }
 
     private func runDoctorRepairDetailed() -> (result: StepResult, output: String) {
@@ -1073,7 +1102,10 @@ final class InstallerEngine: @unchecked Sendable {
             return StepResult(state: .fail, message: "OpenClaw CLI is not installed")
         }
 
-        let maintenance = OpenClawRuntimeMaintenance(run: shell)
+        let maintenance = OpenClawRuntimeMaintenance(run: maintenanceShell)
+        if maintenance.hasPendingUpdate() || OpenClawRuntimeMaintenance.supportsPostCoreRepair((try? maintenance.installation())?.version) {
+            return maintenance.update()
+        }
         if maintenance.schemaMismatch() != nil || maintenance.configurationNeedsRepair() { return maintenance.update() }
 
         var doctor = runDoctorRepairDetailed()
@@ -1138,7 +1170,7 @@ final class InstallerEngine: @unchecked Sendable {
             return StepResult(state: .fail, message: "OpenClaw CLI is not installed")
         }
 
-        let maintenance = OpenClawRuntimeMaintenance(run: shell)
+        let maintenance = OpenClawRuntimeMaintenance(run: maintenanceShell)
         if OpenClawRecoveryDiagnostic.hasLegacyExecApprovals(errorText) || maintenance.execApprovalsNeedMigration() {
             guard allowPackageReinstall else {
                 return StepResult(state: .fail, message: "Legacy exec approvals exist. Use Repair Gateway to back up and migrate the existing permissions. No request was replayed.")
@@ -1668,7 +1700,7 @@ final class InstallerEngine: @unchecked Sendable {
     }
 
     func repairOpenClawSetupQuiet() -> StepResult {
-        let maintenance = OpenClawRuntimeMaintenance(run: shell)
+        let maintenance = OpenClawRuntimeMaintenance(run: maintenanceShell)
         if maintenance.schemaMismatch() != nil || maintenance.configurationNeedsRepair() { return maintenance.update() }
         let (code, _) = shell("perl -e 'alarm 120; exec @ARGV' openclaw doctor --fix --yes --non-interactive")
         return code == 0
@@ -2225,6 +2257,6 @@ final class InstallerEngine: @unchecked Sendable {
         if node.state == .fail {
             return StepResult(state: .fail, message: "Node setup failed before OpenClaw update.\n\(node.message)")
         }
-        return OpenClawRuntimeMaintenance(run: shell, report: report).update()
+        return OpenClawRuntimeMaintenance(run: maintenanceShell, report: report).update()
     }
 }

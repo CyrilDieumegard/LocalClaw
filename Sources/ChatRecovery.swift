@@ -3,6 +3,7 @@ import Foundation
 enum ChatRecoveryKind: String, Codable, Sendable {
     case appResources
     case storage
+    case pluginPermissions
     case runtimeFiles
     case runtimeVersion
     case configuration
@@ -40,6 +41,18 @@ struct ChatRecoveryPlan: Equatable, Sendable {
             return ChatRecoveryPlan(kind: .storage, title: "Not enough disk space",
                                     explanation: OpenClawStorageRecovery.explanation,
                                     primaryActionLabel: "Storage Recovery", systemImage: "externaldrive.badge.exclamationmark")
+        }
+
+        if OpenClawUpdateResult.needsPluginApproval(current) {
+            return ChatRecoveryPlan(kind: .pluginPermissions, title: "Plugin permissions need your approval",
+                                    explanation: "The OpenClaw core is installed. Review the plugin's new capabilities, then finish Gateway repair without reinstalling the core or replaying your request.",
+                                    primaryActionLabel: "Review Plugin Permissions", systemImage: "hand.raised.fill")
+        }
+
+        if clean.contains("post-update") || clean.contains("plugin repair needs attention") {
+            return ChatRecoveryPlan(kind: .gateway, title: "OpenClaw repair needs to finish",
+                                    explanation: "LocalClaw can resume the remaining repair and verify Gateway health. Your message will not be replayed.",
+                                    primaryActionLabel: "Repair Gateway", systemImage: "wrench.and.screwdriver")
         }
 
         if let mismatch = OpenClawSchemaMismatch.detect(in: current) {

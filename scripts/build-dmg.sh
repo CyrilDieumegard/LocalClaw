@@ -7,7 +7,7 @@ cd "$ROOT"
 APP_NAME="LocalClaw"
 DMG_NAME="localclaw"
 BUNDLE_ID="io.localclaw.installer"
-MARKETING_VERSION="1.0.200"
+MARKETING_VERSION="1.0.201"
 BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
 DIST_DIR="dist"
 DIST_APP_PATH="${DIST_DIR}/${APP_NAME}.app"
@@ -201,6 +201,7 @@ fi
 echo "Checking packaged recovery resources without starting the app UI"
 "$APP_PATH/Contents/MacOS/$APP_NAME" --check-recovery-resources
 node "$ROOT/scripts/test-packaged-recovery-resources.mjs" "$APP_PATH"
+node "$ROOT/scripts/test-packaged-update-output.mjs" "$APP_PATH"
 
 echo "[4/6] Building DMG"
 rm -rf "$STAGING"
