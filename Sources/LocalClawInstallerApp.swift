@@ -7673,6 +7673,9 @@ final class InstallerViewModel: ObservableObject {
         guard !isRunning, !chatIsSending, let plan = chatRecoveryPlan(for: message) else { return }
 
         switch plan.kind {
+        case .appResources:
+            chatStatus = "Update or reinstall LocalClaw to restore its repair resources"
+            screen = .updates
         case .storage:
             presentStorageFailure(message.text)
         case .runtimeVersion:
@@ -21101,7 +21104,6 @@ struct ContentView: View {
     }
 }
 
-@main
 struct LocalClawInstallerApp: App {
     var body: some Scene {
         WindowGroup {

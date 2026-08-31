@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url';
 assert.ok(process.argv[2], 'Pass the unpacked OpenClaw 2026.8.1 package directory.');
 const pkg = fs.realpathSync(process.argv[2]);
 assert.equal(JSON.parse(fs.readFileSync(path.join(pkg, 'package.json'))).version, '2026.8.1');
-const helper = fileURLToPath(new URL('../Sources/Resources/exec-approvals-migration.mjs', import.meta.url));
+const helper = process.argv[3] ? fs.realpathSync(process.argv[3])
+  : fileURLToPath(new URL('../Sources/Resources/exec-approvals-migration.mjs', import.meta.url));
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'localclaw-exec-migration-'));
 const policy = {
   version: 1,

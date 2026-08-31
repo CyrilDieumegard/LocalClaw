@@ -1,6 +1,7 @@
 import Foundation
 
 enum ChatRecoveryKind: String, Codable, Sendable {
+    case appResources
     case storage
     case runtimeFiles
     case runtimeVersion
@@ -28,6 +29,12 @@ struct ChatRecoveryPlan: Equatable, Sendable {
         let clean = current
             .replacingOccurrences(of: "\u{001B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
             .lowercased()
+
+        if clean.contains("localclaw repair resource") {
+            return ChatRecoveryPlan(kind: .appResources, title: "LocalClaw repair resources need attention",
+                                    explanation: OpenClawRecoveryResources.failureMessage,
+                                    primaryActionLabel: "Open Updates", systemImage: "arrow.down.app")
+        }
 
         if OpenClawStorageRecovery.isStorageFailure(current) {
             return ChatRecoveryPlan(kind: .storage, title: "Not enough disk space",

@@ -412,6 +412,37 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(repaired.state == .ok, Comment(rawValue: repaired.message))
     }
 
+    @Test(arguments: ["2026.7.1-2", "2026.8.1"])
+    func missingRepairResourceStopsBeforeBackupStagingMigrationOrServiceChanges(_ version: String) throws {
+        let fixture = try Fixture(schemaMismatch: false, invalidConfig: true)
+        defer { fixture.cleanUp() }
+        try fixture.writeVersion(version)
+        let approvals = fixture.home.appendingPathComponent(".openclaw/exec-approvals.json")
+        let original = Data("preserve existing permissions".utf8)
+        try original.write(to: approvals)
+        let maintenance = OpenClawRuntimeMaintenance(home: fixture.home, run: fixture.execute, wait: { _ in },
+            migrationHelper: { throw MaintenanceError(OpenClawRecoveryResources.failureMessage) })
+        let result = maintenance.update()
+        #expect(result.state == .fail)
+        #expect(result.message.contains("LocalClaw repair resource"))
+        #expect(ChatRecoveryPlan.classify(error: result.message).kind == .appResources)
+        #expect(!FileManager.default.fileExists(atPath: fixture.backups.path))
+        #expect(try Data(contentsOf: approvals) == original)
+        #expect(!fixture.commands.contains {
+            $0.contains("backup create") || $0.contains("tar ") || $0.contains("npm install") ||
+            $0.contains("launchctl") || $0.contains("--yes --json") || $0.contains("exec-approvals-migration.mjs")
+        })
+    }
+
+    @Test func maintenanceWithoutLegacyApprovalsDoesNotRequireMigrationResource() throws {
+        let fixture = try Fixture(schemaMismatch: false)
+        defer { fixture.cleanUp() }
+        let maintenance = OpenClawRuntimeMaintenance(home: fixture.home, run: fixture.execute, wait: { _ in },
+            migrationHelper: { throw MaintenanceError("Unexpected helper lookup") })
+        let result = maintenance.update()
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+    }
+
     enum Failure: String, Sendable { case backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, pluginWarning, configRemains, registryUnavailable, registryNoSpace, invalidRegistryVersion, approvalsMigration, unverifiedApprovalsMigration }
 
     private final class Fixture {

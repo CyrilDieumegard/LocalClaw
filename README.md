@@ -39,7 +39,7 @@ swift test
 
 ## OpenClaw compatibility
 
-LocalClaw 1.0.199 targets OpenClaw 2026.8.1 and retains the 2026.7.1 runtime path.
+LocalClaw 1.0.200 targets OpenClaw 2026.8.1 and retains the 2026.7.1 runtime path.
 Update LocalClaw first, then use Updates to upgrade OpenClaw. Before replacing
 the runtime, LocalClaw creates and verifies a state backup under
 `~/Library/Application Support/LocalClaw/runtime-backups/`. The normal portable
@@ -91,12 +91,36 @@ An already-installed target release does not need another staged updater.
 The normal update still owns Doctor, plugin convergence and Gateway activation;
 successful import alone is never reported as a healthy Gateway.
 
+The migration helper is resolved from the packaged app's `Contents/Resources`,
+without SwiftPM's fatal `Bundle.module` accessor or any developer build fallback.
+Repair checks that it is present, readable and nonempty before creating a backup
+or stopping a service. A missing resource returns an actionable LocalClaw update
+error, without replaying a chat request.
+
+The packaged executable has a read-only diagnostic that exits before starting
+the UI, services, license checks or user-data access:
+
+```bash
+dist/LocalClaw.app/Contents/MacOS/LocalClaw --check-recovery-resources
+node scripts/test-packaged-recovery-resources.mjs dist/LocalClaw.app
+```
+
+The latter copies the actual app to temporary customer-style homes and denies
+network access and reads from the host home (including the build directory).
+It checks the intact app plus missing, empty, wrong-type and external-symlink
+resources. Damaged copies must return JSON and exit 1, never SIGTRAP. Run it again
+on the app extracted from the final public DMG. A resource self-check does not
+by itself prove that a customer's Gateway has been repaired.
+
 Run the real-package regression in isolated temporary homes (no host credentials,
 live services, package installation or model calls):
 
 ```bash
 node scripts/test-openclaw-exec-migration.mjs /path/to/openclaw-2026.8.1-package
 ```
+
+An optional second argument selects the migration helper extracted from the DMG,
+so the real-package regression also tests the shipped script.
 
 Chat and Developer now launch the CLI with the service's Node, package, config,
 state directory, and port rather than whichever OpenClaw appears first on PATH.

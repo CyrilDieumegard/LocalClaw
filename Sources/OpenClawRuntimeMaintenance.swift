@@ -198,17 +198,20 @@ final class OpenClawRuntimeMaintenance {
     private let report: (String) -> Void
     private let wait: (TimeInterval) -> Void
     private let freeBytes: (URL) throws -> UInt64
+    private let migrationHelper: () throws -> URL
     private let fm = FileManager.default
     private var backupPath: String?
 
     init(home: URL = FileManager.default.homeDirectoryForCurrentUser, run: @escaping Runner,
          report: @escaping (String) -> Void = { _ in }, wait: @escaping (TimeInterval) -> Void = Thread.sleep(forTimeInterval:),
-         freeBytes: @escaping (URL) throws -> UInt64 = OpenClawOfflineBackup.availableBytes) {
+         freeBytes: @escaping (URL) throws -> UInt64 = OpenClawOfflineBackup.availableBytes,
+         migrationHelper: @escaping () throws -> URL = { try OpenClawRecoveryResources.migrationHelper() }) {
         self.home = home
         self.run = run
         self.report = report
         self.wait = wait
         self.freeBytes = freeBytes
+        self.migrationHelper = migrationHelper
     }
 
     func installation() throws -> OpenClawRuntimeInstallation {
@@ -465,6 +468,13 @@ final class OpenClawRuntimeMaintenance {
             guard let current = runtime.version, current.compare(target, options: .numeric) != .orderedDescending else {
                 throw MaintenanceError("The selected release would downgrade OpenClaw. No database or runtime was replaced.")
             }
+            let approvalsHelper: URL?
+            if pendingApprovals && target == "2026.8.1" {
+                report("Checking LocalClaw repair resources before creating a recovery backup...")
+                approvalsHelper = try migrationHelper()
+            } else {
+                approvalsHelper = nil
+            }
             if let data = try? Data(contentsOf: runtime.config),
                let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let meta = config["meta"] as? [String: Any], let authored = meta["lastTouchedVersion"] as? String,
@@ -521,11 +531,8 @@ final class OpenClawRuntimeMaintenance {
                 }
             }
 
-            if pendingApprovals && target == "2026.8.1" {
+            if let helper = approvalsHelper {
                 report("Migrating legacy execution approvals with OpenClaw's verified importer...")
-                guard let helper = Bundle.module.url(forResource: "exec-approvals-migration", withExtension: "mjs") else {
-                    throw MaintenanceError("The approvals migration helper is missing. Existing permissions were kept.")
-                }
                 let package = updater.deletingLastPathComponent()
                 let command = runtime.environmentPrefix + q(runtime.node.path) + " " + q(helper.path) + " " + q(package.path) + " " + q(runtime.state.path)
                 let migrated = try checked(bounded(command, seconds: 120), stage: "Migrate execution approvals")
