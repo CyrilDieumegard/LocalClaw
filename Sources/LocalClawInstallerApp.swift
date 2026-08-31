@@ -4106,7 +4106,7 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func updateAll() {
-        if isRunning { return }
+        if isRunning || chatIsSending { return }
         if installerUpdateStatus == "Update available" {
             append("LocalClaw app update available. Updating the app first; it will restart automatically.")
             updateLocalClawFromDMG()
@@ -4117,6 +4117,7 @@ final class InstallerViewModel: ObservableObject {
         append("Running update all")
         let engine = self.engine
         Task.detached {
+            await OpenClawGoalBridge.shared.invalidateRuntime()
             _ = await self.runStep(name: "Homebrew") { engine.updateHomebrew() }
             _ = await self.runStep(name: "LM Studio") { engine.upgradeLMStudioIfInstalled() }
             _ = await self.runStep(name: "Node") { engine.upgradeNodeIfInstalled() }
@@ -4130,17 +4131,7 @@ final class InstallerViewModel: ObservableObject {
                 return
             }
 
-            if engine.hasCommand("openclaw") {
-                let runtime = await self.runStep(name: "OpenClaw Check") { engine.finalizeOpenClawRuntime() }
-                if runtime.state == .fail {
-                    await MainActor.run {
-                        self.isRunning = false
-                        self.refreshVersions()
-                        self.append("Update stopped because the OpenClaw gateway did not become healthy.")
-                    }
-                    return
-                }
-            }
+            await OpenClawGoalBridge.shared.invalidateRuntime()
             await MainActor.run {
                 self.isRunning = false
                 self.refreshVersions()
@@ -4150,13 +4141,19 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func updateOpenClawRuntime() {
-        if isRunning { return }
+        if isRunning || chatIsSending { return }
         _ = createRecoveryPoint(reason: "Before OpenClaw update")
         isRunning = true
         append("Updating OpenClaw runtime")
         let engine = self.engine
         Task.detached {
-            let update = await self.runStep(name: "OpenClaw") { engine.updateOpenClawIfInstalled() }
+            await OpenClawGoalBridge.shared.invalidateRuntime()
+            let update = await self.runStep(name: "OpenClaw") {
+                engine.updateOpenClawIfInstalled { message in
+                    Task { @MainActor in self.append(message) }
+                }
+            }
+            await OpenClawGoalBridge.shared.invalidateRuntime()
             if update.state == .fail {
                 await MainActor.run {
                     self.isRunning = false
@@ -4166,11 +4163,11 @@ final class InstallerViewModel: ObservableObject {
                 return
             }
 
-            let runtime = await self.runStep(name: "OpenClaw Check") { engine.finalizeOpenClawRuntime() }
             await MainActor.run {
                 self.isRunning = false
+                self.chatGatewayPrepared = false
                 self.refreshVersions()
-                self.append(runtime.state == .ok ? "OpenClaw runtime update finished" : "OpenClaw runtime update failed health verification")
+                self.append("OpenClaw runtime update finished; Gateway version and health verified")
             }
         }
     }
@@ -6288,13 +6285,22 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func runQuickRepair() {
+        guard !isRunning, !chatIsSending else { return }
         _ = createRecoveryPoint(reason: "Before quick repair")
+        isRunning = true
         healthLogs += "\nRunning quick repair...\n"
-        let doctor = engine.runDoctorRepair()
-        healthLogs += "Doctor: [\(doctor.state.rawValue)] \(doctor.message)\n"
-        let restart = engine.restartGateway()
-        healthLogs += "Gateway restart: [\(restart.state.rawValue)] \(restart.message)\n"
-        runHealthCheck()
+        let engine = self.engine
+        Task.detached {
+            await OpenClawGoalBridge.shared.invalidateRuntime()
+            let repair = engine.finalizeOpenClawRuntime()
+            await OpenClawGoalBridge.shared.invalidateRuntime()
+            await MainActor.run {
+                self.isRunning = false
+                self.chatGatewayPrepared = false
+                self.healthLogs += "Repair: [\(repair.state.rawValue)] \(SecretRedactor.redactConfigText(repair.message))\n"
+                self.refreshVersions()
+            }
+        }
     }
 
     func backupOpenClawConfig() {
@@ -7652,9 +7658,14 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func performChatRecovery(for message: ChatMessage, useDeveloperSession: Bool = false) {
-        guard !chatIsSending, let plan = chatRecoveryPlan(for: message) else { return }
+        guard !isRunning, !chatIsSending, let plan = chatRecoveryPlan(for: message) else { return }
 
         switch plan.kind {
+        case .runtimeVersion:
+            screen = .updates
+            updateOpenClawRuntime()
+        case .deliveryUnknown:
+            openChatRecoveryHelp(for: message)
         case .authentication, .localModel:
             chatStatus = "Open Models to finish recovery"
             screen = .models
@@ -7928,7 +7939,7 @@ final class InstallerViewModel: ObservableObject {
         let hasText = rawInput.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.inverted) != nil
         let text = hasText ? rawInput : ""
         let imagePath = rawImagePath.trimmingCharacters(in: .whitespacesAndNewlines)
-        if (text.isEmpty && imagePath.isEmpty) || chatIsSending { return }
+        if (text.isEmpty && imagePath.isEmpty) || chatIsSending || isRunning || OpenClawRuntimeMaintenance.isActive { return }
 
         if useDeveloperSession {
             developerInput = ""
@@ -8276,6 +8287,9 @@ final class InstallerViewModel: ObservableObject {
                         errorText: initialFailure,
                         allowPackageReinstall: false
                     )
+                    if serviceRepair.state == .fail {
+                        result = (result.0, initialFailure + "\n" + serviceRepair.message)
+                    }
                     if serviceRepair.state == .ok {
                         result = Self.openClawAgentCancellable(
                             sessionID: runtimeSessionID,
@@ -8492,6 +8506,9 @@ final class InstallerViewModel: ObservableObject {
             process.arguments = ["node", script.path, agentID, sessionID, String(since)]
             var environment = ProcessInfo.processInfo.environment
             environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:\(NSHomeDirectory())/.npm-global/bin:\(environment["PATH"] ?? "")"
+            if let runtime = try? OpenClawRuntimeInstallation.managed() {
+                environment = runtime.applying(to: environment)
+            }
             process.environment = environment
             process.standardInput = FileHandle.nullDevice
             process.standardOutput = pipe

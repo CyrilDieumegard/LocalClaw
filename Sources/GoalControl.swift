@@ -936,6 +936,9 @@ actor OpenClawGoalBridge {
     private var input: FileHandle?
     private var output: FileHandle?
     private var outputBuffer = Data()
+    private var runtimeIdentifier: String?
+
+    func invalidateRuntime() { resetProcess() }
 
     func request(action: String, sessionKey: String, objective: String? = nil, note: String? = nil, tokenBudget: Int? = nil) throws -> (OpenClawGoalSnapshot?, String) {
         try ensureProcess()
@@ -964,7 +967,12 @@ actor OpenClawGoalBridge {
     }
 
     private func ensureProcess() throws {
-        if let process, process.isRunning, input != nil, output != nil { return }
+        guard !OpenClawRuntimeMaintenance.isActive else {
+            throw OpenClawGoalBridgeError.processFailed("OpenClaw maintenance is running. Goal checkpoints are preserved; wait for it to finish.")
+        }
+        let managedRuntime = try? OpenClawRuntimeInstallation.managed()
+        let identifier = managedRuntime.map { $0.package.path + ":" + ($0.version ?? "unknown") }
+        if let process, process.isRunning, input != nil, output != nil, runtimeIdentifier == identifier { return }
         resetProcess()
 
         guard let scriptURL = GoalControllerResourceLocator.locate() else {
@@ -978,6 +986,9 @@ actor OpenClawGoalBridge {
         process.arguments = ["node", scriptURL.path]
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:\(environment["PATH"] ?? "")"
+        if let runtime = managedRuntime {
+            environment = runtime.applying(to: environment)
+        }
         process.environment = environment
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
@@ -990,6 +1001,7 @@ actor OpenClawGoalBridge {
         }
 
         self.process = process
+        runtimeIdentifier = identifier
         input = stdinPipe.fileHandleForWriting
         output = stdoutPipe.fileHandleForReading
         outputBuffer.removeAll(keepingCapacity: true)
@@ -1026,6 +1038,7 @@ actor OpenClawGoalBridge {
         input = nil
         output = nil
         outputBuffer.removeAll(keepingCapacity: false)
+        runtimeIdentifier = nil
     }
 }
 
@@ -1499,6 +1512,10 @@ final class GoalCenterModel: ObservableObject {
             var consecutiveTimeouts = 0
 
             while !Task.isCancelled && self.continuousRunEnabled && self.selectedChatSessionID == sessionID {
+                if viewModel.isRunning || OpenClawRuntimeMaintenance.isActive {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    continue
+                }
                 await self.refresh()
                 guard Self.shouldContinueAutomatically(
                     enabled: self.continuousRunEnabled,

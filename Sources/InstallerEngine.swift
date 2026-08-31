@@ -110,7 +110,13 @@ struct ProcessUsageItem: Identifiable {
 }
 
 final class InstallerEngine: @unchecked Sendable {
-    static let shellPathPrefix = #"export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"; "#
+    static var shellPathPrefix: String {
+        let base = #"export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"; "#
+        guard let runtime = try? OpenClawRuntimeInstallation.managed() else { return base }
+        let paths = runtime.node.deletingLastPathComponent().path + ":" + runtime.bin.path
+        return base + "export PATH=\(OpenClawRuntimeInstallation.quote(paths)):\"$PATH\"; " +
+            "export OPENCLAW_DIST_DIR=\(OpenClawRuntimeInstallation.quote(runtime.package.appendingPathComponent("dist").path)); "
+    }
     static let minimumNodeVersion = "22.22.3"
     static let nodeRequirementDescription = "Node 22.22.3+, 24.15+, 25.9+, or 26+"
     private let providerAuthCacheLock = NSLock()
@@ -194,7 +200,8 @@ final class InstallerEngine: @unchecked Sendable {
     }
 
     static func gatewayIsHealthy(statusOutput: String) -> Bool {
-        guard let root = firstJSONObject(in: statusOutput),
+        guard OpenClawSchemaMismatch.detect(in: statusOutput) == nil,
+              let root = firstJSONObject(in: statusOutput),
               let rpc = root["rpc"] as? [String: Any],
               rpc["ok"] as? Bool == true,
               let service = root["service"] as? [String: Any],
@@ -928,7 +935,9 @@ final class InstallerEngine: @unchecked Sendable {
 
     /// Run doctor repair
     func runDoctorRepair() -> StepResult {
-        runDoctorRepairDetailed().result
+        let maintenance = OpenClawRuntimeMaintenance(run: shell)
+        if maintenance.schemaMismatch() != nil { return maintenance.update() }
+        return runDoctorRepairDetailed().result
     }
 
     private func runDoctorRepairDetailed() -> (result: StepResult, output: String) {
@@ -1043,6 +1052,9 @@ final class InstallerEngine: @unchecked Sendable {
             return StepResult(state: .fail, message: "OpenClaw CLI is not installed")
         }
 
+        let maintenance = OpenClawRuntimeMaintenance(run: shell)
+        if maintenance.schemaMismatch() != nil { return maintenance.update() }
+
         var doctor = runDoctorRepairDetailed()
         if doctor.result.state == .fail { return doctor.result }
 
@@ -1100,6 +1112,12 @@ final class InstallerEngine: @unchecked Sendable {
     ) -> StepResult {
         guard hasCommand("openclaw") else {
             return StepResult(state: .fail, message: "OpenClaw CLI is not installed")
+        }
+
+        let maintenance = OpenClawRuntimeMaintenance(run: shell)
+        if let mismatch = OpenClawSchemaMismatch.detect(in: errorText) ?? maintenance.schemaMismatch() {
+            guard allowPackageReinstall else { return StepResult(state: .fail, message: mismatch.explanation) }
+            return maintenance.update()
         }
 
         let service = installGatewayService()
@@ -1202,6 +1220,7 @@ final class InstallerEngine: @unchecked Sendable {
     }
 
     private func gatewayStatusSummary(from output: String) -> String {
+        if let mismatch = OpenClawSchemaMismatch.detect(in: output) { return mismatch.explanation }
         guard let root = Self.firstJSONObject(in: output) else {
             let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? "Gateway status unavailable" : String(trimmed.prefix(800))
@@ -1596,6 +1615,9 @@ final class InstallerEngine: @unchecked Sendable {
         for attempt in 1...8 {
             let (statusCode, statusOutput) = shell("openclaw gateway status --json --require-rpc --timeout 5000 2>&1")
             lastOutput = statusOutput
+            if let mismatch = OpenClawSchemaMismatch.detect(in: statusOutput) {
+                return StepResult(state: .fail, message: mismatch.explanation)
+            }
             if statusCode == 0 && Self.gatewayIsHealthy(statusOutput: statusOutput) {
                 let version = vOut.components(separatedBy: "\n").first ?? vOut
                 return StepResult(state: .ok, message: "OpenClaw ready (\(version)); gateway RPC healthy")
@@ -1610,6 +1632,8 @@ final class InstallerEngine: @unchecked Sendable {
     }
 
     func repairOpenClawSetupQuiet() -> StepResult {
+        let maintenance = OpenClawRuntimeMaintenance(run: shell)
+        if maintenance.schemaMismatch() != nil { return maintenance.update() }
         let (code, _) = shell("perl -e 'alarm 120; exec @ARGV' openclaw doctor --fix --yes --non-interactive")
         return code == 0
             ? StepResult(state: .ok, message: "Configuration repair completed")
@@ -2157,7 +2181,7 @@ final class InstallerEngine: @unchecked Sendable {
         return StepResult(state: .fail, message: out)
     }
 
-    func updateOpenClawIfInstalled() -> StepResult {
+    func updateOpenClawIfInstalled(report: @escaping (String) -> Void = { _ in }) -> StepResult {
         if !hasCommand("openclaw") {
             return StepResult(state: .skip, message: "OpenClaw not installed")
         }
@@ -2165,27 +2189,6 @@ final class InstallerEngine: @unchecked Sendable {
         if node.state == .fail {
             return StepResult(state: .fail, message: "Node setup failed before OpenClaw update.\n\(node.message)")
         }
-        let backup = backupOpenClawRuntimeState()
-        guard backup.state != .fail else { return backup }
-        let (code, out) = shell("npm i -g openclaw@latest")
-        return code == 0 ? StepResult(state: .ok, message: "OpenClaw updated.\n\(backup.message)") : StepResult(state: .fail, message: "\(out)\n\(backup.message)")
-    }
-
-    private func backupOpenClawRuntimeState() -> StepResult {
-        let directory = URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Application Support/LocalClaw/runtime-backups", isDirectory: true)
-        do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        } catch {
-            return StepResult(state: .fail, message: "OpenClaw update stopped: could not create the recovery directory. \(error.localizedDescription)")
-        }
-        let archive = directory.appendingPathComponent("openclaw-\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString.prefix(8)).tar.gz")
-        let quoted = archive.path.replacingOccurrences(of: "'", with: "'\\''")
-        let result = shell("perl -e 'alarm 300; exec @ARGV' openclaw backup create --no-include-workspace --verify --output '\(quoted)' --json 2>&1")
-        guard result.0 == 0 else {
-            return StepResult(state: .fail, message: "OpenClaw update stopped before replacing the runtime because its state backup failed. \(SecretRedactor.redactConfigText(result.1))")
-        }
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: archive.path)
-        return StepResult(state: .ok, message: "Verified OpenClaw state backup: \(archive.path)")
+        return OpenClawRuntimeMaintenance(run: shell, report: report).update()
     }
 }

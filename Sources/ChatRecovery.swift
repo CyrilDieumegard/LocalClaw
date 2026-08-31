@@ -2,6 +2,8 @@ import Foundation
 
 enum ChatRecoveryKind: String, Codable, Sendable {
     case runtimeFiles
+    case runtimeVersion
+    case deliveryUnknown
     case gateway
     case authentication
     case localModel
@@ -21,6 +23,22 @@ struct ChatRecoveryPlan: Equatable, Sendable {
         let clean = raw
             .replacingOccurrences(of: "\u{001B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
             .lowercased()
+
+        if let mismatch = OpenClawSchemaMismatch.detect(in: raw) {
+            return ChatRecoveryPlan(kind: .runtimeVersion,
+                                    title: "OpenClaw runtime is older than its database",
+                                    explanation: mismatch.explanation + " LocalClaw can back up the state and update the Gateway installation. The previous request will not be replayed automatically.",
+                                    primaryActionLabel: "Update OpenClaw",
+                                    systemImage: "arrow.triangle.2.circlepath")
+        }
+
+        if clean.contains("may still be running this turn") || clean.contains("turn does not execute twice") {
+            return ChatRecoveryPlan(kind: .deliveryUnknown,
+                                    title: "The request outcome is unknown",
+                                    explanation: "The connection closed after the request may have started. Check Gateway health and the session transcript before retrying to avoid executing the task twice.",
+                                    primaryActionLabel: "Check Gateway",
+                                    systemImage: "stethoscope")
+        }
 
         if clean.contains("err_module_not_found") ||
             (clean.contains("cannot find module") && clean.contains("openclaw/dist")) {

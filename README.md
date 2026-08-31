@@ -39,11 +39,23 @@ swift test
 
 ## OpenClaw compatibility
 
-LocalClaw 1.0.192 targets OpenClaw 2026.8.1 and retains the 2026.7.1 runtime path.
+LocalClaw 1.0.193 targets OpenClaw 2026.8.1 and retains the 2026.7.1 runtime path.
 Update LocalClaw first, then use Updates to upgrade OpenClaw. Before replacing
 the runtime, LocalClaw creates and verifies a state backup under
-`~/Library/Application Support/LocalClaw/runtime-backups/` (project workspaces
-are not copied). OpenClaw Doctor performs its own configuration/storage migrations.
+`~/Library/Application Support/LocalClaw/runtime-backups/`. The normal portable
+backup excludes project workspaces. If the old runtime cannot read an already
+migrated database, LocalClaw stops the identified Gateway, checks for other open
+state files, and archives the entire state directory instead (including nested
+workspaces, so allow extra disk space). It never deletes or downgrades SQLite.
+
+Updates target the npm package and Node used by the LaunchAgent, including the
+new generated environment-wrapper format. An incompatible old CLI is replaced
+through a staged, newer updater after backup; the staged updater must first
+confirm it targets the original service installation. OpenClaw manages plugin
+convergence and restart, and LocalClaw requires the expected Gateway version
+and healthy RPC before reporting success. Quick Repair uses the same recovery
+for schema mismatches. Unknown agent-delivery outcomes are not replayed.
+Custom/unidentified service layouts or unsafe backups stop with diagnostics.
 
 This release handles canonical `openai/*` routes, keyed agent ownership, SQLite
 credential imports, Goals, and incremental Developer activity. Existing explicit
@@ -56,6 +68,7 @@ Run isolated compatibility checks against an installed npm package:
 node scripts/test-openclaw-compat.mjs /path/to/node_modules/openclaw
 node scripts/test-openclaw-turn.mjs /path/to/node_modules/openclaw
 node scripts/test-openclaw-turn.mjs /path/to/node_modules/openclaw --gateway
+node scripts/test-openclaw-update-owner.mjs /path/to/new/node_modules/openclaw
 ```
 
 The first check supports 2026.7.1 and 2026.8.1. The turn checks target 2026.8.1,
@@ -63,6 +76,8 @@ use a deterministic localhost model and temporary HOME, and create a real file
 through OpenClaw's write tool. They do not use customer accounts or paid models.
 The migration check may resolve official plugins from the network. These checks
 do not replace manual validation of provider logins, external channels, or billing.
+The update-owner check is a dry-run of the real updater with a test-only OS
+account fixture. It checks install targeting, not a live customer migration.
 
 ## Build a local DMG
 

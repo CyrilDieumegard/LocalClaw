@@ -1,0 +1,232 @@
+import Foundation
+import Testing
+@testable import localclaw_mac_installer
+
+@Suite(.serialized)
+struct OpenClawRuntimeMaintenanceTests {
+    private let mismatch = "OpenClaw state database /Users/bot/.openclaw/state/openclaw.sqlite uses newer schema version 15; this OpenClaw build supports 1."
+
+    @Test func schemaErrorTakesPriorityOverConnectionAndModelErrors() throws {
+        let diagnostic = mismatch + "\nECONNREFUSED lmstudio Gateway may still be running this turn"
+        let value = try #require(OpenClawSchemaMismatch.detect(in: diagnostic))
+        #expect(value.stored == 15)
+        #expect(value.supported == 1)
+        #expect(ChatRecoveryPlan.classify(error: diagnostic).kind == .runtimeVersion)
+        #expect(OpenClawSchemaMismatch.detect(in: value.explanation) == value)
+        #expect(OpenClawSchemaMismatch.detect(in: "uses newer schema version 1; this build supports 15") == nil)
+    }
+
+    @Test func uncertainAgentDeliveryNeverOffersAutomaticReplay() {
+        let plan = ChatRecoveryPlan.classify(error: "Gateway agent call connection closed; the Gateway may still be running this turn. ECONNREFUSED")
+        #expect(plan.kind == .deliveryUnknown)
+        #expect(plan.primaryActionLabel == "Check Gateway")
+    }
+
+    @Test func serviceInstallationOverridesAmbientNpmAndPreservesStateScope() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let resolved = try OpenClawRuntimeInstallation.managed(home: fixture.home)
+        let runtime = try #require(resolved)
+        #expect(runtime.package.path == fixture.package.path)
+        #expect(runtime.prefix.path == fixture.home.appendingPathComponent(".local").path)
+        #expect(runtime.node.path.contains(".hermes/node/bin/node"))
+        let environment = runtime.applying(to: ["PATH": "/opt/homebrew/bin", "UNCHANGED": "yes"])
+        #expect(environment["PATH"]?.hasPrefix(runtime.node.deletingLastPathComponent().path) == true)
+        #expect(environment["OPENCLAW_DIST_DIR"] == runtime.package.appendingPathComponent("dist").path)
+        #expect(environment["UNCHANGED"] == "yes")
+        #expect(runtime.command("update").contains("npm_config_prefix="))
+    }
+
+    @Test func generatedServiceWrapperIsReadWithoutExecutingItsEnvironmentFile() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        try fixture.wrapService()
+        let runtime = try OpenClawRuntimeInstallation.managed(home: fixture.home)
+        #expect(runtime?.package.path == fixture.package.path)
+        #expect(runtime?.state.path == fixture.home.appendingPathComponent(".openclaw").path)
+        #expect(runtime?.config.path == fixture.home.appendingPathComponent(".openclaw/openclaw.json").path)
+    }
+
+    @Test func migratedDatabaseUsesOfflineBackupAndFreshUpdaterBeforeActivation() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let original = try Data(contentsOf: fixture.database)
+        let result = fixture.maintenance().update()
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(try Data(contentsOf: fixture.database) == original)
+        #expect(fixture.commands.contains { $0.contains("bootout") })
+        #expect(!fixture.commands.contains { $0.contains("backup create") })
+        let archived = try #require(fixture.commands.firstIndex { $0.contains("tar -tzf") })
+        let prepared = try #require(fixture.commands.firstIndex { $0.contains("npm install --global --prefix") })
+        let updated = try #require(fixture.commands.firstIndex { $0.contains("--yes --json") })
+        #expect(archived < prepared && prepared < updated)
+        #expect(fixture.commands[updated].contains("updater-"))
+        #expect(fixture.commands[prepared].contains("--allow-scripts=openclaw"))
+        #expect(!fixture.commands.contains { $0.contains("--accept-capabilities") || $0.contains("--local") })
+        #expect(fixture.commands.allSatisfy { !$0.contains("agent --") && !$0.contains("doctor --fix") })
+        let archives = try fixture.archives()
+        #expect(archives.count == 1)
+        #expect((try FileManager.default.attributesOfItem(atPath: archives[0].path)[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.backups.path).allSatisfy { !$0.hasPrefix("updater-") })
+    }
+
+    @Test func healthySchemaUsesSupportedOnlineBackupAndManagedUpdate() throws {
+        let fixture = try Fixture(schemaMismatch: false)
+        defer { fixture.cleanUp() }
+        let result = fixture.maintenance().update()
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(fixture.commands.contains { $0.contains("backup create") && $0.contains("--verify") })
+        #expect(!fixture.commands.contains { $0.contains("npm install") || $0.contains("bootout") })
+    }
+
+    @Test(arguments: [Failure.backup, .corruptArchive, .activeWriter, .wrongTarget, .downgrade, .staging])
+    func preflightOrBackupFailureNeverReplacesTheRuntime(_ failure: Failure) throws {
+        let fixture = try Fixture(schemaMismatch: failure != .backup, failure: failure)
+        defer { fixture.cleanUp() }
+        let original = try Data(contentsOf: fixture.database)
+        let result = fixture.maintenance().update()
+        #expect(result.state == .fail)
+        #expect(!fixture.commands.contains { $0.contains("--yes --json") })
+        #expect(try Data(contentsOf: fixture.database) == original)
+        let runtime = try OpenClawRuntimeInstallation.managed(home: fixture.home)
+        #expect(runtime?.version == "2026.7.1-2")
+    }
+
+    @Test(arguments: [Failure.update, .wrongVersion, .unhealthy, .schemaRemains, .pluginWarning])
+    func PostUpdateFailuresAreNotReportedAsSuccess(_ failure: Failure) throws {
+        let fixture = try Fixture(failure: failure)
+        defer { fixture.cleanUp() }
+        let result = fixture.maintenance().update()
+        #expect(result.state == .fail)
+        #expect(result.message.contains("Recovery backup:"))
+        #expect(result.message.contains("No chat request was replayed"))
+        #expect(try fixture.archives().count == 1)
+    }
+
+    @Test func healthRequiresGatewayVersionNotJustCLIOrPort() {
+        #expect(!OpenClawRuntimeMaintenance.verifiedGateway(#"{"service":{"runtime":{"status":"running"}},"rpc":{"ok":true},"cli":{"version":"2026.8.1"},"gateway":{"version":"2026.7.1-2"}}"#, expectedVersion: "2026.8.1"))
+        #expect(OpenClawRuntimeMaintenance.verifiedGateway(#"{"service":{"runtime":{"status":"running"}},"rpc":{"ok":true,"server":{"version":"2026.8.1"}}}"#, expectedVersion: "2026.8.1"))
+    }
+
+    @Test func npmLifecycleFlagsMatchSupportedNpmVersions() {
+        #expect(OpenClawRuntimeMaintenance.npmLifecycleFlags(version: "10.9.3") == "")
+        #expect(OpenClawRuntimeMaintenance.npmLifecycleFlags(version: "11.15.0") == "")
+        #expect(OpenClawRuntimeMaintenance.npmLifecycleFlags(version: "11.16.0").contains("--allow-scripts=openclaw"))
+        #expect(OpenClawRuntimeMaintenance.npmLifecycleFlags(version: "12.0.0").contains("--allow-scripts=openclaw"))
+    }
+
+    enum Failure: String, Sendable { case backup, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, pluginWarning }
+
+    private final class Fixture {
+        let home: URL
+        let package: URL
+        let database: URL
+        let backups: URL
+        let schemaMismatch: Bool
+        let failure: Failure?
+        var commands: [String] = []
+        var didUpdate = false
+
+        init(schemaMismatch: Bool = true, failure: Failure? = nil) throws {
+            self.schemaMismatch = schemaMismatch
+            self.failure = failure
+            home = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("runtime fixture's \(UUID().uuidString)")
+            package = home.appendingPathComponent(".local/lib/node_modules/openclaw")
+            database = home.appendingPathComponent(".openclaw/state/openclaw.sqlite")
+            backups = home.appendingPathComponent("Library/Application Support/LocalClaw/runtime-backups")
+            let fm = FileManager.default
+            let node = home.appendingPathComponent(".hermes/node/bin/node")
+            let plist = home.appendingPathComponent("Library/LaunchAgents/ai.openclaw.gateway.plist")
+            for directory in [package, database.deletingLastPathComponent(), node.deletingLastPathComponent(), plist.deletingLastPathComponent()] {
+                try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+            }
+            try fm.createSymbolicLink(at: node, withDestinationURL: URL(fileURLWithPath: "/usr/bin/true"))
+            try Data().write(to: package.appendingPathComponent("openclaw.mjs"))
+            try writeVersion("2026.7.1-2")
+            try Data("fixture state must survive".utf8).write(to: database)
+            try Data("{\"gateway\":{\"mode\":\"local\"}}".utf8).write(to: home.appendingPathComponent(".openclaw/openclaw.json"))
+            let data = try PropertyListSerialization.data(fromPropertyList: [
+                "Label": "ai.openclaw.gateway", "ProgramArguments": [node.path, package.appendingPathComponent("dist/index.js").path, "gateway", "--port", "18789"]
+            ], format: .xml, options: 0)
+            try data.write(to: plist)
+        }
+
+        func maintenance() -> OpenClawRuntimeMaintenance { .init(home: home, run: execute) }
+        func cleanUp() { try? FileManager.default.removeItem(at: home) }
+        func archives() throws -> [URL] { try FileManager.default.contentsOfDirectory(at: backups, includingPropertiesForKeys: nil).filter { $0.pathExtension == "gz" } }
+        func writeVersion(_ version: String) throws {
+            try JSONSerialization.data(withJSONObject: ["name": "openclaw", "version": version]).write(to: package.appendingPathComponent("package.json"))
+        }
+
+        func wrapService() throws {
+            let plist = home.appendingPathComponent("Library/LaunchAgents/ai.openclaw.gateway.plist")
+            var root = try PropertyListSerialization.propertyList(from: Data(contentsOf: plist), format: nil) as! [String: Any]
+            var arguments = root["ProgramArguments"] as! [String]
+            arguments.insert("--max-old-space-size=4096", at: 1)
+            let directory = home.appendingPathComponent(".openclaw/service-env")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let envFile = directory.appendingPathComponent("ai.openclaw.gateway.env")
+            let wrapper = directory.appendingPathComponent("ai.openclaw.gateway-env-wrapper.sh")
+            let quote = OpenClawRuntimeInstallation.quote
+            try Data("export OPENCLAW_STATE_DIR=\(quote(home.appendingPathComponent(".openclaw").path))\nexport OPENCLAW_CONFIG_PATH=\(quote(home.appendingPathComponent(".openclaw/openclaw.json").path))\n".utf8).write(to: envFile)
+            root["ProgramArguments"] = ["/bin/sh", wrapper.path, envFile.path] + arguments
+            try PropertyListSerialization.data(fromPropertyList: root, format: .xml, options: 0).write(to: plist)
+        }
+
+        func execute(_ command: String) -> (Int32, String) {
+            commands.append(command)
+            do {
+                if command.contains("--dry-run") {
+                    return (0, String(data: try JSONSerialization.data(withJSONObject: [
+                        "dryRun": true, "root": failure == .wrongTarget ? "/wrong/package" : package.path,
+                        "targetVersion": failure == .downgrade ? "2026.6.1" : "2026.8.1"
+                    ]), encoding: .utf8)!)
+                }
+                if command.contains("gateway status") {
+                    if !didUpdate && schemaMismatch || failure == .schemaRemains {
+                        return (1, "Config health-state write failed: OpenClaw state database uses newer schema version 15; this OpenClaw build supports 1.")
+                    }
+                    return (0, #"{"service":{"runtime":{"status":"running"}},"rpc":{"ok":true},"gateway":{"version":"VERSION"}}"#.replacingOccurrences(of: "VERSION", with: failure == .unhealthy ? "2026.7.1-2" : "2026.8.1"))
+                }
+                if command.contains("backup create") {
+                    if failure == .backup { return (1, "backup failed") }
+                    let regex = try NSRegularExpression(pattern: #"openclaw-[0-9A-Fa-f-]+\.tar\.gz"#)
+                    let match = regex.firstMatch(in: command, range: NSRange(command.startIndex..., in: command))!
+                    let name = String(command[Range(match.range, in: command)!])
+                    try Data("verified archive fixture".utf8).write(to: backups.appendingPathComponent(name))
+                    return (0, "{}")
+                }
+                if command.contains("launchctl") { return (0, "") }
+                if command.contains("lsof") { return failure == .activeWriter ? (1, "cannot inspect open files") : (1, "") }
+                if command.contains("tar -tzf"), failure == .corruptArchive { return (1, "archive corrupt") }
+                if command.contains("/usr/bin/tar") {
+                    let process = Process()
+                    process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+                    process.arguments = ["-c", command]
+                    process.standardOutput = FileHandle.nullDevice
+                    process.standardError = FileHandle.nullDevice
+                    try process.run()
+                    process.waitUntilExit()
+                    return (process.terminationStatus, "")
+                }
+                if command.contains("npm --version") { return (0, "12.0.0") }
+                if command.contains("npm install") {
+                    if failure == .staging { return (1, "download failed") }
+                    let staging = try FileManager.default.contentsOfDirectory(at: backups, includingPropertiesForKeys: nil).first { $0.lastPathComponent.hasPrefix("updater-") }!
+                    let cli = staging.appendingPathComponent("lib/node_modules/openclaw/openclaw.mjs")
+                    try FileManager.default.createDirectory(at: cli.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try Data().write(to: cli)
+                    return (0, "")
+                }
+                if command.contains("--yes --json") {
+                    if failure == .update { return (1, "post-core repair failed") }
+                    didUpdate = true
+                    if failure != .wrongVersion { try writeVersion("2026.8.1") }
+                    try wrapService()
+                    return (0, failure == .pluginWarning ? #"{"status":"ok","postUpdate":{"plugins":{"status":"warning"}}}"# : #"{"status":"ok"}"#)
+                }
+                return (1, "Unexpected fixture command")
+            } catch { return (1, error.localizedDescription) }
+        }
+    }
+}
