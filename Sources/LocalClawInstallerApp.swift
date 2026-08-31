@@ -1199,6 +1199,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var developerActivityEvents: [DeveloperActivityEvent] = []
     private var developerPreviewProcess: Process?
     private var developerActivityMonitorTask: Task<Void, Never>?
+    private var developerActivityProcess: Process?
     var developerPreviewIsRunning: Bool {
         developerPreviewProcess?.isRunning == true
     }
@@ -2282,7 +2283,8 @@ final class InstallerViewModel: ObservableObject {
             selectedProvider = .openRouter
             currentModel = primary
             selectedChatModel = primary
-        } else if primary.hasPrefix("openai-codex/") {
+        } else if primary.hasPrefix("openai-codex/") || (primary.hasPrefix("openai/") &&
+            OpenClawCompatibility.openAIUsesOAuth(in: json, oauthAvailable: engine.hasOAuthAuth(provider: "openai"))) {
             inferenceMode = .oauth
             selectedChatResponseMode = .cloud
             selectedCloudAuthMode = .oauth
@@ -2998,7 +3000,17 @@ final class InstallerViewModel: ObservableObject {
     }
 
     var selectedOAuthProviderOption: OAuthProviderOption {
-        Self.oauthProviderOptions.first { $0.id == selectedOAuthProvider } ?? Self.oauthProviderOptions[0]
+        let option = Self.oauthProviderOptions.first { $0.id == selectedOAuthProvider } ?? Self.oauthProviderOptions[0]
+        guard OpenClawCompatibility.usesUnifiedOpenAIRoutes(version: openclawInstalledVersion) else { return option }
+        return OAuthProviderOption(id: option.id, displayName: option.displayName, detail: option.detail,
+                                   modelIdentifier: OpenClawCompatibility.modelID(option.modelIdentifier, version: openclawInstalledVersion),
+                                   authProvider: "openai", available: option.available)
+    }
+
+    var runtimeOAuthFallbackModels: [OpenRouterModel] {
+        Self.oauthFallbackModels.map {
+            OpenRouterModel(id: OpenClawCompatibility.modelID($0.id, version: openclawInstalledVersion), displayName: $0.displayName)
+        }
     }
 
     func providerNeedsApiKey() -> Bool {
@@ -3090,8 +3102,12 @@ final class InstallerViewModel: ObservableObject {
             oauthSetupStatus = "OAuth login required"
             return
         }
+        let version = openclawInstalledVersion
+        let fallbackModels = runtimeOAuthFallbackModels
         Task.detached {
-            let (code, output) = InstallerEngine().shell("openclaw models list --json 2>/dev/null")
+            let engine = InstallerEngine()
+            let agentArgument = engine.resolvedChatAgentID().map { " --agent '\($0)'" } ?? ""
+            let (code, output) = engine.shell("openclaw models list\(agentArgument) --json 2>/dev/null")
             guard code == 0, let data = InstallerEngine.firstJSONData(in: output) else {
                 await MainActor.run {
                     self.oauthModelsLive = []
@@ -3113,12 +3129,12 @@ final class InstallerViewModel: ObservableObject {
             do {
                 let decoded = try JSONDecoder().decode(OpenClawModelsResponse.self, from: data)
                 var seenOAuthModelIDs = Set<String>()
-                let mapped = (Self.oauthFallbackModels + decoded.models
+                let mapped = (fallbackModels + decoded.models
                     .filter { item in
                         Self.isOAuthRuntimeModelID(item.key) && item.local != true && item.available != false
                     }
                     .map { item in
-                        OpenRouterModel(id: item.key, displayName: item.name ?? Self.readableModelName(item.key))
+                        OpenRouterModel(id: OpenClawCompatibility.modelID(item.key, version: version), displayName: item.name ?? Self.readableModelName(item.key))
                     })
                     .filter { model in
                         if seenOAuthModelIDs.contains(model.id) { return false }
@@ -3130,8 +3146,11 @@ final class InstallerViewModel: ObservableObject {
                 await MainActor.run {
                     self.oauthModelsLive = mapped
                     if self.inferenceMode == .oauth || self.selectedCloudAuthMode == .oauth {
-                        if !self.oauthModelsLive.contains(where: { $0.id == self.selectedChatModel }) {
-                            self.selectedChatModel = self.oauthModelsLive.first?.id ?? self.selectedOAuthProviderOption.modelIdentifier
+                        let selected = OpenClawCompatibility.modelID(self.selectedChatModel, version: version)
+                        if Self.isOAuthRuntimeModelID(selected) {
+                            self.selectedChatModel = selected
+                        } else {
+                            self.selectedChatModel = fallbackModels.first?.id ?? self.selectedOAuthProviderOption.modelIdentifier
                         }
                         self.currentModel = self.selectedChatModel
                         self.refreshOAuthUsage()
@@ -3725,6 +3744,8 @@ final class InstallerViewModel: ObservableObject {
         let info = engine.openClawVersionInfo()
         openclawInstalledVersion = info.installed
         openclawLatestVersion = info.latest
+        selectedChatModel = OpenClawCompatibility.modelID(selectedChatModel, version: info.installed)
+        currentModel = OpenClawCompatibility.modelID(currentModel, version: info.installed)
 
         if info.installed == "Not installed" {
             openclawUpdateStatus = "Not installed"
@@ -4209,7 +4230,7 @@ final class InstallerViewModel: ObservableObject {
         case .oauth:
             if Self.isOAuthRuntimeModelID(currentModel) { add(currentModel) }
             if Self.isOAuthRuntimeModelID(selectedChatModel) { add(selectedChatModel) }
-            for model in Self.oauthFallbackModels { add(model.id) }
+            for model in runtimeOAuthFallbackModels { add(model.id) }
             for model in oauthModelsLive { add(model.id) }
         }
         return values
@@ -6046,6 +6067,9 @@ final class InstallerViewModel: ObservableObject {
     }
 
     private func ensureLMStudioAuthProfileForMainAgent() {
+        // Modern runtimes resolve the local provider key from models.providers;
+        // writing the retired JSON credential store would not update SQLite.
+        if OpenClawCompatibility.usesUnifiedOpenAIRoutes(version: openclawInstalledVersion) { return }
         let path = NSHomeDirectory() + "/.openclaw/agents/main/agent/auth-profiles.json"
         let dir = (path as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -6112,6 +6136,10 @@ final class InstallerViewModel: ObservableObject {
     }
 
     private func resetMainAgentSessions() {
+        if OpenClawCompatibility.usesUnifiedOpenAIRoutes(version: openclawInstalledVersion) {
+            controlCenterLogs += "[OK] Model switch preserves OpenClaw sessions; new requests use model-scoped context\n"
+            return
+        }
         let sessionsPath = NSHomeDirectory() + "/.openclaw/agents/main/sessions"
         _ = engine.shell("mkdir -p '\(sessionsPath)' && find '\(sessionsPath)' -name '*.jsonl' -type f -delete 2>/dev/null || true")
         controlCenterLogs += "[OK] Reset main agent sessions after mode switch\n"
@@ -8021,11 +8049,11 @@ final class InstallerViewModel: ObservableObject {
         } else {
             requestInferenceMode = selectedChatResponseMode == .local ? .local : (selectedChatResponseMode == .cloud ? .cloud : inferenceMode)
         }
-        let modelOverride = Self.canonicalChatRuntimeModelID(Self.normalizedChatModelID(
+        let modelOverride = OpenClawCompatibility.modelID(Self.canonicalChatRuntimeModelID(Self.normalizedChatModelID(
             selectedModelForRequest,
             inferenceMode: requestInferenceMode,
             localModels: localLMStudioModels
-        ))
+        )), version: openclawInstalledVersion)
         if selectedModelLooksLocal && !localLMStudioModelIsReady(modelOverride) {
             let localModel = Self.localLMStudioModelID(from: modelOverride)
             if !localModel.isEmpty {
@@ -8384,6 +8412,8 @@ final class InstallerViewModel: ObservableObject {
 
     private func beginDeveloperActivity(requestID: UUID, model: String, timeoutSeconds: Int) {
         developerActivityMonitorTask?.cancel()
+        if developerActivityProcess?.isRunning == true { developerActivityProcess?.terminate() }
+        developerActivityProcess = nil
         developerActivityStartedAt = Date()
         developerActivityPhase = "Preparing OpenClaw"
         developerActivityModel = model
@@ -8398,6 +8428,10 @@ final class InstallerViewModel: ObservableObject {
 
     private func startDeveloperActivityMonitor(sessionID: String, requestID: UUID) {
         developerActivityMonitorTask?.cancel()
+        if OpenClawCompatibility.usesUnifiedOpenAIRoutes(version: openclawInstalledVersion) {
+            startSQLiteDeveloperActivityMonitor(sessionID: sessionID, requestID: requestID)
+            return
+        }
         let path = NSHomeDirectory() + "/.openclaw/agents/main/sessions/\(sessionID).jsonl"
         let initialOffset = Self.developerActivityFileSize(path: path)
         developerActivityMonitorTask = Task { [weak self] in
@@ -8439,9 +8473,48 @@ final class InstallerViewModel: ObservableObject {
     private func finishDeveloperActivity() {
         developerActivityMonitorTask?.cancel()
         developerActivityMonitorTask = nil
+        if developerActivityProcess?.isRunning == true { developerActivityProcess?.terminate() }
+        developerActivityProcess = nil
         developerActivityStartedAt = nil
         developerActivityPhase = "Ready"
         developerActivityTimeoutSeconds = 0
+    }
+
+    private func startSQLiteDeveloperActivityMonitor(sessionID: String, requestID: UUID) {
+        developerActivityMonitorTask = Task { [weak self] in
+            let agentID = await Task.detached(priority: .utility) { InstallerEngine().resolvedChatAgentID() }.value
+            guard let self, !Task.isCancelled, self.activeChatRequestID == requestID,
+                  let agentID, let script = GoalControllerResourceLocator.locate(scriptName: "developer-activity.mjs") else { return }
+            let process = Process()
+            let pipe = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            let since = Int((self.developerActivityStartedAt ?? Date()).timeIntervalSince1970 * 1000)
+            process.arguments = ["node", script.path, agentID, sessionID, String(since)]
+            var environment = ProcessInfo.processInfo.environment
+            environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:\(NSHomeDirectory())/.npm-global/bin:\(environment["PATH"] ?? "")"
+            process.environment = environment
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = pipe
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                self.developerActivityProcess = process
+                defer { if process.isRunning { process.terminate() } }
+                for try await line in pipe.fileHandleForReading.bytes.lines {
+                    guard !Task.isCancelled, self.activeChatRequestID == requestID else { break }
+                    let updated = DeveloperActivityParser.applying(jsonLine: line, to: self.developerActivityEvents, projectPath: self.developerProjectPath)
+                    if updated != self.developerActivityEvents {
+                        self.developerActivityEvents = updated
+                        self.developerActivityPhase = updated.last(where: { $0.state == .running })?.title ?? "OpenClaw is reviewing the result"
+                    }
+                }
+            } catch {
+                if process.isRunning { process.terminate() }
+                if self.activeChatRequestID == requestID && !Task.isCancelled {
+                    self.developerActivityPhase = "Live activity unavailable; the request is still running"
+                }
+            }
+        }
     }
 
     nonisolated private static func developerActivityFileSize(path: String) -> UInt64 {
@@ -8493,7 +8566,7 @@ final class InstallerViewModel: ObservableObject {
         }
 
         if showingOAuthModels {
-            models.append(contentsOf: Self.oauthFallbackModels)
+            models.append(contentsOf: runtimeOAuthFallbackModels)
             models.append(contentsOf: oauthModelsLive)
         } else if showingLocalModels {
             for local in localLMStudioModels {
@@ -8535,7 +8608,7 @@ final class InstallerViewModel: ObservableObject {
             refreshOAuthModels()
         }
         if !Self.isOAuthRuntimeModelID(selectedChatModel) {
-            selectedChatModel = Self.oauthFallbackModels.first?.id ?? selectedOAuthProviderOption.modelIdentifier
+            selectedChatModel = runtimeOAuthFallbackModels.first?.id ?? selectedOAuthProviderOption.modelIdentifier
         }
         currentModel = selectedChatModel
     }
@@ -9877,7 +9950,8 @@ final class InstallerViewModel: ObservableObject {
         messageFilePath: String,
         model: String,
         thinking: String,
-        agentTimeout: Int
+        agentTimeout: Int,
+        agentID: String? = nil
     ) -> [String] {
         var arguments = [
             "openclaw",
@@ -9887,6 +9961,7 @@ final class InstallerViewModel: ObservableObject {
             "--json",
             "--timeout", String(agentTimeout)
         ]
+        if let agentID { arguments.append(contentsOf: ["--agent", agentID]) }
         if !model.isEmpty {
             arguments.append(contentsOf: ["--model", model])
         }
@@ -9906,12 +9981,16 @@ final class InstallerViewModel: ObservableObject {
         timeoutSeconds: Int? = nil,
         onStart: @escaping (Process) -> Void
     ) -> (Int32, String) {
+        guard let agentID = InstallerEngine().resolvedChatAgentID() else {
+            return (1, "LocalClaw cannot determine the owning OpenClaw agent. Select or configure an agent in Agents; no request was sent.")
+        }
         var arguments = openClawAgentArguments(
             sessionID: sessionID,
             messageFilePath: messageFilePath,
             model: model,
             thinking: thinking,
-            agentTimeout: agentTimeout
+            agentTimeout: agentTimeout,
+            agentID: agentID
         )
         var result = processCancellable(
             executable: "/usr/bin/env",
@@ -10335,7 +10414,7 @@ final class InstallerViewModel: ObservableObject {
             return current
         }
         if inferenceMode == .oauth {
-            return "openai-codex/gpt-5.4"
+            return selectedOAuthProviderOption.modelIdentifier
         }
         if inferenceMode == .cloud {
             return selectedOpenRouterModel.isEmpty ? "Cloud model not configured" : selectedOpenRouterModel
@@ -10501,6 +10580,9 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func openTerminalOpenAIOAuth() {
+        let provider = selectedOAuthProviderOption.authProvider
+        let model = selectedOAuthProviderOption.modelIdentifier
+        let agentArgument = engine.resolvedChatAgentID().map { " --agent '\($0)'" } ?? ""
         let script = """
         #!/bin/zsh
         clear
@@ -10517,11 +10599,11 @@ final class InstallerViewModel: ObservableObject {
             echo "Install OpenClaw first from Install tab."
             echo ""
         else
-            echo "Running: $OPENCLAW_BIN models auth login --provider openai-codex --set-default"
+            echo "Running: $OPENCLAW_BIN models auth login --provider \(provider)"
             echo ""
-            "$OPENCLAW_BIN" models auth login --provider openai-codex --set-default
+            "$OPENCLAW_BIN" models auth login --provider \(provider)\(agentArgument)
             echo ""
-            echo "If login succeeded, use model: openai-codex/gpt-5.4"
+            echo "If login succeeded, use model: \(model)"
         fi
 
         echo ""
@@ -10884,28 +10966,6 @@ final class InstallerViewModel: ObservableObject {
         lines.append("NODE")
         lines.append("echo \"  ✓ Config saved with token\"")
         lines.append("echo \"config:OK\" >> /tmp/localclaw_status")
-        // Create auth file BEFORE starting gateway
-        if !apiKey.isEmpty && !authProvider.isEmpty {
-            let escapedKey = apiKey.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-            lines.append("")
-            lines.append("echo \"\"")
-            lines.append("echo \"[6b/7] Configuring API key...\"")
-            lines.append("mkdir -p ~/.openclaw/agents/main/agent")
-            lines.append("cat > ~/.openclaw/agents/main/agent/auth-profiles.json << 'EOF'")
-            lines.append("{")
-            lines.append("  \"version\": 1,")
-            lines.append("  \"profiles\": {")
-            lines.append("    \"\(authProvider):default\": {")
-            lines.append("      \"type\": \"api_key\",")
-            lines.append("      \"provider\": \"\(authProvider)\",")
-            lines.append("      \"key\": \"\(escapedKey)\"")
-            lines.append("    }")
-            lines.append("  }")
-            lines.append("}")
-            lines.append("EOF")
-            lines.append("chmod 600 ~/.openclaw/agents/main/agent/auth-profiles.json")
-            lines.append("echo \"  ✓ API key configured\"")
-        }
         lines.append("")
         lines.append("echo \"\"")
         lines.append("echo \"[7/7] Installing Gateway service and starting...\"")
@@ -10918,6 +10978,26 @@ final class InstallerViewModel: ObservableObject {
         lines.append("    exit 1")
         lines.append("fi")
         lines.append("cat \"$DOCTOR_LOG\"")
+        // Doctor establishes the migrated agent roster before credential import.
+        if !apiKey.isEmpty && !authProvider.isEmpty {
+            lines.append("echo \"Configuring API key in the OpenClaw credential store...\"")
+            lines.append("LOCALCLAW_AGENT_ID=$(node <<'NODE'")
+            lines.append("const fs = require('fs');")
+            lines.append("const config = JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG, 'utf8'));")
+            lines.append("const agents = config.agents || {};")
+            lines.append("const ids = agents.entries ? Object.keys(agents.entries) : (agents.list || []).map(agent => agent.id);")
+            lines.append("const id = ids.includes('main') ? 'main' : ids.length === 1 ? ids[0] : '';")
+            lines.append("if (!/^[a-z0-9][a-z0-9_-]*$/.test(id)) process.exit(1);")
+            lines.append("process.stdout.write(id);")
+            lines.append("NODE")
+            lines.append(")")
+            lines.append("if [ -z \"$LOCALCLAW_AGENT_ID\" ] || ! printf '%s\\n' \(shellSingleQuote(apiKey)) | openclaw models auth paste-api-key --provider \(shellSingleQuote(authProvider)) --profile-id \(shellSingleQuote(authProvider + ":default")) --agent \"$LOCALCLAW_AGENT_ID\"; then")
+            lines.append("    echo \"API key import failed. Existing credentials were preserved. Update OpenClaw and retry.\"")
+            lines.append("    echo \"config:FAIL\" >> /tmp/localclaw_status")
+            lines.append("    touch /tmp/localclaw_install_done")
+            lines.append("    exit 1")
+            lines.append("fi")
+        }
         lines.append("REGISTRY_LOG=/tmp/localclaw_plugin_registry.json")
         lines.append("if ! openclaw --no-color plugins registry --refresh --json > \"$REGISTRY_LOG\" 2>&1; then")
         lines.append("    echo \"  ✗ OpenClaw plugin registry refresh failed\"")

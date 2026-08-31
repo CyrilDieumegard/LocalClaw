@@ -883,21 +883,20 @@ enum OpenClawGoalBridgeError: LocalizedError {
 
 enum GoalControllerResourceLocator {
     private static let resourceBundleName = "localclaw-mac-installer_localclaw-mac-installer.bundle"
-    private static let scriptName = "goal-controller.mjs"
-
-    static func locate() -> URL? {
+    static func locate(scriptName: String = "goal-controller.mjs") -> URL? {
         let fileManager = FileManager.default
         return candidateURLs(
             bundleURL: Bundle.main.bundleURL,
             resourceURL: Bundle.main.resourceURL,
-            executableURL: Bundle.main.executableURL
+            executableURL: Bundle.main.executableURL,
+            scriptName: scriptName
         ).first { url in
             var isDirectory: ObjCBool = false
             return fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) && !isDirectory.boolValue
         }
     }
 
-    static func candidateURLs(bundleURL: URL, resourceURL: URL?, executableURL: URL?) -> [URL] {
+    static func candidateURLs(bundleURL: URL, resourceURL: URL?, executableURL: URL?, scriptName: String = "goal-controller.mjs") -> [URL] {
         var roots = [bundleURL]
         if let resourceURL { roots.append(resourceURL) }
         if let executableURL { roots.append(executableURL.deletingLastPathComponent()) }
@@ -1072,8 +1071,8 @@ final class GoalCenterModel: ObservableObject {
         return "\(runtimeSessionID(for: chatSessionID))-work-\(String(cleanedStep).prefix(32))-\(max(turn, 0))"
     }
 
-    static func openClawSessionKey(for chatSessionID: String) -> String {
-        "agent:main:explicit:\(runtimeSessionID(for: chatSessionID))"
+    static func openClawSessionKey(for chatSessionID: String, agentID: String = "main") -> String {
+        "agent:\(agentID):explicit:\(runtimeSessionID(for: chatSessionID))"
     }
 
     func selectSession(_ sessionID: String, projectName: String? = nil) async {
@@ -1695,8 +1694,12 @@ final class GoalCenterModel: ObservableObject {
     }
 
     private func compactGoalTranscript(maxLines: Int) async -> Bool {
+        let agentID = await Task.detached(priority: .utility) {
+            InstallerEngine().resolvedChatAgentID()
+        }.value
+        guard let agentID else { return false }
         let command = GoalSessionMaintenance.compactCommand(
-            sessionKey: Self.openClawSessionKey(for: selectedChatSessionID),
+            sessionKey: Self.openClawSessionKey(for: selectedChatSessionID, agentID: agentID),
             maxLines: maxLines
         )
         let result = await Task.detached(priority: .utility) {
@@ -1714,9 +1717,15 @@ final class GoalCenterModel: ObservableObject {
         isBusy = true
         statusMessage = action == "status" ? "Reading Goal state..." : "Updating Goal..."
         do {
+            let agentID = await Task.detached(priority: .utility) {
+                InstallerEngine().resolvedChatAgentID()
+            }.value
+            guard let agentID else {
+                throw OpenClawGoalBridgeError.processFailed("Select an owning OpenClaw agent before using Goals. Existing sessions were left unchanged.")
+            }
             let result = try await bridge.request(
                 action: action,
-                sessionKey: Self.openClawSessionKey(for: selectedChatSessionID),
+                sessionKey: Self.openClawSessionKey(for: selectedChatSessionID, agentID: agentID),
                 objective: objective,
                 note: note?.trimmingCharacters(in: .whitespacesAndNewlines),
                 tokenBudget: tokenBudget

@@ -37,6 +37,33 @@ swift run
 swift test
 ```
 
+## OpenClaw compatibility
+
+LocalClaw 1.0.192 targets OpenClaw 2026.8.1 and retains the 2026.7.1 runtime path.
+Update LocalClaw first, then use Updates to upgrade OpenClaw. Before replacing
+the runtime, LocalClaw creates and verifies a state backup under
+`~/Library/Application Support/LocalClaw/runtime-backups/` (project workspaces
+are not copied). OpenClaw Doctor performs its own configuration/storage migrations.
+
+This release handles canonical `openai/*` routes, keyed agent ownership, SQLite
+credential imports, Goals, and incremental Developer activity. Existing explicit
+model policies and selected model suffixes are preserved; authentication alone
+does not replace the default model.
+
+Run isolated compatibility checks against an installed npm package:
+
+```bash
+node scripts/test-openclaw-compat.mjs /path/to/node_modules/openclaw
+node scripts/test-openclaw-turn.mjs /path/to/node_modules/openclaw
+node scripts/test-openclaw-turn.mjs /path/to/node_modules/openclaw --gateway
+```
+
+The first check supports 2026.7.1 and 2026.8.1. The turn checks target 2026.8.1,
+use a deterministic localhost model and temporary HOME, and create a real file
+through OpenClaw's write tool. They do not use customer accounts or paid models.
+The migration check may resolve official plugins from the network. These checks
+do not replace manual validation of provider logins, external channels, or billing.
+
 ## Build a local DMG
 
 ```bash

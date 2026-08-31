@@ -101,7 +101,10 @@ final class RuntimeSnapshotResolver: @unchecked Sendable {
     func capture(connectedChannels: Int) -> RuntimeSnapshot {
         let gateway = engine.getGatewayStatus()
         let model = engine.getCurrentModel().trimmingCharacters(in: .whitespacesAndNewlines)
-        let route = Self.route(for: model)
+        let openAIUsesOAuth = model.hasPrefix("openai/") && OpenClawCompatibility.openAIUsesOAuth(
+            in: engine.readOpenClawConfig() ?? [:], oauthAvailable: engine.hasOAuthAuth(provider: "openai")
+        )
+        let route = Self.route(for: model, openAIUsesOAuth: openAIUsesOAuth)
         let openClawVersion = commandOutput("openclaw --version 2>&1 | head -1")
         let openClawInstalled = !openClawVersion.isEmpty && !openClawVersion.lowercased().contains("command not found")
         let lmStudioInstalled = engine.hasLMStudioApp()
@@ -177,8 +180,9 @@ final class RuntimeSnapshotResolver: @unchecked Sendable {
         engine.shell(command).1.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    static func route(for model: String) -> RuntimeRoute {
+    static func route(for model: String, openAIUsesOAuth: Bool = false) -> RuntimeRoute {
         let normalized = model.lowercased()
+        if normalized.hasPrefix("openai/"), openAIUsesOAuth { return .oauth }
         if normalized.hasPrefix("lmstudio/") { return .local }
         if normalized.hasPrefix("openai-codex/") || normalized.hasPrefix("google-gemini-cli/") { return .oauth }
         if normalized.hasPrefix("openrouter/") || normalized.hasPrefix("openai/") || normalized.hasPrefix("anthropic/") || normalized.hasPrefix("google/") || normalized.hasPrefix("x-ai/") { return .cloud }

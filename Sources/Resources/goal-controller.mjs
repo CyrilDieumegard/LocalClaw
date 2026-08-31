@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import readline from "node:readline";
 
-function findOpenClawDist() {
+export function findOpenClawDist() {
   const explicit = process.env.OPENCLAW_DIST_DIR?.trim();
   const candidates = explicit ? [explicit] : [];
 
@@ -59,19 +59,20 @@ function goalSnapshot(goal) {
   };
 }
 
-async function loadController() {
+export async function loadController() {
   const dist = findOpenClawDist();
   if (!dist) throw new Error("OpenClaw runtime not found. Update or repair OpenClaw first.");
 
-  const embeddedFile = readdirSync(dist).find(
-    (name) => name.startsWith("embedded-backend-") && name.endsWith(".js"),
-  );
-  if (!embeddedFile) throw new Error("This OpenClaw version does not expose Goal control.");
-
-  const source = readFileSync(join(dist, embeddedFile), "utf8");
-  const goalModuleName = source.match(
-    /clearSessionGoal[^\n]+from "\.\/(sessions-[^"]+\.js)"/,
-  )?.[1];
+  // Bundler import order and chunk hashes are not an API. Locate the small
+  // session module by its complete contract, then verify its actual exports.
+  const names = ["getSessionGoal", "createSessionGoal", "updateSessionGoalStatus",
+    "updateSessionGoalObjective", "clearSessionGoal"];
+  const goalModuleName = readdirSync(dist).filter(
+    (name) => /^sessions-[\w-]+\.js$/.test(name),
+  ).find((name) => {
+    const source = readFileSync(join(dist, name), "utf8");
+    return names.every((name) => source.includes(`function ${name}(`));
+  });
   if (!goalModuleName) throw new Error("OpenClaw Goal controller could not be located.");
 
   const [goalModule, storeModule] = await Promise.all([
@@ -80,13 +81,7 @@ async function loadController() {
   ]);
 
   const functions = Object.fromEntries(
-    [
-      "getSessionGoal",
-      "createSessionGoal",
-      "updateSessionGoalStatus",
-      "updateSessionGoalObjective",
-      "clearSessionGoal",
-    ].map((name) => [name, findNamedFunction(goalModule, name)]),
+    names.map((name) => [name, findNamedFunction(goalModule, name)]),
   );
   const missing = Object.entries(functions)
     .filter(([, value]) => typeof value !== "function")
@@ -96,19 +91,21 @@ async function loadController() {
   return {
     ...functions,
     getSessionEntry: storeModule.getSessionEntry,
-    storePath: storeModule.resolveStorePath(undefined, { agentId: "main" }),
+    resolveStorePath: storeModule.resolveStorePath,
   };
 }
 
-async function handleRequest(controller, request) {
+export async function handleRequest(controller, request) {
   const id = typeof request.id === "string" ? request.id : randomUUID();
   const sessionKey = typeof request.sessionKey === "string" ? request.sessionKey.trim() : "";
   const action = typeof request.action === "string" ? request.action.trim() : "status";
-  if (!sessionKey.startsWith("agent:main:explicit:")) {
+  const agentId = /^agent:([a-z0-9][a-z0-9_-]*):explicit:[\w-]+$/.exec(sessionKey)?.[1];
+  if (!agentId) {
     throw new Error("Invalid LocalClaw Goal session.");
   }
 
-  const options = { sessionKey, storePath: controller.storePath };
+  const storePath = controller.resolveStorePath(undefined, { agentId });
+  const options = { sessionKey, agentId, storePath };
   let goal;
   let message = "";
 
@@ -123,9 +120,9 @@ async function handleRequest(controller, request) {
       const objective = typeof request.objective === "string" ? request.objective.trim() : "";
       if (!objective) throw new Error("Describe the goal before starting it.");
       const entry = controller.getSessionEntry({
-        agentId: "main",
+        agentId,
         sessionKey,
-        storePath: controller.storePath,
+        storePath,
       });
       goal = await controller.createSessionGoal({
         ...options,
@@ -211,7 +208,7 @@ async function main() {
   }
 }
 
-main().catch((error) => {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) main().catch((error) => {
   process.stdout.write(`${JSON.stringify({
     type: "ready",
     ok: false,

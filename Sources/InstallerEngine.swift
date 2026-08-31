@@ -114,7 +114,28 @@ final class InstallerEngine: @unchecked Sendable {
     static let minimumNodeVersion = "22.22.3"
     static let nodeRequirementDescription = "Node 22.22.3+, 24.15+, 25.9+, or 26+"
     private let providerAuthCacheLock = NSLock()
-    private var providerAuthCache: (checkedAt: Date, configuredProviders: Set<String>)?
+    private var providerAuthCache: (checkedAt: Date, configuredProviders: Set<String>, oauthProviders: Set<String>)?
+
+    func readOpenClawConfig() -> [String: Any]? {
+        let path = NSHomeDirectory() + "/.openclaw/openclaw.json"
+        guard let data = FileManager.default.contents(atPath: path) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    func resolvedChatAgentID() -> String? {
+        if let config = readOpenClawConfig() { return OpenClawCompatibility.chatAgentID(in: config) }
+        let result = shell("openclaw --no-color agents list --json 2>/dev/null")
+        guard result.0 == 0, let data = Self.firstJSONData(in: result.1),
+              let agents = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return nil }
+        return OpenClawCompatibility.chatAgentID(in: ["agents": ["list": agents]])
+    }
+
+    func hasOAuthAuth(provider: String) -> Bool {
+        _ = providersConfiguredByOpenClawStatus()
+        providerAuthCacheLock.lock()
+        defer { providerAuthCacheLock.unlock() }
+        return providerAuthCache?.oauthProviders.contains(provider.lowercased()) == true
+    }
 
     static func firstJSONData(in output: String) -> Data? {
         let bytes = Array(output.utf8)
@@ -668,9 +689,7 @@ final class InstallerEngine: @unchecked Sendable {
             config = json
         }
 
-        // Set agents.defaults.model.primary and make the model visible to the
-        // main agent. OpenClaw rejects explicit model overrides unless they are
-        // present in agents.defaults.models.
+        // Register model settings without changing explicit modelPolicy.allow restrictions.
         var agents = config["agents"] as? [String: Any] ?? [:]
         var defaults = agents["defaults"] as? [String: Any] ?? [:]
         var model = defaults["model"] as? [String: Any] ?? [:]
@@ -736,7 +755,7 @@ final class InstallerEngine: @unchecked Sendable {
         if modelIdentifier.lowercased().hasPrefix("lmstudio/") {
             runtime["id"] = "openclaw"
         } else if runtime["id"] == nil {
-            runtime["id"] = modelIdentifier.hasPrefix("openai/") ? "codex" : "auto"
+            runtime["id"] = modelIdentifier.hasPrefix("openai-codex/") ? "codex" : "auto"
         }
         entry["agentRuntime"] = runtime
         models[modelIdentifier] = entry
@@ -779,6 +798,23 @@ final class InstallerEngine: @unchecked Sendable {
     /// Write API key to OpenClaw config + agent auth store
     func writeApiKeyToConfig(provider: String, apiKey: String) -> StepResult {
         if apiKey.isEmpty { return StepResult(state: .skip, message: "No API key provided") }
+
+        if OpenClawCompatibility.usesUnifiedOpenAIRoutes(version: installedVersion(for: "openclaw")) {
+            guard let agentID = resolvedChatAgentID() else {
+                return StepResult(state: .fail, message: "Select an OpenClaw agent before connecting this provider.")
+            }
+            let result = runOpenClawWithInput(
+                arguments: ["models", "auth", "paste-api-key", "--agent", agentID,
+                            "--provider", provider, "--profile-id", "\(provider):default"],
+                input: apiKey
+            )
+            providerAuthCacheLock.lock()
+            providerAuthCache = nil
+            providerAuthCacheLock.unlock()
+            return result.0 == 0
+                ? StepResult(state: .ok, message: "API key saved in the OpenClaw credential store for \(provider)")
+                : StepResult(state: .fail, message: SecretRedactor.redactConfigText(result.1))
+        }
 
         let fm = FileManager.default
         let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
@@ -875,7 +911,16 @@ final class InstallerEngine: @unchecked Sendable {
 
     /// Create default agent
     func createDefaultAgent() -> StepResult {
-        let (code, out) = shell("openclaw agent init main --default")
+        if let agentID = resolvedChatAgentID() {
+            return StepResult(state: .skip, message: "Using existing agent '\(agentID)'")
+        }
+        if let config = readOpenClawConfig(),
+           let agents = config["agents"] as? [String: Any],
+           agents["entries"] != nil || agents["list"] != nil {
+            return StepResult(state: .fail, message: "Multiple OpenClaw agents need an explicit selection. Existing agents were left unchanged.")
+        }
+        let workspace = (NSHomeDirectory() + "/.openclaw/workspace").replacingOccurrences(of: "'", with: "'\\''")
+        let (code, out) = shell("openclaw agents add main --workspace '\(workspace)' --non-interactive --json")
         return code == 0
             ? StepResult(state: .ok, message: "Agent 'main' created")
             : StepResult(state: .fail, message: out)
@@ -887,7 +932,7 @@ final class InstallerEngine: @unchecked Sendable {
     }
 
     private func runDoctorRepairDetailed() -> (result: StepResult, output: String) {
-        let (code, out) = shell("perl -e 'alarm 120; exec @ARGV' openclaw doctor --fix --yes --non-interactive 2>&1")
+        let (code, out) = shell("perl -e 'alarm 300; exec @ARGV' openclaw doctor --fix --yes --non-interactive 2>&1")
         let result = code == 0
             ? StepResult(state: .ok, message: "Doctor repair completed")
             : StepResult(state: .fail, message: out)
@@ -1248,13 +1293,14 @@ final class InstallerEngine: @unchecked Sendable {
         }
         providerAuthCacheLock.unlock()
 
-        let result = shell("openclaw models status --json 2>/dev/null")
+        let agentArgument = resolvedChatAgentID().map { " --agent '\($0)'" } ?? ""
+        let result = shell("perl -e 'alarm 30; exec @ARGV' openclaw models status\(agentArgument) --json 2>/dev/null")
         guard result.0 == 0,
               let status = Self.firstJSONObject(in: result.1) else { return [] }
         let configuredProviders = Self.configuredProviders(inModelStatus: status)
 
         providerAuthCacheLock.lock()
-        providerAuthCache = (Date(), configuredProviders)
+        providerAuthCache = (Date(), configuredProviders, OpenClawCompatibility.oauthProviders(inModelStatus: status))
         providerAuthCacheLock.unlock()
         return configuredProviders
     }
@@ -1305,7 +1351,7 @@ final class InstallerEngine: @unchecked Sendable {
     static func configuredProviders(inModelStatus status: [String: Any]) -> Set<String> {
         guard let auth = status["auth"] as? [String: Any] else { return [] }
         let missing = Set((auth["missingProvidersInUse"] as? [String] ?? []).map { $0.lowercased() })
-        var configured = Set((auth["providersWithOAuth"] as? [String] ?? []).map { $0.lowercased() })
+        var configured = OpenClawCompatibility.summarizedAuthProviders(in: auth).subtracting(missing)
 
         for rawProvider in auth["providers"] as? [[String: Any]] ?? [] {
             guard let provider = (rawProvider["provider"] as? String)?.lowercased(),
@@ -1324,6 +1370,31 @@ final class InstallerEngine: @unchecked Sendable {
             }
         }
         return configured
+    }
+
+    private func runOpenClawWithInput(arguments: [String], input: String) -> (Int32, String) {
+        let process = Process()
+        let stdinPipe = Pipe()
+        let stdoutPipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["perl", "-e", "alarm 60; exec @ARGV", "openclaw"] + arguments
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:\(NSHomeDirectory())/.npm-global/bin:\(environment["PATH"] ?? "")"
+        process.environment = environment
+        process.standardInput = stdinPipe
+        process.standardOutput = stdoutPipe
+        process.standardError = stdoutPipe
+        do {
+            try process.run()
+            try stdinPipe.fileHandleForWriting.write(contentsOf: Data((input + "\n").utf8))
+            try stdinPipe.fileHandleForWriting.close()
+            let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+        } catch {
+            if process.isRunning { process.terminate() }
+            return (1, error.localizedDescription)
+        }
     }
 
     static func providerAuthConfigured(in profiles: [String: Any], provider: String) -> Bool {
@@ -2094,7 +2165,27 @@ final class InstallerEngine: @unchecked Sendable {
         if node.state == .fail {
             return StepResult(state: .fail, message: "Node setup failed before OpenClaw update.\n\(node.message)")
         }
+        let backup = backupOpenClawRuntimeState()
+        guard backup.state != .fail else { return backup }
         let (code, out) = shell("npm i -g openclaw@latest")
-        return code == 0 ? StepResult(state: .ok, message: "OpenClaw updated") : StepResult(state: .fail, message: out)
+        return code == 0 ? StepResult(state: .ok, message: "OpenClaw updated.\n\(backup.message)") : StepResult(state: .fail, message: "\(out)\n\(backup.message)")
+    }
+
+    private func backupOpenClawRuntimeState() -> StepResult {
+        let directory = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Application Support/LocalClaw/runtime-backups", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        } catch {
+            return StepResult(state: .fail, message: "OpenClaw update stopped: could not create the recovery directory. \(error.localizedDescription)")
+        }
+        let archive = directory.appendingPathComponent("openclaw-\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString.prefix(8)).tar.gz")
+        let quoted = archive.path.replacingOccurrences(of: "'", with: "'\\''")
+        let result = shell("perl -e 'alarm 300; exec @ARGV' openclaw backup create --no-include-workspace --verify --output '\(quoted)' --json 2>&1")
+        guard result.0 == 0 else {
+            return StepResult(state: .fail, message: "OpenClaw update stopped before replacing the runtime because its state backup failed. \(SecretRedactor.redactConfigText(result.1))")
+        }
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: archive.path)
+        return StepResult(state: .ok, message: "Verified OpenClaw state backup: \(archive.path)")
     }
 }
