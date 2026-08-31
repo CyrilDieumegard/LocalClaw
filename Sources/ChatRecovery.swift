@@ -3,6 +3,7 @@ import Foundation
 enum ChatRecoveryKind: String, Codable, Sendable {
     case runtimeFiles
     case runtimeVersion
+    case configuration
     case deliveryUnknown
     case gateway
     case authentication
@@ -22,11 +23,12 @@ struct ChatRecoveryPlan: Equatable, Sendable {
     var replaysRequestAfterRepair: Bool { kind == .runtimeFiles || kind == .unknown }
 
     static func classify(error raw: String) -> ChatRecoveryPlan {
-        let clean = raw
+        let current = OpenClawRecoveryDiagnostic.currentFailure(in: raw)
+        let clean = current
             .replacingOccurrences(of: "\u{001B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
             .lowercased()
 
-        if let mismatch = OpenClawSchemaMismatch.detect(in: raw) {
+        if let mismatch = OpenClawSchemaMismatch.detect(in: current) {
             return ChatRecoveryPlan(kind: .runtimeVersion,
                                     title: "OpenClaw runtime is older than its database",
                                     explanation: mismatch.explanation + " LocalClaw can back up the state and update the Gateway installation. The previous request will not be replayed automatically.",
@@ -38,6 +40,14 @@ struct ChatRecoveryPlan: Equatable, Sendable {
             return ChatRecoveryPlan(kind: .deliveryUnknown,
                                     title: "The request outcome is unknown",
                                     explanation: "LocalClaw can check the Gateway and restore it if it is stopped. Your previous request will not be resent. Check the discussion before sending it again, since it may already have started.",
+                                    primaryActionLabel: "Repair Gateway",
+                                    systemImage: "wrench.and.screwdriver.fill")
+        }
+
+        if OpenClawRecoveryDiagnostic.hasInvalidConfiguration(current) {
+            return ChatRecoveryPlan(kind: .configuration,
+                                    title: "OpenClaw configuration blocks startup",
+                                    explanation: "LocalClaw can back up your state, update an incompatible runtime and apply OpenClaw's configuration migrations. It will verify the configuration and Gateway before reporting success. Your request will not be replayed.",
                                     primaryActionLabel: "Repair Gateway",
                                     systemImage: "wrench.and.screwdriver.fill")
         }

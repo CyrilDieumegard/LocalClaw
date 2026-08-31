@@ -1,5 +1,25 @@
 import Foundation
 
+enum OpenClawRecoveryDiagnostic {
+    static func currentFailure(in text: String) -> String {
+        // Supplementary log history must not choose a repair for the current request.
+        let markers = ["\nRecent startup log (", "\nHistorical startup log (", "\nLocalClaw Gateway diagnostic:"]
+        let end = markers.compactMap { text.range(of: $0)?.lowerBound }.min() ?? text.endIndex
+        return String(text[..<end])
+    }
+
+    static func hasInvalidConfiguration(_ text: String) -> Bool {
+        let current = currentFailure(in: text)
+        let clean = current.lowercased()
+        if clean.contains("config is invalid") || clean.contains("config invalid") || clean.contains("invalid config") ||
+            clean.contains("configuration validation failed") { return true }
+        guard let json = InstallerEngine.firstJSONObject(in: current) else { return false }
+        if json["valid"] as? Bool == false { return true }
+        guard let config = json["config"] as? [String: Any] else { return false }
+        return ["cli", "daemon"].contains { (config[$0] as? [String: Any])?["valid"] as? Bool == false }
+    }
+}
+
 struct OpenClawSchemaMismatch: Equatable {
     let stored: Int
     let supported: Int
@@ -196,7 +216,12 @@ final class OpenClawRuntimeMaintenance {
 
     func schemaMismatch() -> OpenClawSchemaMismatch? {
         guard let runtime = try? installation() else { return nil }
-        return OpenClawSchemaMismatch.detect(in: run(runtime.command("gateway status --json --timeout 5000 2>&1")).1)
+        return OpenClawSchemaMismatch.detect(in: probeGateway(runtime).1)
+    }
+
+    func configurationNeedsRepair() -> Bool {
+        guard let runtime = try? installation() else { return false }
+        return OpenClawRecoveryDiagnostic.hasInvalidConfiguration(validateConfiguration(runtime).1)
     }
 
     /// Restore connectivity only. A previous agent request must never be replayed here.
@@ -210,11 +235,6 @@ final class OpenClawRuntimeMaintenance {
             if probe.0 == 0, InstallerEngine.gatewayIsHealthy(statusOutput: probe.1) {
                 return StepResult(state: .ok, message: "Gateway RPC is healthy. No running task was interrupted or replayed.")
             }
-            if let mismatch = OpenClawSchemaMismatch.detect(in: probe.1) {
-                return allowRuntimeUpdate ? updateUnlocked(requiresOfflineBackup: true)
-                    : StepResult(state: .fail, message: mismatch.explanation + " No request was sent. Use Update OpenClaw to repair the runtime.")
-            }
-
             let root = InstallerEngine.firstJSONObject(in: probe.1)
             let service = root?["service"] as? [String: Any]
             let process = service?["runtime"] as? [String: Any]
@@ -222,6 +242,16 @@ final class OpenClawRuntimeMaintenance {
             if service?["targetRole"] as? String == "diagnostic-only" {
                 throw MaintenanceError("The CLI targets a different Gateway. Local service recovery was not attempted.\n\(probe.1)")
             }
+            if let mismatch = OpenClawSchemaMismatch.detect(in: probe.1) {
+                return allowRuntimeUpdate ? updateUnlocked(requiresOfflineBackup: true)
+                    : StepResult(state: .fail, message: mismatch.explanation + " No request was sent. Use Update OpenClaw to repair the runtime.")
+            }
+
+            let validation = validateConfiguration(runtime)
+            if OpenClawRecoveryDiagnostic.hasInvalidConfiguration(validation.1) {
+                return configurationRecovery(runtime, evidence: validation.1, allowed: allowRuntimeUpdate)
+            }
+
             let alreadyRunning = process?["status"] as? String == "running" || rpc?["ok"] as? Bool == true
             let markers = startupLogSizes(runtime)
             var startOutput = ""
@@ -240,10 +270,13 @@ final class OpenClawRuntimeMaintenance {
                 report("Starting the existing Gateway service...")
                 let start = run(bounded(runtime.command("gateway start --json"), seconds: 45))
                 startOutput = start.1
-                if start.0 != 0 {
+                if start.0 != 0 || InstallerEngine.firstJSONObject(in: start.1)?["ok"] as? Bool == false {
                     if let mismatch = OpenClawSchemaMismatch.detect(in: start.1) {
                         return allowRuntimeUpdate ? updateUnlocked(requiresOfflineBackup: true)
                             : StepResult(state: .fail, message: mismatch.explanation + " No request was sent.")
+                    }
+                    if OpenClawRecoveryDiagnostic.hasInvalidConfiguration(start.1) {
+                        return configurationRecovery(runtime, evidence: start.1, allowed: allowRuntimeUpdate)
                     }
                     throw MaintenanceError("Gateway start failed (\(start.0)).\n\(start.1)\n\(gatewayFailureDetails(runtime, status: probe.1))")
                 }
@@ -260,6 +293,9 @@ final class OpenClawRuntimeMaintenance {
                 if let mismatch = OpenClawSchemaMismatch.detect(in: currentEvidence) {
                     return allowRuntimeUpdate ? updateUnlocked(requiresOfflineBackup: true)
                         : StepResult(state: .fail, message: mismatch.explanation + " No request was sent.")
+                }
+                if OpenClawRecoveryDiagnostic.hasInvalidConfiguration(currentEvidence) {
+                    return configurationRecovery(runtime, evidence: currentEvidence, allowed: allowRuntimeUpdate)
                 }
                 if probe.0 == 0, InstallerEngine.gatewayIsHealthy(statusOutput: probe.1) {
                     healthySamples += 1
@@ -296,6 +332,20 @@ final class OpenClawRuntimeMaintenance {
         run(bounded(runtime.command("gateway status --json --require-rpc --timeout 5000 2>&1"), seconds: 25))
     }
 
+    private func validateConfiguration(_ runtime: OpenClawRuntimeInstallation) -> (Int32, String) {
+        run(bounded(runtime.command("config validate --json 2>&1"), seconds: 30))
+    }
+
+    private func configurationRecovery(_ runtime: OpenClawRuntimeInstallation, evidence: String, allowed: Bool) -> StepResult {
+        guard allowed else {
+            return StepResult(state: .fail, message: SecretRedactor.redactConfigText(
+                "OpenClaw config is invalid for runtime \(runtime.version ?? "unknown"). No request was sent. Use Repair Gateway to back up the state and run current configuration migrations.\n\(evidence)"
+            ))
+        }
+        report("Configuration blocks startup. Preparing backup-first runtime and configuration repair...")
+        return updateUnlocked(requiresOfflineBackup: true, repairConfiguration: true)
+    }
+
     private func bounded(_ command: String, seconds: Int) -> String {
         "perl -e 'alarm \(seconds); exec @ARGV' " + command
     }
@@ -322,7 +372,9 @@ final class OpenClawRuntimeMaintenance {
 
     private func startupLogEvidence(_ runtime: OpenClawRuntimeInstallation, after markers: [String: UInt64]? = nil) -> String {
         startupLogPaths(runtime).compactMap { url -> String? in
-            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true,
+            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey]),
+                  values.isRegularFile == true,
+                  markers != nil || (values.contentModificationDate ?? .distantPast) >= Date().addingTimeInterval(-900),
                   let handle = try? FileHandle(forReadingFrom: url) else { return nil }
             defer { try? handle.close() }
             guard let end = try? handle.seekToEnd() else { return nil }
@@ -333,10 +385,11 @@ final class OpenClawRuntimeMaintenance {
             let text = String(decoding: data, as: UTF8.self)
             let errors = text.components(separatedBy: .newlines).filter {
                 let line = $0.lowercased()
-                return ["error", "failed", "fatal", "schema version", "refusing", "blocked", "eaddrinuse", "requires node"].contains(where: line.contains)
+                return ["error", "failed", "fatal", "schema version", "refusing", "blocked", "eaddrinuse", "requires node", "config is invalid", "invalid config"].contains(where: line.contains)
             }.suffix(4)
             guard !errors.isEmpty else { return nil }
-            return "Recent startup log (\(url.lastPathComponent)):\n" + String(errors.joined(separator: "\n").suffix(3_000))
+            let label = markers == nil ? "Recent startup log" : "Current startup failure"
+            return "\(label) (\(url.lastPathComponent)):\n" + String(errors.joined(separator: "\n").suffix(3_000))
         }.joined(separator: "\n")
     }
 
@@ -346,27 +399,47 @@ final class OpenClawRuntimeMaintenance {
         return updateUnlocked()
     }
 
-    private func updateUnlocked(requiresOfflineBackup: Bool = false) -> StepResult {
+    private func updateUnlocked(requiresOfflineBackup: Bool = false, repairConfiguration: Bool = false) -> StepResult {
         do {
             let runtime = try installation()
             report("Checking the Gateway installation: \(runtime.package.path)")
-            let target = try updateTarget(runtime, cli: runtime.cli, tag: "latest")
+            let validation = validateConfiguration(runtime)
+            var repairingConfig = repairConfiguration || OpenClawRecoveryDiagnostic.hasInvalidConfiguration(validation.1)
+            let target: String
+            if repairingConfig {
+                // A rejected config can prevent the old CLI from even planning its update.
+                target = try registryTarget(runtime)
+            } else {
+                do {
+                    target = try updateTarget(runtime, cli: runtime.cli, tag: "latest")
+                } catch {
+                    guard OpenClawRecoveryDiagnostic.hasInvalidConfiguration(error.localizedDescription) else { throw error }
+                    repairingConfig = true
+                    target = try registryTarget(runtime)
+                }
+            }
             guard let current = runtime.version, current.compare(target, options: .numeric) != .orderedDescending else {
                 throw MaintenanceError("The selected release would downgrade OpenClaw. No database or runtime was replaced.")
             }
-            let status = run(runtime.command("gateway status --json --timeout 5000 2>&1")).1
-            var mismatch = requiresOfflineBackup || OpenClawSchemaMismatch.detect(in: status) != nil
+            if let data = try? Data(contentsOf: runtime.config),
+               let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let meta = config["meta"] as? [String: Any], let authored = meta["lastTouchedVersion"] as? String,
+               Self.isReleaseVersion(authored), authored.compare(target, options: .numeric) == .orderedDescending {
+                throw MaintenanceError("The configuration was written by OpenClaw \(authored), newer than available release \(target). No older Doctor was run and no configuration was changed.")
+            }
+            let status = probeGateway(runtime).1
+            var mismatch = requiresOfflineBackup || repairingConfig || OpenClawSchemaMismatch.detect(in: status) != nil
             let directory = home.appendingPathComponent("Library/Application Support/LocalClaw/runtime-backups")
             try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             let archive = directory.appendingPathComponent("openclaw-\(UUID().uuidString).tar.gz")
             report("Creating a recovery backup before changing OpenClaw...")
             if !mismatch {
                 let backup = run(runtime.command("backup create --no-include-workspace --verify --output \(q(archive.path)) --json"))
-                mismatch = OpenClawSchemaMismatch.detect(in: backup.1) != nil
+                mismatch = OpenClawSchemaMismatch.detect(in: backup.1) != nil || OpenClawRecoveryDiagnostic.hasInvalidConfiguration(backup.1)
                 if !mismatch && backup.0 != 0 { throw MaintenanceError("State backup failed. No runtime was replaced.\n\(backup.1)") }
             }
             if mismatch {
-                report("The database is newer than OpenClaw. Preserving it with an offline backup...")
+                report("The installed runtime cannot safely handle this state. Creating an offline recovery backup...")
                 try offlineBackup(runtime, archive: archive)
             }
             guard let size = try fm.attributesOfItem(atPath: archive.path)[.size] as? NSNumber, size.intValue > 0 else {
@@ -390,7 +463,9 @@ final class OpenClawRuntimeMaintenance {
                 _ = try checked(runtime.environmentPrefix + "npm install --global --prefix \(q(candidate.path)) openclaw@\(target)\(flags)", stage: "Prepare recovery updater")
                 updater = candidate.appendingPathComponent("lib/node_modules/openclaw/openclaw.mjs")
                 guard fm.fileExists(atPath: updater.path) else { throw MaintenanceError("The recovery updater is incomplete.") }
-                _ = try updateTarget(runtime, cli: updater, tag: target)
+                guard try updateTarget(runtime, cli: updater, tag: target) == target else {
+                    throw MaintenanceError("The recovery updater changed the requested release. No package was replaced.")
+                }
             }
 
             report("Updating the Gateway, synchronizing plugins and checking startup...")
@@ -403,6 +478,10 @@ final class OpenClawRuntimeMaintenance {
                 throw MaintenanceError("The core update finished, but plugin convergence needs attention. No task was replayed.\n\(output)")
             }
             guard runtime.version == target else { throw MaintenanceError("The Gateway package is not version \(target) after updating. No task was replayed.") }
+            let configCheck = validateConfiguration(runtime)
+            guard configCheck.0 == 0, InstallerEngine.firstJSONObject(in: configCheck.1)?["valid"] as? Bool == true else {
+                throw MaintenanceError("Configuration validation failed after updating OpenClaw.\n\(configCheck.1)")
+            }
             if runtime.serviceLabel != nil {
                 guard let installed = try OpenClawRuntimeInstallation.managed(home: home), installed.package == runtime.package else {
                     throw MaintenanceError("The Gateway service points to a different installation after updating.")
@@ -420,15 +499,29 @@ final class OpenClawRuntimeMaintenance {
     }
 
     private func updateTarget(_ runtime: OpenClawRuntimeInstallation, cli: URL, tag: String) throws -> String {
-        let output = try checked(runtime.command("update --tag \(q(tag)) --dry-run --json", cli: cli), stage: "Check update target")
+        let output = try checked(bounded(runtime.command("update --tag \(q(tag)) --dry-run --json", cli: cli), seconds: 90), stage: "Check update target")
         guard let plan = InstallerEngine.firstJSONObject(in: output), plan["dryRun"] as? Bool == true,
               let root = plan["root"] as? String,
               URL(fileURLWithPath: root).resolvingSymlinksInPath().path == runtime.package.path,
               let version = plan["targetVersion"] as? String,
-              version.range(of: #"^\d{4}\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$"#, options: .regularExpression) != nil else {
+              Self.isReleaseVersion(version) else {
             throw MaintenanceError("The updater could not confirm the target version and Gateway package location. No package was replaced.\n\(output)")
         }
         return version
+    }
+
+    private func registryTarget(_ runtime: OpenClawRuntimeInstallation) throws -> String {
+        let output = try checked(bounded(runtime.environmentPrefix + "npm view openclaw@latest version --json", seconds: 60), stage: "Resolve recovery release")
+        guard let data = output.data(using: .utf8),
+              let version = try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed) as? String,
+              Self.isReleaseVersion(version) else {
+            throw MaintenanceError("The package registry did not return a valid OpenClaw release. Nothing was replaced.")
+        }
+        return version
+    }
+
+    private static func isReleaseVersion(_ value: String) -> Bool {
+        value.range(of: #"^\d{4}\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$"#, options: .regularExpression) != nil
     }
 
     private func offlineBackup(_ runtime: OpenClawRuntimeInstallation, archive: URL) throws {

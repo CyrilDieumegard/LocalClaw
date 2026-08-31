@@ -7664,7 +7664,7 @@ final class InstallerViewModel: ObservableObject {
         case .runtimeVersion:
             screen = .updates
             updateOpenClawRuntime()
-        case .deliveryUnknown, .gateway:
+        case .deliveryUnknown, .gateway, .configuration:
             repairChatGateway(for: message, useDeveloperSession: useDeveloperSession)
         case .authentication, .localModel:
             chatStatus = "Open Models to finish recovery"
@@ -7704,8 +7704,9 @@ final class InstallerViewModel: ObservableObject {
                     } else {
                         self.chatStatus = "Recovery needs attention"
                         let recoveryMessage = ChatMessage(
-                            role: "assistant",
-                            text: "Automatic recovery could not finish. Open Help to run diagnostics or export a redacted support report. Your configuration and chat history were kept unchanged."
+                            role: "error",
+                            text: "Recovery could not finish.\n\n\(SecretRedactor.redactConfigText(repair.message))",
+                            modelName: "LocalClaw"
                         )
                         if useDeveloperSession {
                             self.developerChatMessages.append(recoveryMessage)
@@ -10330,8 +10331,8 @@ final class InstallerViewModel: ObservableObject {
     }
 
     nonisolated static func friendlyChatDiagnostic(from raw: String) -> String? {
-        let clean = stripANSI(raw)
-        if OpenClawSchemaMismatch.detect(in: clean) != nil || clean.lowercased().contains("may still be running this turn") {
+        let clean = stripANSI(OpenClawRecoveryDiagnostic.currentFailure(in: raw))
+        if OpenClawSchemaMismatch.detect(in: clean) != nil || OpenClawRecoveryDiagnostic.hasInvalidConfiguration(clean) || clean.lowercased().contains("may still be running this turn") {
             return nil
         }
         if agentResponseIndicatesTimeout(clean) {

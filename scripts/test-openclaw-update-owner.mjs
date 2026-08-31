@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const updater = resolve(process.argv[2]);
 const target = JSON.parse(readFileSync(join(updater, "package.json"), "utf8")).version;
+const legacyConfig = process.argv.includes("--legacy-config");
 const home = mkdtempSync("/private/tmp/localclaw-update-owner-");
 const prefix = join(home, ".local");
 const pkg = join(prefix, "lib/node_modules/openclaw");
@@ -21,7 +22,14 @@ try {
   writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "openclaw", version: "2026.7.1-2", bin: { openclaw: "openclaw.mjs" } }));
   writeFileSync(join(pkg, "openclaw.mjs"), "");
   writeFileSync(join(pkg, "dist/index.js"), "");
-  writeFileSync(join(state, "openclaw.json"), JSON.stringify({ gateway: { mode: "local", bind: "loopback" } }));
+  const config = { gateway: { mode: "local", bind: "loopback" } };
+  if (legacyConfig) {
+    config.meta = { lastTouchedAt: "2026-08-01T00:00:00.000Z", lastTouchedVersion: "2026.7.1-2" };
+    config.agents = { defaults: { heartbeat: { skipWhenBusy: true } } };
+    config.memory = { backend: "builtin" };
+  }
+  const configText = JSON.stringify(config);
+  writeFileSync(join(state, "openclaw.json"), configText);
   const db = new DatabaseSync(join(state, "state/openclaw.sqlite"));
   db.exec("PRAGMA user_version=15");
   db.close();
@@ -47,7 +55,8 @@ try {
   assert.equal(plan.currentVersion, "2026.7.1-2");
   assert.equal(plan.targetVersion, target);
   assert.equal(JSON.parse(readFileSync(join(pkg, "package.json"), "utf8")).version, "2026.7.1-2");
-  console.log(`PASS real OpenClaw ${target} updater targets the isolated Gateway's .local installation with schema 15.`);
+  assert.equal(readFileSync(join(state, "openclaw.json"), "utf8"), configText);
+  console.log(`PASS real OpenClaw ${target} updater targets the isolated Gateway's .local installation with schema 15${legacyConfig ? " and rejected legacy configuration" : ""}.`);
   console.log("Dry-run with a test-only OS account fixture: no packages replaced, no LaunchAgents loaded and no provider calls.");
 } finally {
   rmSync(home, { recursive: true, force: true });

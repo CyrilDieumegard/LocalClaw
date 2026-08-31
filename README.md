@@ -39,7 +39,7 @@ swift test
 
 ## OpenClaw compatibility
 
-LocalClaw 1.0.194 targets OpenClaw 2026.8.1 and retains the 2026.7.1 runtime path.
+LocalClaw 1.0.195 targets OpenClaw 2026.8.1 and retains the 2026.7.1 runtime path.
 Update LocalClaw first, then use Updates to upgrade OpenClaw. Before replacing
 the runtime, LocalClaw creates and verifies a state backup under
 `~/Library/Application Support/LocalClaw/runtime-backups/`. The normal portable
@@ -52,9 +52,10 @@ Updates target the npm package and Node used by the LaunchAgent, including the
 new generated environment-wrapper format. An incompatible old CLI is replaced
 through a staged, newer updater after backup; the staged updater must first
 confirm it targets the original service installation. OpenClaw manages plugin
-convergence and restart, and LocalClaw requires the expected Gateway version
-and healthy RPC before reporting success. Quick Repair uses the same recovery
-for schema mismatches. Unknown agent-delivery outcomes are not replayed.
+convergence and restart, and LocalClaw requires a valid configuration, the expected
+Gateway version and healthy RPC before reporting success. Quick Repair and Doctor
+use the same recovery for schema mismatches and rejected configuration.
+Unknown agent-delivery outcomes are not replayed.
 Custom/unidentified service layouts or unsafe backups stop with diagnostics.
 
 Chat and Developer now launch the CLI with the service's Node, package, config,
@@ -64,6 +65,14 @@ checks after startup; a start command alone does not count as recovery.
 The in-chat Repair Gateway action restores connectivity without resending a
 possibly running task. If startup fails, it includes the service diagnostics
 and redacted startup errors instead of silently opening Help or retrying.
+
+If an old CLI refuses configuration sections such as `meta`, `agents.defaults`
+or `memory`, recovery resolves the release independently of that broken CLI,
+backs up state, then uses the newer native updater and its configuration
+migrations. LocalClaw does not manually strip configuration keys. It refuses a
+release older than the installed runtime or a newer recorded config version.
+Historical startup logs cannot override the current failure or trigger a model
+retry. Repair failures retain their redacted cause instead of a generic message.
 
 This release handles canonical `openai/*` routes, keyed agent ownership, SQLite
 credential imports, Goals, and incremental Developer activity. Existing explicit
@@ -76,7 +85,9 @@ Run isolated compatibility checks against an installed npm package:
 node scripts/test-openclaw-compat.mjs /path/to/node_modules/openclaw
 node scripts/test-openclaw-turn.mjs /path/to/node_modules/openclaw
 node scripts/test-openclaw-turn.mjs /path/to/node_modules/openclaw --gateway
+node scripts/test-openclaw-turn.mjs /path/to/node_modules/openclaw --gateway --legacy-config
 node scripts/test-openclaw-update-owner.mjs /path/to/new/node_modules/openclaw
+node scripts/test-openclaw-update-owner.mjs /path/to/new/node_modules/openclaw --legacy-config
 ```
 
 The first check supports 2026.7.1 and 2026.8.1. The turn checks target 2026.8.1,
@@ -86,6 +97,10 @@ The migration check may resolve official plugins from the network. These checks
 do not replace manual validation of provider logins, external channels, or billing.
 The update-owner check is a dry-run of the real updater with a test-only OS
 account fixture. It checks install targeting, not a live customer migration.
+The legacy-config turn check runs the real Doctor with both native service
+mutation gates disabled, validates the migrated config, then starts only a
+temporary Gateway and verifies a tool turn. It preserves and checks the fixture's
+backup, model selection, credentials, tool policy, and existing project file.
 
 ## Build a local DMG
 

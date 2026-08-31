@@ -10,6 +10,7 @@ import { join, resolve } from "node:path";
 // cloud credentials, LM Studio, launchd, or any existing customer configuration.
 const packageRoot = resolve(process.argv[2]);
 const viaGateway = process.argv.includes("--gateway");
+const legacyConfig = process.argv.includes("--legacy-config");
 const root = mkdtempSync(join(tmpdir(), "localclaw-turn-"));
 const state = join(root, ".openclaw");
 const workspace = join(root, "workspace");
@@ -44,6 +45,19 @@ const server = createServer(async (request, response) => {
 });
 let child;
 let gateway;
+async function runCLI(arguments_, environment, timeout = 60000) {
+  const process_ = spawn(process.execPath, [join(packageRoot, "openclaw.mjs"), ...arguments_], {
+    env: environment, stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  process_.stdout.on("data", (data) => { output += data; });
+  process_.stderr.on("data", (data) => { output += data; });
+  const timer = setTimeout(() => process_.kill("SIGKILL"), timeout);
+  try {
+    const [code] = await once(process_, "close");
+    return { code, output };
+  } finally { clearTimeout(timer); }
+}
 try {
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -51,7 +65,12 @@ try {
   portProbe.listen(0, "127.0.0.1"); await once(portProbe, "listening");
   const gatewayPort = portProbe.address().port;
   await new Promise((done) => portProbe.close(done));
-  const environment = { PATH: process.env.PATH, HOME: root, OPENCLAW_HOME: root, OPENCLAW_STATE_DIR: state, OPENCLAW_CONFIG_PATH: join(state, "openclaw.json"), NO_COLOR: "1" };
+  const environment = {
+    PATH: process.env.PATH, HOME: root, OPENCLAW_HOME: root, OPENCLAW_STATE_DIR: state,
+    OPENCLAW_CONFIG_PATH: join(state, "openclaw.json"), NO_COLOR: "1", OPENCLAW_NO_AUTO_UPDATE: "1",
+    OPENCLAW_SUPERVISOR_MODE: "external", OPENCLAW_SERVICE_REPAIR_POLICY: "external",
+    OPENCLAW_LAUNCHD_LABEL: "io.localclaw.isolated-config-test",
+  };
   const config = {
     gateway: { mode: "local", bind: "loopback", port: gatewayPort, auth: {mode: "token", token: "localclaw-isolated-test-only"} },
     agents: { entries: { writer: {} }, ownership: "explicit", defaults: {
@@ -64,7 +83,41 @@ try {
     } } },
     tools: { allow: ["read", "write"] },
   };
-  writeFileSync(join(state, "openclaw.json"), JSON.stringify(config));
+  const configPath = join(state, "openclaw.json");
+  if (legacyConfig) {
+    config.meta = { lastTouchedAt: "2026-08-01T00:00:00.000Z", lastTouchedVersion: "2026.7.1-2" };
+    config.agents.defaults.heartbeat = { skipWhenBusy: true };
+    config.memory = { backend: "builtin" };
+  }
+  writeFileSync(configPath, JSON.stringify(config));
+  if (legacyConfig) {
+    const original = readFileSync(configPath);
+    const before = await runCLI(["config", "validate", "--json"], environment);
+    assert.notEqual(before.code, 0, "Legacy configuration must fail strict validation before repair");
+    assert.match(before.output, /"valid":\s*false/, before.output);
+    assert.equal(requests, 0, "Configuration checks must not call the model");
+    const backup = join(root, "original-config.backup.json");
+    writeFileSync(backup, original, { mode: 0o600 });
+    writeFileSync(join(workspace, "existing-project.txt"), "Keep existing project work\n");
+    // Both native service gates are external. Doctor can mutate only the isolated
+    // HOME/state fixture, never install, restart or clean up the host LaunchAgent.
+    const doctor = await runCLI(["doctor", "--fix", "--yes", "--non-interactive", "--no-workspace-suggestions"], environment, 180000);
+    assert.equal(doctor.code, 0, doctor.output);
+    const after = await runCLI(["config", "validate", "--json"], environment);
+    assert.equal(after.code, 0, after.output);
+    assert.match(after.output, /"valid":\s*true/, after.output);
+    const repaired = JSON.parse(readFileSync(configPath, "utf8"));
+    assert.equal(repaired.meta?.lastTouchedAt, undefined);
+    assert.equal(repaired.agents.defaults.heartbeat?.skipWhenBusy, undefined);
+    assert.equal(repaired.memory?.backend, undefined);
+    assert.equal(repaired.agents.defaults.model.primary, "lmstudio/fixture");
+    assert.equal(repaired.models.providers.lmstudio.apiKey, "fixture-only");
+    assert.deepEqual(repaired.tools.allow, config.tools.allow);
+    assert.deepEqual(readFileSync(backup), original);
+    assert.equal(readFileSync(join(workspace, "existing-project.txt"), "utf8"), "Keep existing project work\n");
+    assert.equal(requests, 0, "Doctor must not send a model request");
+    console.log("PASS real configuration migration: rejected meta/agents.defaults/memory -> fresh Doctor -> valid configuration; backup, credentials, tool policy and project preserved; native service mutations disabled.");
+  }
   writeFileSync(join(root, "prompt.txt"), "Create fixture.txt containing LocalClaw compatibility OK using the write tool, then confirm completion.");
   let gatewayLog = "";
   if (viaGateway) {

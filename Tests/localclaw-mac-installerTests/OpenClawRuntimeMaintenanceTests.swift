@@ -24,6 +24,44 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(!ChatRecoveryPlan.classify(error: "Gateway closed with 1006 abnormal closure").replaysRequestAfterRepair)
     }
 
+    @Test func currentConfigFailureWinsOverOldModuleAndModelErrors() {
+        let diagnostic = """
+        Gateway is not ready. Your message was not sent.
+        Gateway recovery stopped: Gateway start failed (1).
+        OpenClaw config is invalid
+        File: ~/.openclaw/openclaw.json
+        Problem:
+          - meta: Invalid input
+          - agents.defaults: Invalid input
+          - memory: Invalid input
+        Fix: openclaw doctor --fix
+        {"config":{"cli":{"valid":true},"daemon":{"valid":true}},"cli":{"version":"2026.7.1-2"},"rpc":{"ok":false}}
+        Recent startup log (gateway.log):
+        2026-05-18 ERR_MODULE_NOT_FOUND /opt/homebrew/lib/node_modules/openclaw/dist/old.js
+        2026-05-18 lmstudio request timed out
+        """
+        let plan = ChatRecoveryPlan.classify(error: diagnostic)
+        #expect(plan.kind == .configuration)
+        #expect(plan.primaryActionLabel == "Repair Gateway")
+        #expect(!plan.replaysRequestAfterRepair)
+        #expect(InstallerViewModel.friendlyChatDiagnostic(from: diagnostic) == nil)
+    }
+
+    @Test func historicalErrorsDoNotOverrideCurrentConnectionFailure() {
+        for marker in ["Recent startup log (gateway.log):", "Historical startup log (gateway.log):", "LocalClaw Gateway diagnostic:"] {
+            let diagnostic = "Gateway is not ready. ECONNREFUSED\n\(marker)\n\(mismatch)\nERR_MODULE_NOT_FOUND lmstudio timeout"
+            #expect(ChatRecoveryPlan.classify(error: diagnostic).kind == .gateway)
+            #expect(InstallerViewModel.friendlyChatDiagnostic(from: diagnostic) == nil)
+        }
+        #expect(ChatRecoveryPlan.classify(error: "ERR_MODULE_NOT_FOUND openclaw/dist/current.js").kind == .runtimeFiles)
+    }
+
+    @Test func structuredInvalidConfigurationIsDetectedWithoutEnglishErrorText() {
+        #expect(OpenClawRecoveryDiagnostic.hasInvalidConfiguration(#"{"ok":false,"valid":false,"issues":[{"path":"meta","message":"Invalid input"}]}"#))
+        #expect(OpenClawRecoveryDiagnostic.hasInvalidConfiguration(#"{"config":{"daemon":{"valid":false}}}"#))
+        #expect(!OpenClawRecoveryDiagnostic.hasInvalidConfiguration(#"{"valid":true}"#))
+    }
+
     @Test func explicitCLIFailureCannotBeMistakenForAnAssistantReply() {
         let raw = #"{"ok":false,"error":{"type":"cli_error","message":"Gateway not reachable (ECONNREFUSED)"}}"#
         #expect(InstallerViewModel.normalizedAgentResult((0, raw)).0 != 0)
@@ -115,6 +153,60 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(!fixture.commands.contains { $0.contains("npm install") || $0.contains("bootout") })
     }
 
+    @Test func invalidConfigWithBestEffortValidStatusRequiresExplicitRepair() throws {
+        let fixture = try Fixture(schemaMismatch: false, invalidConfig: true)
+        defer { fixture.cleanUp() }
+        let original = try Data(contentsOf: fixture.home.appendingPathComponent(".openclaw/openclaw.json"))
+        let result = fixture.maintenance().prepareGateway()
+        #expect(result.state == .fail)
+        #expect(ChatRecoveryPlan.classify(error: result.message).kind == .configuration)
+        #expect(fixture.commands.contains { $0.contains("config validate --json") })
+        #expect(!fixture.commands.contains { $0.contains("gateway start") || $0.contains("npm ") || $0.contains("doctor") })
+        #expect(try Data(contentsOf: fixture.home.appendingPathComponent(".openclaw/openclaw.json")) == original)
+    }
+
+    @Test func invalidConfigUsesBackupAndNewUpdaterWithoutRunningOldDoctor() throws {
+        let fixture = try Fixture(schemaMismatch: false, invalidConfig: true)
+        defer { fixture.cleanUp() }
+        let original = try Data(contentsOf: fixture.database)
+        let result = fixture.maintenance().prepareGateway(allowRuntimeUpdate: true)
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(try Data(contentsOf: fixture.database) == original)
+        #expect(try fixture.archives().count == 1)
+        let registry = try #require(fixture.commands.firstIndex { $0.contains("npm view openclaw@latest version --json") })
+        let backup = try #require(fixture.commands.firstIndex { $0.contains("tar -tzf") })
+        let staged = try #require(fixture.commands.firstIndex { $0.contains("npm install") })
+        let update = try #require(fixture.commands.firstIndex { $0.contains("--yes --json") })
+        let validated = try #require(fixture.commands.lastIndex { $0.contains("config validate --json") })
+        #expect(registry < backup && backup < staged && staged < update && update < validated)
+        #expect(fixture.commands[registry].contains(".hermes/node/bin"))
+        #expect(fixture.commands[update].contains("updater-"))
+        #expect(!fixture.commands.contains { $0.contains("backup create") || $0.contains("doctor --fix") || $0.contains("agent ") })
+        #expect(fixture.commands.filter { $0.contains("--dry-run") }.allSatisfy { $0.contains("updater-") })
+    }
+
+    @Test(arguments: [Failure.registryUnavailable, .invalidRegistryVersion, .downgrade])
+    func untrustedOrUnavailableRecoveryTargetCannotStopOrReplaceGateway(_ failure: Failure) throws {
+        let fixture = try Fixture(schemaMismatch: false, invalidConfig: true, failure: failure)
+        defer { fixture.cleanUp() }
+        let result = fixture.maintenance().prepareGateway(allowRuntimeUpdate: true)
+        #expect(result.state == .fail)
+        #expect(!fixture.commands.contains { $0.contains("bootout") || $0.contains("npm install") || $0.contains("--yes --json") })
+    }
+
+    @Test func configurationFromANewerReleaseIsNeverPrunedByAnOlderDoctor() throws {
+        let fixture = try Fixture(schemaMismatch: false, invalidConfig: true)
+        defer { fixture.cleanUp() }
+        let config = fixture.home.appendingPathComponent(".openclaw/openclaw.json")
+        let original = Data(#"{"meta":{"lastTouchedVersion":"2026.9.1"}}"#.utf8)
+        try original.write(to: config)
+        let result = fixture.maintenance().prepareGateway(allowRuntimeUpdate: true)
+        #expect(result.state == .fail)
+        #expect(result.message.contains("newer than available release"))
+        #expect(try Data(contentsOf: config) == original)
+        #expect(!fixture.commands.contains { $0.contains("bootout") || $0.contains("doctor") || $0.contains("--yes --json") })
+    }
+
     @Test(arguments: [Failure.backup, .corruptArchive, .activeWriter, .wrongTarget, .downgrade, .staging])
     func preflightOrBackupFailureNeverReplacesTheRuntime(_ failure: Failure) throws {
         let fixture = try Fixture(schemaMismatch: failure != .backup, failure: failure)
@@ -128,7 +220,7 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(runtime?.version == "2026.7.1-2")
     }
 
-    @Test(arguments: [Failure.update, .wrongVersion, .unhealthy, .schemaRemains, .pluginWarning])
+    @Test(arguments: [Failure.update, .wrongVersion, .unhealthy, .schemaRemains, .pluginWarning, .configRemains])
     func PostUpdateFailuresAreNotReportedAsSuccess(_ failure: Failure) throws {
         let fixture = try Fixture(failure: failure)
         defer { fixture.cleanUp() }
@@ -151,7 +243,7 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(OpenClawRuntimeMaintenance.npmLifecycleFlags(version: "12.0.0").contains("--allow-scripts=openclaw"))
     }
 
-    enum Failure: String, Sendable { case backup, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, pluginWarning }
+    enum Failure: String, Sendable { case backup, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, pluginWarning, configRemains, registryUnavailable, invalidRegistryVersion }
 
     private final class Fixture {
         let home: URL
@@ -159,12 +251,14 @@ struct OpenClawRuntimeMaintenanceTests {
         let database: URL
         let backups: URL
         let schemaMismatch: Bool
+        let invalidConfig: Bool
         let failure: Failure?
         var commands: [String] = []
         var didUpdate = false
 
-        init(schemaMismatch: Bool = true, failure: Failure? = nil) throws {
+        init(schemaMismatch: Bool = true, invalidConfig: Bool = false, failure: Failure? = nil) throws {
             self.schemaMismatch = schemaMismatch
+            self.invalidConfig = invalidConfig
             self.failure = failure
             home = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("runtime fixture's \(UUID().uuidString)")
             package = home.appendingPathComponent(".local/lib/node_modules/openclaw")
@@ -212,13 +306,30 @@ struct OpenClawRuntimeMaintenanceTests {
         func execute(_ command: String) -> (Int32, String) {
             commands.append(command)
             do {
+                if command.contains("config validate --json") {
+                    if invalidConfig && !didUpdate || failure == .configRemains {
+                        return (1, #"{"ok":false,"valid":false,"issues":[{"path":"meta","message":"Invalid input"},{"path":"agents.defaults","message":"Invalid input"},{"path":"memory","message":"Invalid input"}]}"#)
+                    }
+                    return (0, #"{"valid":true}"#)
+                }
+                if command.contains("npm view openclaw@latest version --json") {
+                    if failure == .registryUnavailable { return (1, "registry unavailable") }
+                    if failure == .invalidRegistryVersion { return (0, #""2026.8.1; unwanted-command""#) }
+                    return (0, failure == .downgrade ? #""2026.6.1""# : #""2026.8.1""#)
+                }
                 if command.contains("--dry-run") {
+                    if invalidConfig && !didUpdate && !command.contains("updater-") {
+                        return (1, "OpenClaw config is invalid\nmeta: Invalid input\nagents.defaults: Invalid input\nmemory: Invalid input")
+                    }
                     return (0, String(data: try JSONSerialization.data(withJSONObject: [
                         "dryRun": true, "root": failure == .wrongTarget ? "/wrong/package" : package.path,
                         "targetVersion": failure == .downgrade ? "2026.6.1" : "2026.8.1"
                     ]), encoding: .utf8)!)
                 }
                 if command.contains("gateway status") {
+                    if invalidConfig && !didUpdate {
+                        return (1, #"{"service":{"runtime":{"status":"stopped"}},"config":{"cli":{"valid":true},"daemon":{"valid":true}},"cli":{"version":"2026.7.1-2"},"rpc":{"ok":false,"error":"ECONNREFUSED"}}"#)
+                    }
                     if !didUpdate && schemaMismatch || failure == .schemaRemains {
                         return (1, "Config health-state write failed: OpenClaw state database uses newer schema version 15; this OpenClaw build supports 1.")
                     }

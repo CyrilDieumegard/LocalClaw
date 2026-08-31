@@ -63,7 +63,7 @@ extension OpenClawRuntimeMaintenanceTests {
       let result = fixture.maintenance().prepareGateway(allowRuntimeUpdate: true)
       #expect(result.state == .fail)
       #expect(result.message.contains("running process was left untouched"))
-      #expect(fixture.commands.allSatisfy { $0.contains("gateway status") })
+      #expect(fixture.commands.allSatisfy { $0.contains("gateway status") || $0.contains("config validate") })
     }
 
     @Test func startupFailurePreservesTheRealErrorAndNeverCallsTheModel() throws {
@@ -176,6 +176,36 @@ extension OpenClawRuntimeMaintenanceTests {
       defer { healthy.cleanUp() }
       try Data(Probe.schemaMismatch.output.utf8).write(to: healthy.log)
       #expect(healthy.maintenance().prepareGateway().state == .ok)
+    }
+
+    @Test func newStartupConfigFailureIsKeptAsCurrentEvidence() throws {
+      let fixture = try Fixture(probes: [.stopped], startupError: "OpenClaw config is invalid: agents.defaults: Invalid input")
+      defer { fixture.cleanUp() }
+      let result = fixture.maintenance().prepareGateway()
+      #expect(result.state == .fail)
+      #expect(ChatRecoveryPlan.classify(error: result.message).kind == .configuration)
+      #expect(fixture.probeCount == 2)
+      #expect(!fixture.commands.contains { $0.contains("npm ") })
+    }
+
+    @Test func rejectedStartIsNotLostWhenConfigValidationInitiallyPasses() throws {
+      let fixture = try Fixture(probes: [.stopped])
+      defer { fixture.cleanUp() }
+      fixture.startFailure = "OpenClaw config is invalid\nmeta: Invalid input\nagents.defaults: Invalid input\nmemory: Invalid input"
+      let result = fixture.maintenance().prepareGateway()
+      #expect(result.state == .fail)
+      #expect(ChatRecoveryPlan.classify(error: result.message).kind == .configuration)
+      #expect(fixture.commands.contains { $0.contains("gateway start") })
+    }
+
+    @Test func diagnosticSkipsLogFilesThatHaveNotChangedRecently() throws {
+      let fixture = try Fixture(probes: [.stopped])
+      defer { fixture.cleanUp() }
+      try Data("ERR_MODULE_NOT_FOUND May historical failure\n".utf8).write(to: fixture.log)
+      try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-86_400)], ofItemAtPath: fixture.log.path)
+      let diagnostic = fixture.maintenance().gatewayDiagnostic()
+      #expect(!diagnostic.contains("ERR_MODULE_NOT_FOUND"))
+      #expect(ChatRecoveryPlan.classify(error: diagnostic).kind == .gateway)
     }
 
     @Test func readOnlyDiagnosticShowsStartupCauseAndRedactsCredentials() throws {
@@ -312,6 +342,7 @@ extension OpenClawRuntimeMaintenanceTests {
       }
       func execute(_ command: String) -> (Int32, String) {
         commands.append(command)
+        if command.contains("config validate --json") { return (0, #"{"valid":true}"#) }
         if command.contains("gateway status") {
           let probe = probes[min(probeCount, probes.count - 1)]
           probeCount += 1
