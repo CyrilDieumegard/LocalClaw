@@ -1,6 +1,7 @@
 import Foundation
 
 enum ChatRecoveryKind: String, Codable, Sendable {
+    case storage
     case runtimeFiles
     case runtimeVersion
     case configuration
@@ -27,6 +28,12 @@ struct ChatRecoveryPlan: Equatable, Sendable {
         let clean = current
             .replacingOccurrences(of: "\u{001B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
             .lowercased()
+
+        if OpenClawStorageRecovery.isStorageFailure(current) {
+            return ChatRecoveryPlan(kind: .storage, title: "Not enough disk space",
+                                    explanation: OpenClawStorageRecovery.explanation,
+                                    primaryActionLabel: "Storage Recovery", systemImage: "externaldrive.badge.exclamationmark")
+        }
 
         if let mismatch = OpenClawSchemaMismatch.detect(in: current) {
             return ChatRecoveryPlan(kind: .runtimeVersion,

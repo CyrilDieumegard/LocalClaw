@@ -1376,6 +1376,9 @@ final class InstallerViewModel: ObservableObject {
     @Published var kanbanListFilter = "All"
     @Published var kanbanHideCompleted = false
     @Published var healthLogs: String = ""
+    @Published var showStorageRecovery = false
+    @Published var storageRecoveryDiagnostic = ""
+    let storageRecoveryModel = StorageRecoveryModel()
     @Published var healthStatus: String = "Unknown"
     @Published var runtimeSnapshot: RuntimeSnapshot = .checking
     @Published var runtimeSnapshotIsRefreshing = false
@@ -2521,6 +2524,7 @@ final class InstallerViewModel: ObservableObject {
         controlCenterLogs = "Running doctor repair...\n"
         let result = engine.runDoctorRepair()
         controlCenterLogs += "[\(result.state.rawValue)] \(result.message)\n"
+        if result.state == .fail { presentStorageFailure(result.message) }
         refreshControlCenter()
     }
 
@@ -4159,6 +4163,7 @@ final class InstallerViewModel: ObservableObject {
                     self.isRunning = false
                     self.refreshVersions()
                     self.append("OpenClaw runtime update failed.")
+                    self.presentStorageFailure(update.message)
                 }
                 return
             }
@@ -6298,6 +6303,7 @@ final class InstallerViewModel: ObservableObject {
                 self.isRunning = false
                 self.chatGatewayPrepared = false
                 self.healthLogs += "Repair: [\(repair.state.rawValue)] \(SecretRedactor.redactConfigText(repair.message))\n"
+                if repair.state == .fail { self.presentStorageFailure(repair.message) }
                 self.refreshVersions()
             }
         }
@@ -6305,6 +6311,12 @@ final class InstallerViewModel: ObservableObject {
 
     func backupOpenClawConfig() {
         _ = createRecoveryPoint(reason: "Manual backup")
+    }
+
+    func presentStorageFailure(_ diagnostic: String) {
+        guard OpenClawStorageRecovery.isStorageFailure(diagnostic) else { return }
+        storageRecoveryDiagnostic = SecretRedactor.redactConfigText(diagnostic)
+        showStorageRecovery = true
     }
 
     @discardableResult
@@ -7661,6 +7673,8 @@ final class InstallerViewModel: ObservableObject {
         guard !isRunning, !chatIsSending, let plan = chatRecoveryPlan(for: message) else { return }
 
         switch plan.kind {
+        case .storage:
+            presentStorageFailure(message.text)
         case .runtimeVersion:
             screen = .updates
             updateOpenClawRuntime()
@@ -7703,6 +7717,7 @@ final class InstallerViewModel: ObservableObject {
                         self.retryChatMessage(message, useDeveloperSession: useDeveloperSession)
                     } else {
                         self.chatStatus = "Recovery needs attention"
+                        self.presentStorageFailure(repair.message)
                         let recoveryMessage = ChatMessage(
                             role: "error",
                             text: "Recovery could not finish.\n\n\(SecretRedactor.redactConfigText(repair.message))",
@@ -7746,6 +7761,7 @@ final class InstallerViewModel: ObservableObject {
                 let detail = SecretRedactor.redactConfigText(repair.message)
                 self.healthLogs += "\nGateway recovery: [\(repair.state.rawValue)] \(detail)\n"
                 self.chatStatus = repair.state == .ok ? "Ready" : "Recovery needs attention"
+                if repair.state == .fail { self.presentStorageFailure(detail) }
                 let response = repair.state == .ok
                     ? "\(detail)\nCheck the discussion before sending the previous message again."
                     : detail
@@ -12203,6 +12219,14 @@ struct ContentView: View {
         }
         .sheet(isPresented: $vm.showCronJobCreator) {
             cronJobCreatorSheet
+        }
+        .sheet(isPresented: $vm.showStorageRecovery) {
+            StorageRecoveryView(model: vm.storageRecoveryModel, diagnostic: vm.storageRecoveryDiagnostic) {
+                vm.showStorageRecovery = false
+                vm.screen = .healthCenter
+                helpTab = .healthCommands
+                vm.runQuickRepair()
+            }
         }
         .sheet(isPresented: $vm.showKanbanTaskEditor) {
             kanbanTaskEditorSheet
@@ -19135,6 +19159,9 @@ struct ContentView: View {
                                 }
                                 helpCommandButton("Open Recovery Folder", icon: "folder", primary: false) {
                                     vm.openRecoveryFolder()
+                                }
+                                helpCommandButton("Storage Recovery", icon: "externaldrive", primary: false) {
+                                    vm.showStorageRecovery = true
                                 }
                             }
 

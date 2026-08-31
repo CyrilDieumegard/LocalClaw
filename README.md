@@ -39,7 +39,7 @@ swift test
 
 ## OpenClaw compatibility
 
-LocalClaw 1.0.197 targets OpenClaw 2026.8.1 and retains the 2026.7.1 runtime path.
+LocalClaw 1.0.198 targets OpenClaw 2026.8.1 and retains the 2026.7.1 runtime path.
 Update LocalClaw first, then use Updates to upgrade OpenClaw. Before replacing
 the runtime, LocalClaw creates and verifies a state backup under
 `~/Library/Application Support/LocalClaw/runtime-backups/`. The normal portable
@@ -55,6 +55,19 @@ uncompressed input, archive overhead and 2 GiB of update reserve before packing.
 The archive is written privately to a temporary file and promoted only after
 successful verification. Failed attempts remove only their own incomplete
 archives; older backups and source data remain untouched.
+
+Maintenance checks free space before runtime discovery/registry requests, then
+checks the offline archive estimate before stopping the Gateway. ENOSPC and
+quota failures route to Storage Recovery instead of another generic repair.
+The sheet measures free space, the default npm download cache and recovery
+backups. With explicit confirmation it can clear only `~/.npm/_cacache`, after
+checking ownership, rejecting linked cache roots and checking for open files.
+It preserves npm credentials, installed packages, local models, projects and
+all existing backups. The cache is disposable download data
+([npm cache documentation](https://docs.npmjs.com/cli/v11/commands/npm-cache/)).
+Custom cache locations are not automatically cleaned. Additional disk space
+may still need to be freed manually; clearing a cache cannot guarantee enough
+room for the full archive and update. Retry Repair never resends a chat request.
 
 Updates target the npm package and Node used by the LaunchAgent, including the
 new generated environment-wrapper format. An incompatible old CLI is replaced

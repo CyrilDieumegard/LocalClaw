@@ -1131,6 +1131,9 @@ final class InstallerEngine: @unchecked Sendable {
         allowPackageReinstall: Bool,
         forcePackageReinstall: Bool = false
     ) -> StepResult {
+        if OpenClawStorageRecovery.isStorageFailure(errorText) {
+            return StepResult(state: .fail, message: OpenClawStorageRecovery.explanation + "\n\n" + SecretRedactor.redactConfigText(errorText))
+        }
         guard hasCommand("openclaw") else {
             return StepResult(state: .fail, message: "OpenClaw CLI is not installed")
         }

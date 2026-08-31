@@ -304,7 +304,57 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(OpenClawRuntimeMaintenance.npmLifecycleFlags(version: "12.0.0").contains("--allow-scripts=openclaw"))
     }
 
-    enum Failure: String, Sendable { case backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, pluginWarning, configRemains, registryUnavailable, invalidRegistryVersion }
+    @Test func registryDiskFailureStaysActionableWithoutBackingUpOrStoppingService() throws {
+        let fixture = try Fixture(invalidConfig: true, failure: .registryNoSpace)
+        defer { fixture.cleanUp() }
+        let result = fixture.maintenance().update()
+        #expect(result.state == .fail)
+        #expect(result.message.contains("ENOSPC"))
+        #expect(result.message.contains("Storage Recovery"))
+        #expect(ChatRecoveryPlan.classify(error: result.message).kind == .storage)
+        #expect(!fixture.commands.contains { $0.contains("launchctl") || $0.contains("tar -czf") || $0.contains("npm install") })
+    }
+
+    @Test func offlineSpaceIsCheckedBeforeStoppingTheGateway() throws {
+        let fixture = try Fixture(invalidConfig: true)
+        defer { fixture.cleanUp() }
+        let maintenance = OpenClawRuntimeMaintenance(home: fixture.home, run: fixture.execute, wait: { _ in }, freeBytes: { path in
+            path.lastPathComponent == "runtime-backups" ? 0 : UInt64.max
+        })
+        let result = maintenance.update()
+        #expect(result.state == .fail)
+        #expect(result.message.contains("Not enough free disk space"))
+        #expect(!fixture.commands.contains { $0.contains("launchctl") || $0.contains("tar -czf") || $0.contains("npm install") })
+        #expect(try fixture.archives().isEmpty)
+    }
+
+    @Test func confirmedCacheCleanupAllowsRepairToResumeWithoutDeletingStateOrOldBackups() throws {
+        let fixture = try Fixture(invalidConfig: true)
+        defer { fixture.cleanUp() }
+        let fm = FileManager.default
+        let cache = fixture.home.appendingPathComponent(".npm/_cacache")
+        try fm.createDirectory(at: cache, withIntermediateDirectories: true)
+        try Data("download cache".utf8).write(to: cache.appendingPathComponent("payload"))
+        try fm.createDirectory(at: fixture.backups, withIntermediateDirectories: true)
+        let previous = fixture.backups.appendingPathComponent("previous.tar.gz")
+        try Data("keep previous archive".utf8).write(to: previous)
+        let originalState = try Data(contentsOf: fixture.database)
+        let maintenance = OpenClawRuntimeMaintenance(home: fixture.home, run: fixture.execute, wait: { _ in }, freeBytes: { _ in
+            fm.fileExists(atPath: cache.path) ? 0 : UInt64.max
+        })
+        #expect(maintenance.update().state == .fail)
+        #expect(fixture.commands.isEmpty)
+        #expect(maintenance.clearDownloadCache(confirmed: true).state == .ok)
+        let result = maintenance.update()
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(fixture.didUpdate)
+        #expect(try Data(contentsOf: fixture.database) == originalState)
+        #expect(try Data(contentsOf: previous) == Data("keep previous archive".utf8))
+        #expect(try fixture.archives().count == 2)
+        #expect(!fixture.commands.contains { $0.contains("agent --") || $0.contains("rm -rf") })
+    }
+
+    enum Failure: String, Sendable { case backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, pluginWarning, configRemains, registryUnavailable, registryNoSpace, invalidRegistryVersion }
 
     private final class Fixture {
         let home: URL
@@ -375,6 +425,7 @@ struct OpenClawRuntimeMaintenanceTests {
                     return (0, #"{"valid":true}"#)
                 }
                 if command.contains("npm view openclaw@latest version --json") {
+                    if failure == .registryNoSpace { return (1, "npm error code ENOSPC\nnpm error path /Users/bot/.npm/_cacache/tmp/example\nno space left on device") }
                     if failure == .registryUnavailable { return (1, "registry unavailable") }
                     if failure == .invalidRegistryVersion { return (0, #""2026.8.1; unwanted-command""#) }
                     return (0, failure == .downgrade ? #""2026.6.1""# : #""2026.8.1""#)

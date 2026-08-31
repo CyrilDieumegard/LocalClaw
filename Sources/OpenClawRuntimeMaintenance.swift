@@ -191,15 +191,18 @@ final class OpenClawRuntimeMaintenance {
     private let run: Runner
     private let report: (String) -> Void
     private let wait: (TimeInterval) -> Void
+    private let freeBytes: (URL) throws -> UInt64
     private let fm = FileManager.default
     private var backupPath: String?
 
     init(home: URL = FileManager.default.homeDirectoryForCurrentUser, run: @escaping Runner,
-         report: @escaping (String) -> Void = { _ in }, wait: @escaping (TimeInterval) -> Void = Thread.sleep(forTimeInterval:)) {
+         report: @escaping (String) -> Void = { _ in }, wait: @escaping (TimeInterval) -> Void = Thread.sleep(forTimeInterval:),
+         freeBytes: @escaping (URL) throws -> UInt64 = OpenClawOfflineBackup.availableBytes) {
         self.home = home
         self.run = run
         self.report = report
         self.wait = wait
+        self.freeBytes = freeBytes
     }
 
     func installation() throws -> OpenClawRuntimeInstallation {
@@ -399,9 +402,23 @@ final class OpenClawRuntimeMaintenance {
         return updateUnlocked()
     }
 
+    func clearDownloadCache(confirmed: Bool) -> StepResult {
+        guard Self.lock.try() else { return StepResult(state: .fail, message: "Wait for OpenClaw maintenance to finish before cleaning the cache.") }
+        defer { Self.lock.unlock() }
+        do {
+            try OpenClawStorageRecovery(home: home).clearCache(confirmed: confirmed, run: run)
+            return StepResult(state: .ok, message: "npm download cache cleared. Models, projects, chats, credentials and backups were kept. Downloads may need to be fetched again.")
+        } catch { return StepResult(state: .fail, message: SecretRedactor.redactConfigText(error.localizedDescription)) }
+    }
+
     private func updateUnlocked(requiresOfflineBackup: Bool = false, repairConfiguration: Bool = false) -> StepResult {
         do {
+            report("Checking free disk space before contacting npm...")
+            try OpenClawStorageRecovery.requireSpace(at: home, freeBytes: freeBytes)
             let runtime = try installation()
+            for directory in [runtime.prefix, runtime.state] where fm.fileExists(atPath: directory.path) {
+                try OpenClawStorageRecovery.requireSpace(at: directory, freeBytes: freeBytes)
+            }
             report("Checking the Gateway installation: \(runtime.package.path)")
             let validation = validateConfiguration(runtime)
             var repairingConfig = repairConfiguration || OpenClawRecoveryDiagnostic.hasInvalidConfiguration(validation.1)
@@ -499,7 +516,8 @@ final class OpenClawRuntimeMaintenance {
             return StepResult(state: .ok, message: "OpenClaw \(target) updated; Gateway version and RPC verified.\nRecovery backup: \(archive.path)")
         } catch {
             let backup = backupPath.map { "\nRecovery backup: \($0)" } ?? ""
-            return StepResult(state: .fail, message: SecretRedactor.redactConfigText("OpenClaw maintenance stopped: \(error.localizedDescription)\(backup)\nYour database was not deleted or downgraded. No chat request was replayed."))
+            let guidance = OpenClawStorageRecovery.isStorageFailure(error.localizedDescription) ? "\(OpenClawStorageRecovery.explanation)\n\n" : ""
+            return StepResult(state: .fail, message: SecretRedactor.redactConfigText("\(guidance)OpenClaw maintenance stopped: \(error.localizedDescription)\(backup)\nYour database was not deleted or downgraded. No chat request was replayed."))
         }
     }
 
@@ -536,6 +554,9 @@ final class OpenClawRuntimeMaintenance {
         guard config.hasPrefix(state + "/"), !archive.path.hasPrefix(state + "/"), fm.fileExists(atPath: state) else {
             throw MaintenanceError("The custom state/config paths need a separate verified backup. Automatic recovery stopped.")
         }
+        report("Checking space for the offline backup before stopping the Gateway...")
+        let inventory = try OpenClawOfflineBackup.inventory(state: runtime.state)
+        try OpenClawStorageRecovery.requireSpace(at: archive.deletingLastPathComponent(), required: inventory.requiredBytes, freeBytes: freeBytes)
         let service = "gui/\(getuid())/\(label)"
         let loaded = run("/bin/launchctl print \(q(service)) 2>&1")
         if loaded.0 == 0 {
