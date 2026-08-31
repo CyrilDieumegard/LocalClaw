@@ -432,11 +432,15 @@ final class OpenClawRuntimeMaintenance {
             let directory = home.appendingPathComponent("Library/Application Support/LocalClaw/runtime-backups")
             try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             let archive = directory.appendingPathComponent("openclaw-\(UUID().uuidString).tar.gz")
+            guard !fm.fileExists(atPath: archive.path) else { throw MaintenanceError("The recovery backup destination already exists.") }
+            var verifiedArchive = false
+            defer { if !verifiedArchive { try? fm.removeItem(at: archive) } }
             report("Creating a recovery backup before changing OpenClaw...")
             if !mismatch {
                 let backup = run(runtime.command("backup create --no-include-workspace --verify --output \(q(archive.path)) --json"))
                 mismatch = OpenClawSchemaMismatch.detect(in: backup.1) != nil || OpenClawRecoveryDiagnostic.hasInvalidConfiguration(backup.1)
                 if !mismatch && backup.0 != 0 { throw MaintenanceError("State backup failed. No runtime was replaced.\n\(backup.1)") }
+                if mismatch && fm.fileExists(atPath: archive.path) { try fm.removeItem(at: archive) }
             }
             if mismatch {
                 report("The installed runtime cannot safely handle this state. Creating an offline recovery backup...")
@@ -446,6 +450,7 @@ final class OpenClawRuntimeMaintenance {
                 throw MaintenanceError("The recovery archive is missing or empty. Update stopped.")
             }
             try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: archive.path)
+            verifiedArchive = true
             backupPath = archive.path
             report("Recovery backup: \(archive.path)")
 
@@ -560,8 +565,7 @@ final class OpenClawRuntimeMaintenance {
         case .failed(let diagnostic):
             throw MaintenanceError("LocalClaw could not verify whether OpenClaw data files are in use. This does not confirm a database lock. Backup and update stopped.\n\(diagnostic)")
         }
-        _ = try checked("umask 077; /usr/bin/tar -czf \(q(archive.path)) -C \(q(state)) .", stage: "Back up migrated state")
-        _ = try checked("/usr/bin/tar -tzf \(q(archive.path)) >/dev/null", stage: "Verify offline recovery archive")
+        try OpenClawOfflineBackup.create(state: URL(fileURLWithPath: state), archive: archive, run: run, report: report)
     }
 
     static func verifiedGateway(_ output: String, expectedVersion: String) -> Bool {

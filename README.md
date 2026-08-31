@@ -39,7 +39,7 @@ swift test
 
 ## OpenClaw compatibility
 
-LocalClaw 1.0.196 targets OpenClaw 2026.8.1 and retains the 2026.7.1 runtime path.
+LocalClaw 1.0.197 targets OpenClaw 2026.8.1 and retains the 2026.7.1 runtime path.
 Update LocalClaw first, then use Updates to upgrade OpenClaw. Before replacing
 the runtime, LocalClaw creates and verifies a state backup under
 `~/Library/Application Support/LocalClaw/runtime-backups/`. The normal portable
@@ -47,6 +47,14 @@ backup excludes project workspaces. If the old runtime cannot read an already
 migrated database, LocalClaw stops the identified Gateway, checks for other open
 state files, and archives the entire state directory instead (including nested
 workspaces, so allow extra disk space). It never deletes or downgrades SQLite.
+The offline inventory excludes actual Unix sockets, not files merely named
+`.sock`. It preserves file contents, POSIX modes, symbolic links and empty
+directories, but does not pack extended attributes, ACLs or AppleDouble metadata.
+Source metadata is not changed. A conservative free-space check accounts for
+uncompressed input, archive overhead and 2 GiB of update reserve before packing.
+The archive is written privately to a temporary file and promoted only after
+successful verification. Failed attempts remove only their own incomplete
+archives; older backups and source data remain untouched.
 
 Updates target the npm package and Node used by the LaunchAgent, including the
 new generated environment-wrapper format. An incompatible old CLI is replaced
@@ -80,6 +88,12 @@ handles, including read-only SQLite/WAL handles, remain protected. Blocking
 diagnostics identify the process, PID and file; inspection errors are reported
 separately rather than claiming another client owns the database. No process is
 killed automatically, and a failed inspection still prevents backup and update.
+
+The offline-backup tests perform a native macOS archive/restore with a real Unix
+socket, SQLite database, WAL/SHM files, project files, links and extended
+attributes. They also cover insufficient space, write/verification failures and
+preservation of previous archives. Run them with
+`swift test --filter OpenClawOfflineBackupTests`.
 
 This release handles canonical `openai/*` routes, keyed agent ownership, SQLite
 credential imports, Goals, and incremental Developer activity. Existing explicit

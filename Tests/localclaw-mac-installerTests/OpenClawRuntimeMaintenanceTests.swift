@@ -277,6 +277,26 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(fixture.commands.filter { $0.contains("lsof") }.count == 1)
     }
 
+    @Test func failedNativeBackupDoesNotLeaveAnotherLargeArchive() throws {
+        let fixture = try Fixture(schemaMismatch: false, failure: .backup)
+        defer { fixture.cleanUp() }
+        let result = fixture.maintenance().update()
+        #expect(result.state == .fail)
+        #expect(try fixture.archives().isEmpty)
+        #expect(!fixture.commands.contains { $0.contains("npm install") || $0.contains("--yes --json") })
+    }
+
+    @Test func nativeSchemaFailureCanFallBackWithoutReusingAnIncompleteArchive() throws {
+        let fixture = try Fixture(schemaMismatch: false, failure: .nativeBackupSchema)
+        defer { fixture.cleanUp() }
+        let result = fixture.maintenance().update()
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(fixture.commands.contains { $0.contains("backup create") })
+        #expect(fixture.commands.contains { $0.contains("tar -czf") && $0.contains(".partial") && $0.contains("--no-recursion") })
+        #expect(try fixture.archives().count == 1)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.backups.path).allSatisfy { !$0.hasSuffix(".partial") && !$0.hasSuffix(".files") })
+    }
+
     @Test func npmLifecycleFlagsMatchSupportedNpmVersions() {
         #expect(OpenClawRuntimeMaintenance.npmLifecycleFlags(version: "10.9.3") == "")
         #expect(OpenClawRuntimeMaintenance.npmLifecycleFlags(version: "11.15.0") == "")
@@ -284,7 +304,7 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(OpenClawRuntimeMaintenance.npmLifecycleFlags(version: "12.0.0").contains("--allow-scripts=openclaw"))
     }
 
-    enum Failure: String, Sendable { case backup, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, pluginWarning, configRemains, registryUnavailable, invalidRegistryVersion }
+    enum Failure: String, Sendable { case backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, pluginWarning, configRemains, registryUnavailable, invalidRegistryVersion }
 
     private final class Fixture {
         let home: URL
@@ -378,11 +398,12 @@ struct OpenClawRuntimeMaintenanceTests {
                     return (0, #"{"service":{"runtime":{"status":"running"}},"rpc":{"ok":true},"gateway":{"version":"VERSION"}}"#.replacingOccurrences(of: "VERSION", with: failure == .unhealthy ? "2026.7.1-2" : "2026.8.1"))
                 }
                 if command.contains("backup create") {
-                    if failure == .backup { return (1, "backup failed") }
                     let regex = try NSRegularExpression(pattern: #"openclaw-[0-9A-Fa-f-]+\.tar\.gz"#)
                     let match = regex.firstMatch(in: command, range: NSRange(command.startIndex..., in: command))!
                     let name = String(command[Range(match.range, in: command)!])
                     try Data("verified archive fixture".utf8).write(to: backups.appendingPathComponent(name))
+                    if failure == .backup { return (1, "backup failed") }
+                    if failure == .nativeBackupSchema { return (1, "OpenClaw state database uses newer schema version 15; this OpenClaw build supports 1.") }
                     return (0, "{}")
                 }
                 if command.contains("launchctl") { return (0, "") }
