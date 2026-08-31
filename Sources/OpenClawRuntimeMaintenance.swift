@@ -27,6 +27,7 @@ struct OpenClawRuntimeInstallation {
     let state: URL
     let config: URL
     let serviceLabel: String?
+    var port: Int? = nil
 
     var cli: URL { package.appendingPathComponent("openclaw.mjs") }
     var bin: URL { prefix.appendingPathComponent("bin") }
@@ -59,7 +60,7 @@ struct OpenClawRuntimeInstallation {
             }
             let values = try String(contentsOf: envFile, encoding: .utf8)
             for line in values.components(separatedBy: .newlines) {
-                for key in ["OPENCLAW_STATE_DIR", "OPENCLAW_CONFIG_PATH"] where line.hasPrefix("export \(key)=") {
+                for key in ["OPENCLAW_STATE_DIR", "OPENCLAW_CONFIG_PATH", "OPENCLAW_GATEWAY_PORT"] where line.hasPrefix("export \(key)=") {
                     let value = String(line.dropFirst("export \(key)=".count)).trimmingCharacters(in: .whitespaces)
                     guard value.hasPrefix("'"), value.hasSuffix("'") else {
                         throw MaintenanceError("The Gateway state path must be a literal in its generated environment file.")
@@ -81,8 +82,18 @@ struct OpenClawRuntimeInstallation {
         }
         let state = URL(fileURLWithPath: environment["OPENCLAW_STATE_DIR"] ?? home.appendingPathComponent(".openclaw").path)
         let config = URL(fileURLWithPath: environment["OPENCLAW_CONFIG_PATH"] ?? state.appendingPathComponent("openclaw.json").path)
-        return try resolve(node: URL(fileURLWithPath: arguments[0]), entry: URL(fileURLWithPath: entry),
-                           state: state, config: config, serviceLabel: "ai.openclaw.gateway")
+        var runtime = try resolve(node: URL(fileURLWithPath: arguments[0]), entry: URL(fileURLWithPath: entry),
+                                  state: state, config: config, serviceLabel: "ai.openclaw.gateway")
+        let portIndex = arguments.firstIndex(of: "--port").map { $0 + 1 }
+        let portValue = portIndex.flatMap { arguments.indices.contains($0) ? arguments[$0] : nil }
+            ?? environment["OPENCLAW_GATEWAY_PORT"]
+        if let portValue {
+            guard let port = Int(portValue), (1...65535).contains(port) else {
+                throw MaintenanceError("The Gateway service port is invalid. Its launch configuration was left unchanged.")
+            }
+            runtime.port = port
+        }
+        return runtime
     }
 
     static func resolve(node: URL, entry: URL, state: URL, config: URL, serviceLabel: String?) throws -> Self {
@@ -107,7 +118,8 @@ struct OpenClawRuntimeInstallation {
     var environmentPrefix: String {
         "env PATH=\(Self.quote(node.deletingLastPathComponent().path + ":" + bin.path)):\"$PATH\" " +
         "NPM_CONFIG_PREFIX=\(Self.quote(prefix.path)) npm_config_prefix=\(Self.quote(prefix.path)) " +
-        "OPENCLAW_STATE_DIR=\(Self.quote(state.path)) OPENCLAW_CONFIG_PATH=\(Self.quote(config.path)) "
+        "OPENCLAW_STATE_DIR=\(Self.quote(state.path)) OPENCLAW_CONFIG_PATH=\(Self.quote(config.path)) " +
+        (port.map { "OPENCLAW_GATEWAY_PORT=\($0) " } ?? "")
     }
 
     func command(_ arguments: String, cli override: URL? = nil) -> String {
@@ -120,7 +132,21 @@ struct OpenClawRuntimeInstallation {
         result["OPENCLAW_DIST_DIR"] = package.appendingPathComponent("dist").path
         result["OPENCLAW_STATE_DIR"] = state.path
         result["OPENCLAW_CONFIG_PATH"] = config.path
+        if let port { result["OPENCLAW_GATEWAY_PORT"] = String(port) }
         return result
+    }
+
+    static func configureCLIProcess(_ process: Process, arguments: [String], environment: [String: String],
+                                    home: URL = FileManager.default.homeDirectoryForCurrentUser) throws {
+        if let runtime = try managed(home: home) {
+            process.executableURL = runtime.node
+            process.arguments = [runtime.cli.path] + arguments
+            process.environment = runtime.applying(to: environment)
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["openclaw"] + arguments
+            process.environment = environment
+        }
     }
 
     static func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
@@ -144,14 +170,16 @@ final class OpenClawRuntimeMaintenance {
     private let home: URL
     private let run: Runner
     private let report: (String) -> Void
+    private let wait: (TimeInterval) -> Void
     private let fm = FileManager.default
     private var backupPath: String?
 
     init(home: URL = FileManager.default.homeDirectoryForCurrentUser, run: @escaping Runner,
-         report: @escaping (String) -> Void = { _ in }) {
+         report: @escaping (String) -> Void = { _ in }, wait: @escaping (TimeInterval) -> Void = Thread.sleep(forTimeInterval:)) {
         self.home = home
         self.run = run
         self.report = report
+        self.wait = wait
     }
 
     func installation() throws -> OpenClawRuntimeInstallation {
@@ -171,9 +199,154 @@ final class OpenClawRuntimeMaintenance {
         return OpenClawSchemaMismatch.detect(in: run(runtime.command("gateway status --json --timeout 5000 2>&1")).1)
     }
 
+    /// Restore connectivity only. A previous agent request must never be replayed here.
+    func prepareGateway(allowRuntimeUpdate: Bool = false) -> StepResult {
+        guard Self.lock.try() else { return StepResult(state: .fail, message: "Another OpenClaw maintenance operation is running. No request was sent.") }
+        defer { Self.lock.unlock() }
+        do {
+            var runtime = try installation()
+            report("Checking the Gateway used by this chat...")
+            var probe = probeGateway(runtime)
+            if probe.0 == 0, InstallerEngine.gatewayIsHealthy(statusOutput: probe.1) {
+                return StepResult(state: .ok, message: "Gateway RPC is healthy. No running task was interrupted or replayed.")
+            }
+            if let mismatch = OpenClawSchemaMismatch.detect(in: probe.1) {
+                return allowRuntimeUpdate ? updateUnlocked(requiresOfflineBackup: true)
+                    : StepResult(state: .fail, message: mismatch.explanation + " No request was sent. Use Update OpenClaw to repair the runtime.")
+            }
+
+            let root = InstallerEngine.firstJSONObject(in: probe.1)
+            let service = root?["service"] as? [String: Any]
+            let process = service?["runtime"] as? [String: Any]
+            let rpc = root?["rpc"] as? [String: Any]
+            if service?["targetRole"] as? String == "diagnostic-only" {
+                throw MaintenanceError("The CLI targets a different Gateway. Local service recovery was not attempted.\n\(probe.1)")
+            }
+            let alreadyRunning = process?["status"] as? String == "running" || rpc?["ok"] as? Bool == true
+            let markers = startupLogSizes(runtime)
+            var startOutput = ""
+            if !alreadyRunning {
+                if runtime.serviceLabel == nil {
+                    guard allowRuntimeUpdate else {
+                        throw MaintenanceError("The Gateway service is missing. Use Repair Gateway to install it.\n\(probe.1)")
+                    }
+                    report("Installing the Gateway service from the selected runtime...")
+                    _ = try checked(bounded(runtime.command("gateway install --force --json"), seconds: 90), stage: "Install Gateway service")
+                    guard let installed = try OpenClawRuntimeInstallation.managed(home: home), installed.package == runtime.package else {
+                        throw MaintenanceError("The Gateway service did not bind to the expected installation.")
+                    }
+                    runtime = installed
+                }
+                report("Starting the existing Gateway service...")
+                let start = run(bounded(runtime.command("gateway start --json"), seconds: 45))
+                startOutput = start.1
+                if start.0 != 0 {
+                    if let mismatch = OpenClawSchemaMismatch.detect(in: start.1) {
+                        return allowRuntimeUpdate ? updateUnlocked(requiresOfflineBackup: true)
+                            : StepResult(state: .fail, message: mismatch.explanation + " No request was sent.")
+                    }
+                    throw MaintenanceError("Gateway start failed (\(start.0)).\n\(start.1)\n\(gatewayFailureDetails(runtime, status: probe.1))")
+                }
+            } else {
+                report("The Gateway process is running. Waiting for RPC without restarting it...")
+            }
+
+            // LaunchAgent success only means launchd accepted the start, not that RPC is ready.
+            var healthySamples = 0
+            for delay in [0.0, 1.0, 2.0, 3.0, 5.0, 5.0] {
+                wait(delay)
+                probe = probeGateway(runtime)
+                let currentEvidence = probe.1 + "\n" + startupLogEvidence(runtime, after: markers)
+                if let mismatch = OpenClawSchemaMismatch.detect(in: currentEvidence) {
+                    return allowRuntimeUpdate ? updateUnlocked(requiresOfflineBackup: true)
+                        : StepResult(state: .fail, message: mismatch.explanation + " No request was sent.")
+                }
+                if probe.0 == 0, InstallerEngine.gatewayIsHealthy(statusOutput: probe.1) {
+                    healthySamples += 1
+                    if healthySamples == 2 {
+                        return StepResult(state: .ok, message: "Gateway service is running and RPC passed two health checks. No chat request was replayed.")
+                    }
+                } else {
+                    healthySamples = 0
+                }
+            }
+            let preservation = alreadyRunning ? "The running process was left untouched." : "The service start did not restore RPC health."
+            throw MaintenanceError("\(preservation)\n\(startOutput)\n\(gatewayFailureDetails(runtime, status: probe.1))")
+        } catch {
+            return StepResult(state: .fail, message: SecretRedactor.redactConfigText(
+                "Gateway recovery stopped: \(error.localizedDescription)\nNo chat request was replayed. Your configuration and project files were not reset."
+            ))
+        }
+    }
+
+    func gatewayDiagnostic() -> String {
+        do {
+            let runtime = try installation()
+            let probe = probeGateway(runtime)
+            if probe.0 == 0, InstallerEngine.gatewayIsHealthy(statusOutput: probe.1) {
+                return "The Gateway is reachable now. The previous request may still be running; it was not resent."
+            }
+            return SecretRedactor.redactConfigText(gatewayFailureDetails(runtime, status: probe.1))
+        } catch {
+            return SecretRedactor.redactConfigText("Gateway diagnostic: \(error.localizedDescription)")
+        }
+    }
+
+    private func probeGateway(_ runtime: OpenClawRuntimeInstallation) -> (Int32, String) {
+        run(bounded(runtime.command("gateway status --json --require-rpc --timeout 5000 2>&1"), seconds: 25))
+    }
+
+    private func bounded(_ command: String, seconds: Int) -> String {
+        "perl -e 'alarm \(seconds); exec @ARGV' " + command
+    }
+
+    private func gatewayFailureDetails(_ runtime: OpenClawRuntimeInstallation, status: String) -> String {
+        let root = InstallerEngine.firstJSONObject(in: status)
+        let lastError = root?["lastError"] as? String ?? ""
+        return "Gateway is not ready. Runtime: \(runtime.version ?? "unknown") at \(runtime.package.path)\n" +
+            "Config: \(runtime.config.path)\n\(lastError)\n\(String(status.suffix(6_000)))\n\(startupLogEvidence(runtime))"
+    }
+
+    private func startupLogPaths(_ runtime: OpenClawRuntimeInstallation) -> [URL] {
+        [runtime.state.appendingPathComponent("logs/gateway.err.log"),
+         runtime.state.appendingPathComponent("logs/gateway.log"),
+         home.appendingPathComponent("Library/Logs/openclaw/gateway.log"),
+         home.appendingPathComponent("Library/Logs/openclaw/gateway.err.log")]
+    }
+
+    private func startupLogSizes(_ runtime: OpenClawRuntimeInstallation) -> [String: UInt64] {
+        Dictionary(uniqueKeysWithValues: startupLogPaths(runtime).map {
+            ($0.path, ((try? fm.attributesOfItem(atPath: $0.path)[.size]) as? NSNumber)?.uint64Value ?? 0)
+        })
+    }
+
+    private func startupLogEvidence(_ runtime: OpenClawRuntimeInstallation, after markers: [String: UInt64]? = nil) -> String {
+        startupLogPaths(runtime).compactMap { url -> String? in
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true,
+                  let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+            defer { try? handle.close() }
+            guard let end = try? handle.seekToEnd() else { return nil }
+            let previous = markers?[url.path] ?? 0
+            let start = max(end > 32_768 ? end - 32_768 : 0, previous <= end ? previous : 0)
+            guard (try? handle.seek(toOffset: start)) != nil,
+                  let data = try? handle.readToEnd() else { return nil }
+            let text = String(decoding: data, as: UTF8.self)
+            let errors = text.components(separatedBy: .newlines).filter {
+                let line = $0.lowercased()
+                return ["error", "failed", "fatal", "schema version", "refusing", "blocked", "eaddrinuse", "requires node"].contains(where: line.contains)
+            }.suffix(4)
+            guard !errors.isEmpty else { return nil }
+            return "Recent startup log (\(url.lastPathComponent)):\n" + String(errors.joined(separator: "\n").suffix(3_000))
+        }.joined(separator: "\n")
+    }
+
     func update() -> StepResult {
         guard Self.lock.try() else { return StepResult(state: .fail, message: "Another OpenClaw maintenance operation is running.") }
         defer { Self.lock.unlock() }
+        return updateUnlocked()
+    }
+
+    private func updateUnlocked(requiresOfflineBackup: Bool = false) -> StepResult {
         do {
             let runtime = try installation()
             report("Checking the Gateway installation: \(runtime.package.path)")
@@ -182,7 +355,7 @@ final class OpenClawRuntimeMaintenance {
                 throw MaintenanceError("The selected release would downgrade OpenClaw. No database or runtime was replaced.")
             }
             let status = run(runtime.command("gateway status --json --timeout 5000 2>&1")).1
-            var mismatch = OpenClawSchemaMismatch.detect(in: status) != nil
+            var mismatch = requiresOfflineBackup || OpenClawSchemaMismatch.detect(in: status) != nil
             let directory = home.appendingPathComponent("Library/Application Support/LocalClaw/runtime-backups")
             try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             let archive = directory.appendingPathComponent("openclaw-\(UUID().uuidString).tar.gz")

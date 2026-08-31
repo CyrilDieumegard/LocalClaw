@@ -19,7 +19,32 @@ struct OpenClawRuntimeMaintenanceTests {
     @Test func uncertainAgentDeliveryNeverOffersAutomaticReplay() {
         let plan = ChatRecoveryPlan.classify(error: "Gateway agent call connection closed; the Gateway may still be running this turn. ECONNREFUSED")
         #expect(plan.kind == .deliveryUnknown)
-        #expect(plan.primaryActionLabel == "Check Gateway")
+        #expect(plan.primaryActionLabel == "Repair Gateway")
+        #expect(!plan.replaysRequestAfterRepair)
+        #expect(!ChatRecoveryPlan.classify(error: "Gateway closed with 1006 abnormal closure").replaysRequestAfterRepair)
+    }
+
+    @Test func explicitCLIFailureCannotBeMistakenForAnAssistantReply() {
+        let raw = #"{"ok":false,"error":{"type":"cli_error","message":"Gateway not reachable (ECONNREFUSED)"}}"#
+        #expect(InstallerViewModel.normalizedAgentResult((0, raw)).0 != 0)
+        let uncertain = "Gateway may still be running this turn. Request timed out."
+        #expect(InstallerViewModel.friendlyChatDiagnostic(from: uncertain) == nil)
+        #expect(InstallerViewModel.friendlyChatDiagnostic(from: mismatch + " Request timed out") == nil)
+    }
+
+    @Test func agentProcessUsesTheServiceExecutableAndConfigInsteadOfAmbientHomebrew() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let process = Process()
+        let arguments = ["agent", "--message-file", "/tmp/prompt with spaces.txt", "--session-id", "test"]
+        try OpenClawRuntimeInstallation.configureCLIProcess(
+            process, arguments: arguments, environment: ["PATH": "/opt/homebrew/bin:/usr/bin", "KEPT": "yes"], home: fixture.home
+        )
+        #expect(process.executableURL?.path == fixture.home.appendingPathComponent(".hermes/node/bin/node").path)
+        #expect(process.arguments == [fixture.package.appendingPathComponent("openclaw.mjs").path] + arguments)
+        #expect(process.environment?["OPENCLAW_CONFIG_PATH"] == fixture.home.appendingPathComponent(".openclaw/openclaw.json").path)
+        #expect(process.environment?["OPENCLAW_DIST_DIR"] == fixture.package.appendingPathComponent("dist").path)
+        #expect(process.environment?["KEPT"] == "yes")
     }
 
     @Test func serviceInstallationOverridesAmbientNpmAndPreservesStateScope() throws {
@@ -68,6 +93,17 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(archives.count == 1)
         #expect((try FileManager.default.attributesOfItem(atPath: archives[0].path)[.posixPermissions] as? NSNumber)?.intValue == 0o600)
         #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.backups.path).allSatisfy { !$0.hasPrefix("updater-") })
+    }
+
+    @Test func explicitChatRecoveryUsesTheSameMigratedDatabaseRepair() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let original = try Data(contentsOf: fixture.database)
+        let result = fixture.maintenance().prepareGateway(allowRuntimeUpdate: true)
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(try Data(contentsOf: fixture.database) == original)
+        #expect(fixture.commands.contains { $0.contains("--yes --json") })
+        #expect(!fixture.commands.contains { $0.contains("agent ") })
     }
 
     @Test func healthySchemaUsesSupportedOnlineBackupAndManagedUpdate() throws {

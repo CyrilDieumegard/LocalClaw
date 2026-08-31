@@ -123,7 +123,7 @@ final class InstallerEngine: @unchecked Sendable {
     private var providerAuthCache: (checkedAt: Date, configuredProviders: Set<String>, oauthProviders: Set<String>)?
 
     func readOpenClawConfig() -> [String: Any]? {
-        let path = NSHomeDirectory() + "/.openclaw/openclaw.json"
+        let path = (try? OpenClawRuntimeInstallation.managed())?.config.path ?? NSHomeDirectory() + "/.openclaw/openclaw.json"
         guard let data = FileManager.default.contents(atPath: path) else { return nil }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
@@ -361,6 +361,15 @@ final class InstallerEngine: @unchecked Sendable {
         process.waitUntilExit()
         let output = String(data: data, encoding: .utf8) ?? ""
         return (process.terminationStatus, output.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private func gatewayCLI(_ arguments: String, timeout: Int = 90) -> (Int32, String) {
+        do {
+            let runtime = try OpenClawRuntimeMaintenance(run: shell).installation()
+            return shell("perl -e 'alarm \(timeout); exec @ARGV' " + runtime.command(arguments))
+        } catch {
+            return (1, "Could not use the Gateway installation: \(error.localizedDescription)")
+        }
     }
 
     func detectHardware() -> HardwareProfile {
@@ -723,13 +732,17 @@ final class InstallerEngine: @unchecked Sendable {
             return StepResult(state: .skip, message: "No model override to allow")
         }
 
-        let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
+        let configPath: String
+        do {
+            configPath = try OpenClawRuntimeInstallation.managed()?.config.path ?? NSHomeDirectory() + "/.openclaw/openclaw.json"
+        } catch {
+            return StepResult(state: .fail, message: "Could not identify the Gateway configuration. No settings were changed. \(error.localizedDescription)")
+        }
 
         let originalData = FileManager.default.contents(atPath: configPath)
-        var config: [String: Any] = [:]
-        if let data = originalData,
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            config = json
+        guard let data = originalData,
+              var config = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return StepResult(state: .fail, message: "The Gateway configuration could not be read as JSON. It was left unchanged; open Help to inspect it before sending a request.")
         }
 
         var agents = config["agents"] as? [String: Any] ?? [:]
@@ -902,7 +915,7 @@ final class InstallerEngine: @unchecked Sendable {
 
     /// Install gateway service (LaunchAgent)
     func installGatewayService() -> StepResult {
-        let (code, out) = shell("openclaw gateway install --force")
+        let (code, out) = gatewayCLI("gateway install --force")
         return code == 0
             ? StepResult(state: .ok, message: "Gateway service installed")
             : StepResult(state: .fail, message: out)
@@ -910,7 +923,7 @@ final class InstallerEngine: @unchecked Sendable {
 
     /// Start gateway service
     func startGateway() -> StepResult {
-        let (code, out) = shell("openclaw gateway start")
+        let (code, out) = gatewayCLI("gateway start")
         return code == 0
             ? StepResult(state: .ok, message: "Gateway started")
             : StepResult(state: .fail, message: out)
@@ -940,8 +953,16 @@ final class InstallerEngine: @unchecked Sendable {
         return runDoctorRepairDetailed().result
     }
 
+    func prepareChatGateway(allowRuntimeUpdate: Bool = false, report: @escaping (String) -> Void = { _ in }) -> StepResult {
+        OpenClawRuntimeMaintenance(run: shell, report: report).prepareGateway(allowRuntimeUpdate: allowRuntimeUpdate)
+    }
+
+    func gatewayConnectionDiagnostic() -> String {
+        OpenClawRuntimeMaintenance(run: shell).gatewayDiagnostic()
+    }
+
     private func runDoctorRepairDetailed() -> (result: StepResult, output: String) {
-        let (code, out) = shell("perl -e 'alarm 300; exec @ARGV' openclaw doctor --fix --yes --non-interactive 2>&1")
+        let (code, out) = gatewayCLI("doctor --fix --yes --non-interactive 2>&1", timeout: 300)
         let result = code == 0
             ? StepResult(state: .ok, message: "Doctor repair completed")
             : StepResult(state: .fail, message: out)
@@ -949,7 +970,7 @@ final class InstallerEngine: @unchecked Sendable {
     }
 
     private func refreshOpenClawPluginRegistry() -> (result: StepResult, output: String) {
-        let (code, output) = shell("openclaw --no-color plugins registry --refresh --json 2>&1")
+        let (code, output) = gatewayCLI("--no-color plugins registry --refresh --json 2>&1")
         let result = code == 0
             ? StepResult(state: .ok, message: "Plugin registry refreshed")
             : StepResult(state: .fail, message: output)
@@ -1030,7 +1051,7 @@ final class InstallerEngine: @unchecked Sendable {
     }
 
     private func updateDriftedOfficialPlugins() -> StepResult {
-        let (_, statusOutput) = shell("openclaw gateway status --json --timeout 5000 2>&1")
+        let (_, statusOutput) = gatewayCLI("gateway status --json --timeout 5000 2>&1", timeout: 25)
         let updateSpecs = Self.officialPluginUpdateSpecs(from: statusOutput)
         guard !updateSpecs.isEmpty else {
             return StepResult(state: .skip, message: "Official OpenClaw plugins already match the runtime")
@@ -1038,7 +1059,7 @@ final class InstallerEngine: @unchecked Sendable {
 
         for spec in updateSpecs {
             let escapedSpec = spec.replacingOccurrences(of: "'", with: "'\\''")
-            let (code, output) = shell("openclaw --no-color plugins update '\(escapedSpec)' 2>&1")
+            let (code, output) = gatewayCLI("--no-color plugins update '\(escapedSpec)' 2>&1", timeout: 300)
             if code != 0 {
                 return StepResult(state: .fail, message: "Failed to update \(spec):\n\(output)")
             }
@@ -1099,7 +1120,7 @@ final class InstallerEngine: @unchecked Sendable {
 
     /// Restart gateway
     func restartGateway() -> StepResult {
-        let (code, out) = shell("openclaw gateway restart 2>&1")
+        let (code, out) = gatewayCLI("gateway restart 2>&1")
         return code == 0
             ? StepResult(state: .ok, message: "Gateway restarted")
             : StepResult(state: .fail, message: out)
@@ -1215,7 +1236,7 @@ final class InstallerEngine: @unchecked Sendable {
 
     /// Get gateway status
     func getGatewayStatus() -> (isRunning: Bool, message: String) {
-        let (code, output) = shell("openclaw gateway status --json --require-rpc --timeout 5000 2>&1")
+        let (code, output) = gatewayCLI("gateway status --json --require-rpc --timeout 5000 2>&1", timeout: 25)
         return (code == 0 && Self.gatewayIsHealthy(statusOutput: output), gatewayStatusSummary(from: output))
     }
 
@@ -1606,14 +1627,14 @@ final class InstallerEngine: @unchecked Sendable {
     }
 
     func verifyOpenClawSetup() -> StepResult {
-        let (vCode, vOut) = shell("openclaw --version")
+        let (vCode, vOut) = gatewayCLI("--version", timeout: 25)
         if vCode != 0 {
-            return StepResult(state: .fail, message: "OpenClaw CLI check failed")
+            return StepResult(state: .fail, message: "OpenClaw CLI check failed: \(vOut)")
         }
 
         var lastOutput = ""
         for attempt in 1...8 {
-            let (statusCode, statusOutput) = shell("openclaw gateway status --json --require-rpc --timeout 5000 2>&1")
+            let (statusCode, statusOutput) = gatewayCLI("gateway status --json --require-rpc --timeout 5000 2>&1", timeout: 25)
             lastOutput = statusOutput
             if let mismatch = OpenClawSchemaMismatch.detect(in: statusOutput) {
                 return StepResult(state: .fail, message: mismatch.explanation)

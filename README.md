@@ -39,7 +39,7 @@ swift test
 
 ## OpenClaw compatibility
 
-LocalClaw 1.0.193 targets OpenClaw 2026.8.1 and retains the 2026.7.1 runtime path.
+LocalClaw 1.0.194 targets OpenClaw 2026.8.1 and retains the 2026.7.1 runtime path.
 Update LocalClaw first, then use Updates to upgrade OpenClaw. Before replacing
 the runtime, LocalClaw creates and verifies a state backup under
 `~/Library/Application Support/LocalClaw/runtime-backups/`. The normal portable
@@ -56,6 +56,14 @@ convergence and restart, and LocalClaw requires the expected Gateway version
 and healthy RPC before reporting success. Quick Repair uses the same recovery
 for schema mismatches. Unknown agent-delivery outcomes are not replayed.
 Custom/unidentified service layouts or unsafe backups stop with diagnostics.
+
+Chat and Developer now launch the CLI with the service's Node, package, config,
+state directory, and port rather than whichever OpenClaw appears first on PATH.
+Every request checks Gateway RPC first. A stopped service must pass two health
+checks after startup; a start command alone does not count as recovery.
+The in-chat Repair Gateway action restores connectivity without resending a
+possibly running task. If startup fails, it includes the service diagnostics
+and redacted startup errors instead of silently opening Help or retrying.
 
 This release handles canonical `openai/*` routes, keyed agent ownership, SQLite
 credential imports, Goals, and incremental Developer activity. Existing explicit

@@ -19,6 +19,8 @@ struct ChatRecoveryPlan: Equatable, Sendable {
     let primaryActionLabel: String
     let systemImage: String
 
+    var replaysRequestAfterRepair: Bool { kind == .runtimeFiles || kind == .unknown }
+
     static func classify(error raw: String) -> ChatRecoveryPlan {
         let clean = raw
             .replacingOccurrences(of: "\u{001B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
@@ -35,9 +37,9 @@ struct ChatRecoveryPlan: Equatable, Sendable {
         if clean.contains("may still be running this turn") || clean.contains("turn does not execute twice") {
             return ChatRecoveryPlan(kind: .deliveryUnknown,
                                     title: "The request outcome is unknown",
-                                    explanation: "The connection closed after the request may have started. Check Gateway health and the session transcript before retrying to avoid executing the task twice.",
-                                    primaryActionLabel: "Check Gateway",
-                                    systemImage: "stethoscope")
+                                    explanation: "LocalClaw can check the Gateway and restore it if it is stopped. Your previous request will not be resent. Check the discussion before sending it again, since it may already have started.",
+                                    primaryActionLabel: "Repair Gateway",
+                                    systemImage: "wrench.and.screwdriver.fill")
         }
 
         if clean.contains("err_module_not_found") ||
@@ -111,6 +113,9 @@ struct ChatRecoveryPlan: Equatable, Sendable {
         if clean.contains("gatewayclientrequesterror") ||
             clean.contains("gateway closed") ||
             clean.contains("gateway offline") ||
+            clean.contains("gateway not reachable") ||
+            clean.contains("gateway is not ready") ||
+            clean.contains("gateway recovery stopped") ||
             clean.contains("rpc failed") ||
             clean.contains("econnrefused") ||
             clean.contains("connection refused") ||
@@ -119,8 +124,8 @@ struct ChatRecoveryPlan: Equatable, Sendable {
             return ChatRecoveryPlan(
                 kind: .gateway,
                 title: "Gateway stopped responding",
-                explanation: "LocalClaw can reinstall the user service, restart the Gateway, verify RPC health, and then resend your message.",
-                primaryActionLabel: "Restart & Retry",
+                explanation: "LocalClaw can check the service, restore a stopped Gateway and verify RPC health. It will show the startup error if recovery fails. Your message will not be resent automatically.",
+                primaryActionLabel: "Repair Gateway",
                 systemImage: "arrow.clockwise.circle.fill"
             )
         }

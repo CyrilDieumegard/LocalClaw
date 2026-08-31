@@ -7664,8 +7664,8 @@ final class InstallerViewModel: ObservableObject {
         case .runtimeVersion:
             screen = .updates
             updateOpenClawRuntime()
-        case .deliveryUnknown:
-            openChatRecoveryHelp(for: message)
+        case .deliveryUnknown, .gateway:
+            repairChatGateway(for: message, useDeveloperSession: useDeveloperSession)
         case .authentication, .localModel:
             chatStatus = "Open Models to finish recovery"
             screen = .models
@@ -7678,7 +7678,7 @@ final class InstallerViewModel: ObservableObject {
             } else {
                 retryChatMessage(message, useDeveloperSession: false)
             }
-        case .runtimeFiles, .gateway, .unknown:
+        case .runtimeFiles, .unknown:
             chatRecoveryMessageID = message.id
             chatIsSending = true
             chatStatus = "Recovering OpenClaw..."
@@ -7698,7 +7698,7 @@ final class InstallerViewModel: ObservableObject {
                     self.chatIsSending = false
                     self.chatGatewayPrepared = false
                     self.healthLogs += "\nChat recovery: [\(repair.state.rawValue)] \(SecretRedactor.redactConfigText(repair.message))\n"
-                    if repair.state == .ok {
+                    if repair.state == .ok && plan.replaysRequestAfterRepair {
                         self.chatStatus = "Retrying..."
                         self.retryChatMessage(message, useDeveloperSession: useDeveloperSession)
                     } else {
@@ -7714,6 +7714,42 @@ final class InstallerViewModel: ObservableObject {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    private func repairChatGateway(for message: ChatMessage, useDeveloperSession: Bool) {
+        let sessionID = useDeveloperSession ? activeDeveloperChatSessionID : activeChatSessionID
+        chatRecoveryMessageID = message.id
+        chatIsSending = true
+        isRunning = true
+        chatStatus = "Checking Gateway..."
+        _ = createRecoveryPoint(reason: "Before Gateway connection recovery")
+        let engine = self.engine
+        Task.detached {
+            await OpenClawGoalBridge.shared.invalidateRuntime()
+            let repair = engine.prepareChatGateway(allowRuntimeUpdate: true) { progress in
+                Task { @MainActor in
+                    guard self.chatRecoveryMessageID == message.id else { return }
+                    self.chatStatus = progress
+                    self.healthLogs += "\(progress)\n"
+                }
+            }
+            await OpenClawGoalBridge.shared.invalidateRuntime()
+            await MainActor.run {
+                guard self.chatRecoveryMessageID == message.id else { return }
+                self.chatRecoveryMessageID = nil
+                self.isRunning = false
+                self.chatIsSending = false
+                self.chatGatewayPrepared = repair.state == .ok
+                let detail = SecretRedactor.redactConfigText(repair.message)
+                self.healthLogs += "\nGateway recovery: [\(repair.state.rawValue)] \(detail)\n"
+                self.chatStatus = repair.state == .ok ? "Ready" : "Recovery needs attention"
+                let response = repair.state == .ok
+                    ? "\(detail)\nCheck the discussion before sending the previous message again."
+                    : detail
+                self.appendChatMessage(ChatMessage(role: repair.state == .ok ? "assistant" : "error", text: response, modelName: "LocalClaw"), to: sessionID)
+                self.refreshVersions()
             }
         }
     }
@@ -8037,7 +8073,6 @@ final class InstallerViewModel: ObservableObject {
         chatIsSending = true
         chatStatus = "Thinking..."
         let shouldPrepareGateway = !chatGatewayPrepared
-        chatGatewayPrepared = true
         var selectedModelForRequest = selectedChatModel.trimmingCharacters(in: .whitespacesAndNewlines)
         if selectedChatResponseMode == .fast, inferenceMode == .cloud {
             selectedModelForRequest = "openrouter/openai/gpt-5.4-mini"
@@ -8102,17 +8137,38 @@ final class InstallerViewModel: ObservableObject {
 
         Task.detached {
             let engine = InstallerEngine()
-            if shouldPrepareGateway {
-                await MainActor.run {
-                    if self.activeChatRequestID == requestID {
-                        self.chatStatus = "Preparing OpenClaw..."
-                        if useDeveloperSession {
-                            self.updateDeveloperActivityPhase("Checking the OpenClaw Gateway", requestID: requestID)
-                        }
+            await MainActor.run {
+                if self.activeChatRequestID == requestID {
+                    self.chatStatus = shouldPrepareGateway ? "Preparing OpenClaw..." : "Checking Gateway..."
+                    if useDeveloperSession {
+                        self.updateDeveloperActivityPhase("Checking the OpenClaw Gateway", requestID: requestID)
                     }
                 }
-                _ = engine.shell("openclaw gateway status >/dev/null 2>&1 || openclaw gateway start >/dev/null 2>&1 || true")
             }
+            let gateway = engine.prepareChatGateway { progress in
+                Task { @MainActor in
+                    if self.activeChatRequestID == requestID {
+                        self.chatStatus = progress
+                        if useDeveloperSession { self.updateDeveloperActivityPhase(progress, requestID: requestID) }
+                    }
+                }
+            }
+            let canSend = await MainActor.run {
+                guard self.activeChatRequestID == requestID, !self.chatStopRequested else { return false }
+                self.chatGatewayPrepared = gateway.state == .ok
+                guard gateway.state == .ok else {
+                    let detail = SecretRedactor.redactConfigText(gateway.message)
+                    self.appendChatMessage(ChatMessage(role: "error", text: "Gateway is not ready. Your message was not sent.\n\n\(detail)", modelName: "LocalClaw"), to: sessionID)
+                    self.healthLogs += "\nBefore sending: \(detail)\n"
+                    self.chatStatus = "Gateway needs attention"
+                    self.activeChatRequestID = nil
+                    self.chatIsSending = false
+                    if useDeveloperSession { self.finishDeveloperActivity() }
+                    return false
+                }
+                return true
+            }
+            guard canSend else { return }
             if !modelOverride.isEmpty {
                 await MainActor.run {
                     if useDeveloperSession {
@@ -8264,7 +8320,10 @@ final class InstallerViewModel: ObservableObject {
             }
             if result.0 != 0 {
                 let recoveryKind = ChatRecoveryPlan.classify(error: result.1).kind
-                if recoveryKind == .runtimeFiles || recoveryKind == .gateway {
+                if recoveryKind == .deliveryUnknown || recoveryKind == .gateway {
+                    result = (result.0, result.1 + "\n\nLocalClaw Gateway diagnostic:\n" + engine.gatewayConnectionDiagnostic())
+                }
+                if recoveryKind == .runtimeFiles {
                     await MainActor.run {
                         if self.activeChatRequestID == requestID {
                             self.chatStatus = recoveryKind == .runtimeFiles
@@ -8362,6 +8421,7 @@ final class InstallerViewModel: ObservableObject {
                 guard self.activeChatRequestID == requestID else { return }
                 self.activeChatProcess = nil
                 self.activeChatRequestID = nil
+                if result.0 != 0 { self.chatGatewayPrepared = false }
                 if self.chatStopRequested {
                     self.chatStopRequested = false
                     self.chatStatus = "Ready"
@@ -8413,6 +8473,10 @@ final class InstallerViewModel: ObservableObject {
 
     func stopChatGeneration() {
         guard chatIsSending else { return }
+        guard chatRecoveryMessageID == nil else {
+            chatStatus = "Finishing Gateway recovery safely..."
+            return
+        }
         chatStopRequested = true
         chatStatus = "Stopping..."
         activeChatProcess?.terminate()
@@ -10048,12 +10112,20 @@ final class InstallerViewModel: ObservableObject {
         onStart: @escaping (Process) -> Void
     ) -> (Int32, String) {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
         var environment = ProcessInfo.processInfo.environment
         let launchPath = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:\(NSHomeDirectory())/.npm-global/bin:\(NSHomeDirectory())/.local/bin"
         environment["PATH"] = launchPath + ":" + (environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
-        process.environment = environment
+        do {
+            if executable == "/usr/bin/env", arguments.first == "openclaw" {
+                try OpenClawRuntimeInstallation.configureCLIProcess(process, arguments: Array(arguments.dropFirst()), environment: environment)
+            } else {
+                process.executableURL = URL(fileURLWithPath: executable)
+                process.arguments = arguments
+                process.environment = environment
+            }
+        } catch {
+            return (1, "Could not use the Gateway runtime. No request was sent. \(error.localizedDescription)")
+        }
         if let currentDirectory, !currentDirectory.isEmpty {
             process.currentDirectoryURL = URL(fileURLWithPath: currentDirectory, isDirectory: true)
         }
@@ -10066,7 +10138,7 @@ final class InstallerViewModel: ObservableObject {
             try process.run()
             onStart(process)
         } catch {
-            return (1, "Failed command: \(executable) \(arguments.joined(separator: " "))\n\(error.localizedDescription)")
+            return (1, "Could not start the OpenClaw client. No request was sent. \(error.localizedDescription)")
         }
 
         let timeoutLock = NSLock()
@@ -10240,6 +10312,9 @@ final class InstallerViewModel: ObservableObject {
 
     nonisolated static func agentResponseIndicatesFailure(exitCode: Int32, raw: String) -> Bool {
         if exitCode != 0 { return true }
+        if let json = InstallerEngine.firstJSONObject(in: raw), json["ok"] as? Bool == false, json["error"] != nil {
+            return true
+        }
         if agentResponseIndicatesTimeout(raw) { return true }
         let reply = extractAgentReply(from: raw)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -10256,6 +10331,9 @@ final class InstallerViewModel: ObservableObject {
 
     nonisolated static func friendlyChatDiagnostic(from raw: String) -> String? {
         let clean = stripANSI(raw)
+        if OpenClawSchemaMismatch.detect(in: clean) != nil || clean.lowercased().contains("may still be running this turn") {
+            return nil
+        }
         if agentResponseIndicatesTimeout(clean) {
             return """
             OpenClaw timed out before the selected model finished this run. The model is still selected, and LocalClaw kept the current project files unchanged.
