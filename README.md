@@ -39,7 +39,7 @@ swift test
 
 ## OpenClaw compatibility
 
-LocalClaw 1.0.198 targets OpenClaw 2026.8.1 and retains the 2026.7.1 runtime path.
+LocalClaw 1.0.199 targets OpenClaw 2026.8.1 and retains the 2026.7.1 runtime path.
 Update LocalClaw first, then use Updates to upgrade OpenClaw. Before replacing
 the runtime, LocalClaw creates and verifies a state backup under
 `~/Library/Application Support/LocalClaw/runtime-backups/`. The normal portable
@@ -78,6 +78,25 @@ Gateway version and healthy RPC before reporting success. Quick Repair and Docto
 use the same recovery for schema mismatches and rejected configuration.
 Unknown agent-delivery outcomes are not replayed.
 Custom/unidentified service layouts or unsafe backups stop with diagnostics.
+
+OpenClaw 2026.8.1 can fail inside Doctor because its generated-approvals repair
+accesses the approvals store before importing `exec-approvals.json`. After a
+verified offline backup, LocalClaw invokes that release's own transactional
+`migrateLegacyExecApprovals` importer before the managed update. Its native
+ownership lock, validation, import receipt and read-back checks remain active.
+LocalClaw does not write authorization rows itself or relax permissions.
+Malformed/conflicting sources remain blocked and preserved. The compatibility
+adapter is restricted to 2026.8.1 and refuses an unknown module/export contract.
+An already-installed target release does not need another staged updater.
+The normal update still owns Doctor, plugin convergence and Gateway activation;
+successful import alone is never reported as a healthy Gateway.
+
+Run the real-package regression in isolated temporary homes (no host credentials,
+live services, package installation or model calls):
+
+```bash
+node scripts/test-openclaw-exec-migration.mjs /path/to/openclaw-2026.8.1-package
+```
 
 Chat and Developer now launch the CLI with the service's Node, package, config,
 state directory, and port rather than whichever OpenClaw appears first on PATH.

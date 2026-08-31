@@ -1,6 +1,12 @@
 import Foundation
 
 enum OpenClawRecoveryDiagnostic {
+    static func hasLegacyExecApprovals(_ text: String) -> Bool {
+        let current = currentFailure(in: text).lowercased()
+        return current.contains("legacy exec approvals exist") || current.contains("execapprovalsmigrationrequirederror") ||
+            current.contains("migrate execution approvals failed") || current.contains("execution approvals migration was not verified")
+    }
+
     static func currentFailure(in text: String) -> String {
         // Supplementary log history must not choose a repair for the current request.
         let markers = ["\nRecent startup log (", "\nHistorical startup log (", "\nLocalClaw Gateway diagnostic:"]
@@ -227,6 +233,18 @@ final class OpenClawRuntimeMaintenance {
         return OpenClawRecoveryDiagnostic.hasInvalidConfiguration(validateConfiguration(runtime).1)
     }
 
+    func execApprovalsNeedMigration() -> Bool {
+        guard let runtime = try? installation(), runtime.version == "2026.8.1" else { return false }
+        return hasLegacyExecApprovals(runtime)
+    }
+
+    private func hasLegacyExecApprovals(_ runtime: OpenClawRuntimeInstallation) -> Bool {
+        ["exec-approvals.json", "exec-approvals.json.doctor-importing"].contains { name in
+            let path = runtime.state.appendingPathComponent(name).path
+            return fm.fileExists(atPath: path) || (try? fm.destinationOfSymbolicLink(atPath: path)) != nil
+        }
+    }
+
     /// Restore connectivity only. A previous agent request must never be replayed here.
     func prepareGateway(allowRuntimeUpdate: Bool = false) -> StepResult {
         guard Self.lock.try() else { return StepResult(state: .fail, message: "Another OpenClaw maintenance operation is running. No request was sent.") }
@@ -235,7 +253,8 @@ final class OpenClawRuntimeMaintenance {
             var runtime = try installation()
             report("Checking the Gateway used by this chat...")
             var probe = probeGateway(runtime)
-            if probe.0 == 0, InstallerEngine.gatewayIsHealthy(statusOutput: probe.1) {
+            let pendingApprovals = runtime.version == "2026.8.1" && hasLegacyExecApprovals(runtime)
+            if probe.0 == 0, InstallerEngine.gatewayIsHealthy(statusOutput: probe.1), !pendingApprovals {
                 return StepResult(state: .ok, message: "Gateway RPC is healthy. No running task was interrupted or replayed.")
             }
             let root = InstallerEngine.firstJSONObject(in: probe.1)
@@ -248,6 +267,12 @@ final class OpenClawRuntimeMaintenance {
             if let mismatch = OpenClawSchemaMismatch.detect(in: probe.1) {
                 return allowRuntimeUpdate ? updateUnlocked(requiresOfflineBackup: true)
                     : StepResult(state: .fail, message: mismatch.explanation + " No request was sent. Use Update OpenClaw to repair the runtime.")
+            }
+
+            if OpenClawRecoveryDiagnostic.hasLegacyExecApprovals(probe.1) ||
+                pendingApprovals {
+                return allowRuntimeUpdate ? updateUnlocked(requiresOfflineBackup: true)
+                    : StepResult(state: .fail, message: "Legacy exec approvals exist and need migration. No request was sent. Use Repair Gateway to back up the state and migrate the existing permissions without resetting them.")
             }
 
             let validation = validateConfiguration(runtime)
@@ -412,6 +437,7 @@ final class OpenClawRuntimeMaintenance {
     }
 
     private func updateUnlocked(requiresOfflineBackup: Bool = false, repairConfiguration: Bool = false) -> StepResult {
+        backupPath = nil
         do {
             report("Checking free disk space before contacting npm...")
             try OpenClawStorageRecovery.requireSpace(at: home, freeBytes: freeBytes)
@@ -422,8 +448,9 @@ final class OpenClawRuntimeMaintenance {
             report("Checking the Gateway installation: \(runtime.package.path)")
             let validation = validateConfiguration(runtime)
             var repairingConfig = repairConfiguration || OpenClawRecoveryDiagnostic.hasInvalidConfiguration(validation.1)
+            let pendingApprovals = hasLegacyExecApprovals(runtime)
             let target: String
-            if repairingConfig {
+            if repairingConfig || pendingApprovals {
                 // A rejected config can prevent the old CLI from even planning its update.
                 target = try registryTarget(runtime)
             } else {
@@ -445,7 +472,7 @@ final class OpenClawRuntimeMaintenance {
                 throw MaintenanceError("The configuration was written by OpenClaw \(authored), newer than available release \(target). No older Doctor was run and no configuration was changed.")
             }
             let status = probeGateway(runtime).1
-            var mismatch = requiresOfflineBackup || repairingConfig || OpenClawSchemaMismatch.detect(in: status) != nil
+            var mismatch = requiresOfflineBackup || repairingConfig || pendingApprovals || OpenClawSchemaMismatch.detect(in: status) != nil
             let directory = home.appendingPathComponent("Library/Application Support/LocalClaw/runtime-backups")
             try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             let archive = directory.appendingPathComponent("openclaw-\(UUID().uuidString).tar.gz")
@@ -474,7 +501,7 @@ final class OpenClawRuntimeMaintenance {
             var updater = runtime.cli
             var staging: URL?
             defer { if let staging { try? fm.removeItem(at: staging) } }
-            if mismatch {
+            if mismatch && current != target {
                 // Bootstrap from new code: the old updater can itself require the incompatible DB.
                 let candidate = directory.appendingPathComponent("updater-\(UUID().uuidString)")
                 try fm.createDirectory(at: candidate, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
@@ -488,10 +515,36 @@ final class OpenClawRuntimeMaintenance {
                 guard try updateTarget(runtime, cli: updater, tag: target) == target else {
                     throw MaintenanceError("The recovery updater changed the requested release. No package was replaced.")
                 }
+            } else if mismatch {
+                guard try updateTarget(runtime, cli: updater, tag: target) == target else {
+                    throw MaintenanceError("The installed updater changed the requested release. No package was replaced.")
+                }
+            }
+
+            if pendingApprovals && target == "2026.8.1" {
+                report("Migrating legacy execution approvals with OpenClaw's verified importer...")
+                guard let helper = Bundle.module.url(forResource: "exec-approvals-migration", withExtension: "mjs") else {
+                    throw MaintenanceError("The approvals migration helper is missing. Existing permissions were kept.")
+                }
+                let package = updater.deletingLastPathComponent()
+                let command = runtime.environmentPrefix + q(runtime.node.path) + " " + q(helper.path) + " " + q(package.path) + " " + q(runtime.state.path)
+                let migrated = try checked(bounded(command, seconds: 120), stage: "Migrate execution approvals")
+                guard let result = InstallerEngine.firstJSONObject(in: migrated), result["ok"] as? Bool == true,
+                      result["version"] as? String == target,
+                      let state = result["stateDir"] as? String,
+                      URL(fileURLWithPath: state).resolvingSymlinksInPath() == runtime.state.resolvingSymlinksInPath(),
+                      !hasLegacyExecApprovals(runtime) else {
+                    throw MaintenanceError("Execution approvals migration was not verified. No permissions were reset.\n\(migrated)")
+                }
             }
 
             report("Updating the Gateway, synchronizing plugins and checking startup...")
-            let output = try checked(runtime.command("update --tag \(q(target)) --yes --json", cli: updater), stage: "OpenClaw update")
+            let update = run(runtime.command("update --tag \(q(target)) --yes --json", cli: updater))
+            guard update.0 == 0 else {
+                let installed = runtime.version == target ? "OpenClaw \(target) is installed, but post-update maintenance did not finish.\n" : ""
+                throw MaintenanceError("\(installed)OpenClaw update failed (\(update.0)).\n\(update.1)")
+            }
+            let output = update.1
             guard let result = InstallerEngine.firstJSONObject(in: output), result["status"] as? String == "ok" else {
                 throw MaintenanceError("OpenClaw did not confirm a successful update.\n\(output)")
             }

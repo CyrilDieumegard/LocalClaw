@@ -51,6 +51,13 @@ struct ChatRecoveryPlan: Equatable, Sendable {
                                     systemImage: "wrench.and.screwdriver.fill")
         }
 
+        if OpenClawRecoveryDiagnostic.hasLegacyExecApprovals(current) {
+            return ChatRecoveryPlan(kind: .configuration,
+                                    title: "OpenClaw permissions need migration",
+                                    explanation: "LocalClaw can back up the state and import the existing execution permissions before completing the update. Permissions will not be reset and your request will not be replayed.",
+                                    primaryActionLabel: "Repair Gateway", systemImage: "wrench.and.screwdriver.fill")
+        }
+
         if OpenClawRecoveryDiagnostic.hasInvalidConfiguration(current) {
             return ChatRecoveryPlan(kind: .configuration,
                                     title: "OpenClaw configuration blocks startup",

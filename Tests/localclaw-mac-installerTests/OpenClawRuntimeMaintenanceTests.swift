@@ -354,7 +354,65 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(!fixture.commands.contains { $0.contains("agent --") || $0.contains("rm -rf") })
     }
 
-    enum Failure: String, Sendable { case backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, pluginWarning, configRemains, registryUnavailable, registryNoSpace, invalidRegistryVersion }
+    @Test func legacyApprovalErrorOffersRepairWithoutReplay() {
+        let error = "Legacy exec approvals exist at /Users/bot/.openclaw/exec-approvals.json. Run `openclaw doctor --fix`."
+        let plan = ChatRecoveryPlan.classify(error: error)
+        #expect(plan.kind == .configuration)
+        #expect(!plan.replaysRequestAfterRepair)
+        #expect(!OpenClawRecoveryDiagnostic.hasLegacyExecApprovals("Current unrelated error\nHistorical startup log (old):\n" + error))
+    }
+
+    @Test(arguments: ["2026.7.1-2", "2026.8.1"])
+    func legacyApprovalsAreMigratedAfterBackupBeforeUpdate(_ installedVersion: String) throws {
+        let fixture = try Fixture(schemaMismatch: false, invalidConfig: true)
+        defer { fixture.cleanUp() }
+        try fixture.writeVersion(installedVersion)
+        let source = fixture.home.appendingPathComponent(".openclaw/exec-approvals.json")
+        try Data("preserve existing permissions".utf8).write(to: source)
+        let result = fixture.maintenance().update()
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        let backup = try #require(fixture.commands.firstIndex { $0.contains("tar -tzf") })
+        let migration = try #require(fixture.commands.firstIndex { $0.contains("exec-approvals-migration.mjs") })
+        let update = try #require(fixture.commands.firstIndex { $0.contains("--yes --json") })
+        #expect(backup < migration && migration < update)
+        #expect(fixture.commands[migration].contains("OPENCLAW_STATE_DIR="))
+        #expect(fixture.commands[migration].contains("updater-") == (installedVersion != "2026.8.1"))
+        #expect(fixture.commands.contains { $0.contains("npm install") } == (installedVersion != "2026.8.1"))
+        #expect(try fixture.archives().count == 1)
+        #expect(fixture.commands.filter { $0.contains("--yes --json") }.count == 1)
+        #expect(!fixture.commands.contains { $0.contains("agent --") || $0.contains("approvals set") || $0.contains("doctor --fix") })
+    }
+
+    @Test(arguments: [Failure.approvalsMigration, .unverifiedApprovalsMigration, .activeWriter])
+    func migrationFailureKeepsPermissionsAndNeverActivatesUpdate(_ failure: Failure) throws {
+        let fixture = try Fixture(schemaMismatch: false, failure: failure)
+        defer { fixture.cleanUp() }
+        try fixture.writeVersion("2026.8.1")
+        let source = fixture.home.appendingPathComponent(".openclaw/exec-approvals.json")
+        let original = Data("preserve existing permissions".utf8)
+        try original.write(to: source)
+        let result = fixture.maintenance().update()
+        #expect(result.state == .fail)
+        #expect(try Data(contentsOf: source) == original)
+        #expect(!fixture.commands.contains { $0.contains("--yes --json") })
+        if failure != .activeWriter { #expect(result.message.contains("Recovery backup:")) }
+    }
+
+    @Test func healthyRPCDoesNotHideLegacyApprovalGateOrAuthorizeAutomaticMigration() throws {
+        let fixture = try Fixture(schemaMismatch: false)
+        defer { fixture.cleanUp() }
+        try fixture.writeVersion("2026.8.1")
+        try Data("permissions".utf8).write(to: fixture.home.appendingPathComponent(".openclaw/exec-approvals.json"))
+        let result = fixture.maintenance().prepareGateway()
+        #expect(result.state == .fail)
+        #expect(result.message.contains("Legacy exec approvals"))
+        #expect(fixture.commands.count == 1)
+        #expect(fixture.maintenance().execApprovalsNeedMigration())
+        let repaired = fixture.maintenance().prepareGateway(allowRuntimeUpdate: true)
+        #expect(repaired.state == .ok, Comment(rawValue: repaired.message))
+    }
+
+    enum Failure: String, Sendable { case backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, pluginWarning, configRemains, registryUnavailable, registryNoSpace, invalidRegistryVersion, approvalsMigration, unverifiedApprovalsMigration }
 
     private final class Fixture {
         let home: URL
@@ -431,7 +489,8 @@ struct OpenClawRuntimeMaintenanceTests {
                     return (0, failure == .downgrade ? #""2026.6.1""# : #""2026.8.1""#)
                 }
                 if command.contains("--dry-run") {
-                    if invalidConfig && !didUpdate && !command.contains("updater-") {
+                    if invalidConfig && !didUpdate && !command.contains("updater-") &&
+                        (try? OpenClawRuntimeInstallation.managed(home: home))?.version != "2026.8.1" {
                         return (1, "OpenClaw config is invalid\nmeta: Invalid input\nagents.defaults: Invalid input\nmemory: Invalid input")
                     }
                     return (0, String(data: try JSONSerialization.data(withJSONObject: [
@@ -474,6 +533,15 @@ struct OpenClawRuntimeMaintenanceTests {
                     return (process.terminationStatus, "")
                 }
                 if command.contains("npm --version") { return (0, "12.0.0") }
+                if command.contains("exec-approvals-migration.mjs") {
+                    if failure == .approvalsMigration { return (1, "Preserved malformed legacy exec approvals for operator recovery.") }
+                    if failure != .unverifiedApprovalsMigration {
+                        try FileManager.default.removeItem(at: home.appendingPathComponent(".openclaw/exec-approvals.json"))
+                    }
+                    return (0, String(data: try JSONSerialization.data(withJSONObject: [
+                        "ok": true, "version": "2026.8.1", "stateDir": home.appendingPathComponent(".openclaw").path
+                    ]), encoding: .utf8)!)
+                }
                 if command.contains("npm install") {
                     if failure == .staging { return (1, "download failed") }
                     let staging = try FileManager.default.contentsOfDirectory(at: backups, includingPropertiesForKeys: nil).first { $0.lastPathComponent.hasPrefix("updater-") }!

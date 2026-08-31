@@ -949,7 +949,7 @@ final class InstallerEngine: @unchecked Sendable {
     /// Run doctor repair
     func runDoctorRepair() -> StepResult {
         let maintenance = OpenClawRuntimeMaintenance(run: shell)
-        if maintenance.schemaMismatch() != nil || maintenance.configurationNeedsRepair() { return maintenance.update() }
+        if maintenance.schemaMismatch() != nil || maintenance.configurationNeedsRepair() || maintenance.execApprovalsNeedMigration() { return maintenance.update() }
         return runDoctorRepairDetailed().result
     }
 
@@ -1139,6 +1139,12 @@ final class InstallerEngine: @unchecked Sendable {
         }
 
         let maintenance = OpenClawRuntimeMaintenance(run: shell)
+        if OpenClawRecoveryDiagnostic.hasLegacyExecApprovals(errorText) || maintenance.execApprovalsNeedMigration() {
+            guard allowPackageReinstall else {
+                return StepResult(state: .fail, message: "Legacy exec approvals exist. Use Repair Gateway to back up and migrate the existing permissions. No request was replayed.")
+            }
+            return maintenance.update()
+        }
         if OpenClawRecoveryDiagnostic.hasInvalidConfiguration(errorText) || maintenance.configurationNeedsRepair() {
             guard allowPackageReinstall else {
                 return StepResult(state: .fail, message: "OpenClaw config is invalid for the installed runtime. Use Repair Gateway to back up your state and apply current configuration migrations. No request was replayed.")
