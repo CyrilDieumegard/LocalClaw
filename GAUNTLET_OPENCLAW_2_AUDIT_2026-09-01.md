@@ -7,13 +7,13 @@ Date: 2026-09-01 (Europe/Zurich)
 - Goal: make LocalClaw reliably install, update, diagnose, and repair fresh or existing OpenClaw 2.0 setups while keeping Goal, Kanban, models, accounts, projects, credentials, and user data safe.
 - Inspection surface: the SwiftPM macOS app, bundled JavaScript/shell recovery resources, fresh-setup and maintenance flows, release scripts, updater manifest, and executable test suites.
 - Upstream target: official stable OpenClaw `2026.8.1` (the current release behind “OpenClaw 2.0” during this audit).
-- Hard constraints: no mutation of the user's live OpenClaw installation, services, accounts, Gmail/channel connections, projects, data, or licence; no production publish; no customer contact; no paid provider calls.
+- Hard constraints: no mutation of the user's live OpenClaw installation, services, accounts, Gmail/channel connections, projects, data, or licence; no customer contact or paid test purchase. Production publication was authorized only after every release gate passed and was limited to the new app/site release surfaces.
 - Quality bar: authoritative isolated Swift tests and release build, real OpenClaw 2026.8.1 CLI/Gateway fixtures, failure/rollback tests, source-backed Goal/Workboard compatibility review, and explicit release vetoes.
 
 ## Reproducible baseline
 
-- Repository: branch `main`, base `a7a355057f5535bb93e78d544a3a397bd42dd3b4` (equal to `origin/main` when inspected), plus the uncommitted audit changes listed by `git status`.
-- Release candidate source version: `1.0.202`; the intended monotonic release build is `353`.
+- Repository: branch `main`; final app commits `e905d8477dbd55ecbd7f6444ddc9013e2f85c1b6` and `39fb1fef1f2abf78a827072882787ac49026ee30`, both pushed and equal to `origin/main` at final verification.
+- Released source version: `1.0.202`, monotonic build `353`.
 - User's observed OpenClaw version: `2026.7.1-2`; it was inspected but not changed.
 - Isolated upstream fixture: `/private/tmp/localclaw-openclaw2-audit.6WFzkB/openclaw-2026.8.1`.
 - Authoritative Swift scratch paths:
@@ -46,13 +46,13 @@ Date: 2026-09-01 (Europe/Zurich)
 |---|---|---|---|
 | OpenClaw 2.0 runtime selection | PASS in code/fixtures | exact executable, package, state, config, profile, service label, and port are propagated; ambiguous/mismatched profiles fail closed | no physical multi-user Mac lab run |
 | Existing-user update and repair | PASS in isolated OpenClaw + transactional fixtures | backup-first migration, stable-target guard, legacy approval import, config repair, resumable checkpoint, rollback/service compensation, two idempotent repair runs, and exact-profile shared-core repair without replacing the core | no mutation of a real customer's runtime by design |
-| Fresh install | PASS in code/fixtures | LM Studio install, model download/load, >=16K context, `/v1/models` readiness, safe config/token/dashboard, port collision checks; current public 1.0.201 DMG passes Apple signature/notarization checks | no clean physical Mac installation or real multi-GB model download was performed |
+| Fresh install | PASS in code/fixtures and packaged release inspection | LM Studio install, model download/load, >=16K context, `/v1/models` readiness, safe config/token/dashboard, port collision checks; public 1.0.202 DMG passes Apple signature/notarization checks | no clean physical Mac installation or real multi-GB model download was performed |
 | Native Goal conflict | PASS with architectural residuals | LocalClaw plan is bound to native Goal ID/agent/session/state/workspace/revision; atomic receipts make lost-response retry durable; stale revisions fail; three-turn blocker rule and bounded auto-runs enforced | private hashed OpenClaw chunks are used because no public atomic Goal CLI exists; a model may call native Goal tools before LocalClaw detects it; final semantic evidence is not independently provable in every task |
 | Kanban / Cron | PASS in code/fixtures | LocalClaw Board is named separately from Workboard; official Cron add/edit/remove, exact declarations, profile namespace, per-job in-flight lock, timeout/UNKNOWN reconciliation, one-shot receipt guard | no claim that LocalClaw Board is native Workboard; customer delivery outcome still needs runtime evidence |
 | Models | PASS for verified built-ins/fallbacks | Qwen 3.8 27B added for high-memory Macs; Qwen 3.8 cloud fallbacks added; lower-RAM models retained; remote catalogue cannot hide the verified Latest built-in | remote HTTPS catalogue is validated for syntax but is not cryptographically signed/pinned |
 | App updater | PASS in code/tests | 1 GiB cap, streaming SHA-256, signature verification off main actor, invalid temp cleanup, verified DMG opened for manual install | intentionally does not silently replace a running app |
-| Release pipeline | PASS in code/fixtures; new release still gated | same validated snapshot is signed/stapled/app-checked/hashed/published; local and public version/build monotonicity; cache-busted public-manifest preflight; independent HEAD and one-byte-bounded GET must both return 404; versioned no-clobber; manifest committed last | the candidate is not yet contained in the valid public 1.0.201 DMG |
-| Licence | PASS for legacy compatibility, local cryptography and hidden production backend | historical `/success` and `/api/license/activate` remain isolated for 1.0.201; v2 requires a Stripe-signature-verified paid session, stores only hashes in D1 and issues an Ed25519 receipt bound to app/email/key/machine | no paid end-to-end purchase was made; refunds/disputes require manual revocation; the secure CTA remains gated until the signed 1.0.202 DMG is public |
+| Release pipeline | PASS in code/fixtures and production | same validated snapshot is signed/stapled/app-checked/hashed/published; local and public version/build monotonicity; cache-busted public-manifest preflight; independent HEAD and one-byte-bounded GET both required exact 404; versioned no-clobber; manifest committed last | no physical clean-Mac install was performed |
+| Licence | PASS for legacy compatibility, local cryptography and production backend | historical `/success` and `/api/license/activate` remain isolated for 1.0.201; v2 requires a Stripe-signature-verified paid session, stores only hashes in D1 and issues an Ed25519 receipt bound to app/email/key/machine; exactly five public CTAs now use the isolated Payment Link | no paid end-to-end purchase was made; refunds/disputes require manual revocation |
 
 ## Implemented changes
 
@@ -86,7 +86,7 @@ Date: 2026-09-01 (Europe/Zurich)
 - Removed the unsafe/dead Git updater path; the surviving DMG updater hashes streams, caps file size, verifies signatures, and opens the verified DMG manually.
 - Removed the hardcoded plaintext customer licence override. Existing same-Mac cached licences remain grandfathered and are never rewritten or revoked during migration.
 - Added a versioned `/api/license/v2/activate` contract with strict Ed25519 JWS verification in the app, receipt/key/email/machine/app binding, a three-machine cap, 180-day refresh receipts and a 14-day signed-receipt network grace period.
-- Deployed the hidden Stripe-signature-verified claim backend and separate `/license-success` page without changing the five public purchase CTAs or the historical `/success` flow. The D1 migration is additive, Time Travel was confirmed, all five new tables are empty after synthetic rejection probes, and the public signing key matches the app trust root.
+- Deployed the Stripe-signature-verified claim backend and separate `/license-success` page while preserving the historical `/success` flow byte-for-byte. After the signed 1.0.202 DMG was public, exactly the five intended LocalClaw purchase CTAs were switched to the isolated Payment Link. The D1 migration is additive, Time Travel was confirmed, all five new tables remain empty after synthetic rejection probes, and the public signing key matches the app trust root.
 - Release checks now execute the real OpenClaw compatibility, migration, Gateway-turn, post-update, ownership, Goal-contract, Swift-test, and signed/notarized-build gates rather than allowing fixture omission.
 - Release scripts now require a positive monotonic build, inspect the packaged app inside the DMG, freeze one snapshot before validation, compare against the cache-busted public manifest, require independent cache-busted HEAD and strictly one-byte-bounded GET probes to both return exact public `404` for the future immutable URL, publish versioned artifacts atomically, and write the update manifest last.
 - The bounded GET probe forces HTTP/1.1 because macOS curl 8.7 maps an HTTP/2 `--max-filesize` stop to transport exit 56 instead of the documented size-limit exit 63 even when GitHub returned an exact 404; the byte ceiling and exact-status requirement remain enforced.
@@ -128,23 +128,28 @@ Date: 2026-09-01 (Europe/Zurich)
 
 ## Production artifact inspection
 
-- Public manifest observed: LocalClaw `1.0.201`, build `352`, SHA-256 `ef62948313230cba448728fe1dd7fe14ac415ee6a19f717f781a004da2a63286`.
-- The downloaded public DMG matched that SHA exactly.
-- Final separated recheck: `codesign` accepted the DMG, mounted `LocalClaw.app`, and its executable; `xcrun stapler validate` passed; `spctl` accepted both DMG and app as `Notarized Developer ID`, team `923MBLC4X4`.
-- Consequence: the current public 1.0.201 package is Apple-valid, but it predates and therefore does not contain this audit's compatibility/repair changes. The next build must still receive a new monotonic build number and pass the same signing, notarization, stapling, fresh-install, and update gates.
+- Formal release gate produced LocalClaw `1.0.202`, build `353`; Apple notarization submission `331facc9-81b8-4375-aa45-798c15ba360d` was accepted and the DMG was stapled.
+- Site commit `db12e6b802c0867c9596125ee465dce14d86b4a7` was rebased on the concurrent Atlas change, pushed, built, and deployed as Cloudflare Pages deployment `798a642c`.
+- The cache-busted custom-domain manifest reports `1.0.202`, build `353`, immutable `localclaw-1.0.202-353.dmg`, release notes `1.0.202`, and SHA-256 `a0bd13459bfaa922286c08b7ce0a6b855d7fb51bb23929b65cdffbf7f7207d1e`.
+- Both the immutable GitHub download and `https://localclaw.io/downloads/localclaw.dmg` were downloaded from production and matched that SHA exactly and byte-for-byte.
+- On the downloaded production DMG, `xcrun stapler validate` passed; `spctl` accepted the DMG and mounted app as `Notarized Developer ID`; `codesign --verify --deep --strict` passed; the app is arm64, bundle `io.localclaw.installer`, version `1.0.202`, build `353`, team `923MBLC4X4`.
+- The custom-domain pricing, download and changelog pages show 1.0.202. Exactly four pricing CTAs and one download CTA use the new Payment Link with their analytics attributes unchanged. The historical `/success` SHA-256 remains `88819055f76dd36a385f3ca7e9806c905bcd36b9b630c8bea0b31a8485f60302`.
+- The public Ed25519 key is `localclaw-license-2026-09-01`; unknown v2 keys return `403 license_not_found`, the legacy endpoint rejects new-format keys, and a remote read-only D1 query confirmed zero rows and zero writes across all five licence tables after the probes.
 
 ## Residual risk register
 
 1. **P2 — commercial licence operations:** no paid end-to-end checkout was performed. Refunds and disputes need manual revocation, claim/activation rely on Cloudflare perimeter controls rather than an app-specific rate limiter, and refreshing the secure result page after the one-time session bearer is scrubbed requires support recovery.
-2. **P2 — Goal integration surface:** no public OpenClaw atomic Goal CLI exists for LocalClaw's budgeted workflow, so the controller discovers private hashed chunks. Upstream chunk changes must be caught by compatibility tests on every OpenClaw release.
-3. **P2 — Goal tool scope/evidence:** LocalClaw detects native Goal mutation after a turn but cannot remove those tools per turn from every model. Semantic completion evidence may still be model-reported; deterministic file/tests are stronger but not universal.
-4. **P2 — remote model catalogue:** strict parsing blocks command injection, but semantic authenticity needs a signed catalogue or embedded trust root.
-5. **E2E boundary:** fresh install logic is thoroughly fixture-tested, but no clean physical Mac installation or real multi-gigabyte model download has yet certified the new audited build.
+2. **P2 — response-header cleanup:** `/license-success` receives both the global and route-specific CSP/X-Frame-Options headers. Browsers enforce the stricter `frame-ancestors 'none'`/`DENY` result, but the duplicate header policy should be simplified in a later isolated change.
+3. **P2 — Goal integration surface:** no public OpenClaw atomic Goal CLI exists for LocalClaw's budgeted workflow, so the controller discovers private hashed chunks. Upstream chunk changes must be caught by compatibility tests on every OpenClaw release.
+4. **P2 — Goal tool scope/evidence:** LocalClaw detects native Goal mutation after a turn but cannot remove those tools per turn from every model. Semantic completion evidence may still be model-reported; deterministic file/tests are stronger but not universal.
+5. **P2 — remote model catalogue:** strict parsing blocks command injection, but semantic authenticity needs a signed catalogue or embedded trust root.
+6. **E2E boundary:** fresh install logic is thoroughly fixture-tested, but no clean physical Mac installation or real multi-gigabyte model download has yet certified the new audited build.
 
 ## Stop record and verdict
 
-- Code/fixture verdict: **GO for the 1.0.202 signed-release pipeline**.
-- Customer release verdict at this checkpoint: **NO-GO until the build 353 DMG is signed, notarized, stapled, published and verified**.
-- Reason: application, Goal, Kanban, recovery, updater and licence gates pass; the hidden production backend is live and the old customer path is unchanged. The release artifact itself does not exist yet.
-- Live/deployed status: the isolated licence v2 backend and page are deployed from site commit `4fc86fe3`; D1 migration `0008` is applied with zero licence rows. The five public $49 CTAs still point to the historical checkout by design. No customer data, OpenClaw runtime, account or connected service was changed.
-- Next work: commit/push the app source, produce and verify build 353, publish the immutable DMG plus manifest, then switch exactly the five LocalClaw $49 CTAs to the new isolated Stripe Payment Link and prove the custom-domain result.
+- Code/fixture verdict: **GO**.
+- Customer release verdict: **GO — LocalClaw 1.0.202 build 353 is signed, notarized, stapled, pushed, deployed and production-verified**.
+- App source status: commits `e905d84` and `39fb1fe` are pushed; the app repository is clean and equals `origin/main`.
+- Site status: backend commit `4fc86fe3` and release commit `db12e6b8` are pushed; the site repository is clean and equals `origin/main`; custom-domain manifest, pages, endpoints and both public DMGs were verified after deployment.
+- Compatibility status: native Goal remains authoritative, LocalClaw Board remains separate from Workboard, existing same-Mac cached licences remain valid, new-format keys cannot downgrade through the legacy endpoint, and no customer data, OpenClaw runtime, account or connected service was changed during the audit.
+- Unproved boundaries are explicit rather than release blockers: no $49 live purchase was made and no physical clean-Mac installation with a real multi-gigabyte model download was performed.
