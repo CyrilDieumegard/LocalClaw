@@ -266,6 +266,7 @@ PUBLIC_TARGET_GET_EXIT=0
 PUBLIC_TARGET_GET_STATUS="$("$CURL_BIN" \
   --silent \
   --proto '=https' \
+  --http1.1 \
   --max-time "$NETWORK_TIMEOUT_SECONDS" \
   --range 0-0 \
   --max-filesize 1 \

@@ -89,6 +89,7 @@ Date: 2026-09-01 (Europe/Zurich)
 - Deployed the hidden Stripe-signature-verified claim backend and separate `/license-success` page without changing the five public purchase CTAs or the historical `/success` flow. The D1 migration is additive, Time Travel was confirmed, all five new tables are empty after synthetic rejection probes, and the public signing key matches the app trust root.
 - Release checks now execute the real OpenClaw compatibility, migration, Gateway-turn, post-update, ownership, Goal-contract, Swift-test, and signed/notarized-build gates rather than allowing fixture omission.
 - Release scripts now require a positive monotonic build, inspect the packaged app inside the DMG, freeze one snapshot before validation, compare against the cache-busted public manifest, require independent cache-busted HEAD and strictly one-byte-bounded GET probes to both return exact public `404` for the future immutable URL, publish versioned artifacts atomically, and write the update manifest last.
+- The bounded GET probe forces HTTP/1.1 because macOS curl 8.7 maps an HTTP/2 `--max-filesize` stop to transport exit 56 instead of the documented size-limit exit 63 even when GitHub returned an exact 404; the byte ceiling and exact-status requirement remain enforced.
 - Handoff manifest/checksum files are fail-safe templates rather than stale release claims.
 
 ## Executable evidence
