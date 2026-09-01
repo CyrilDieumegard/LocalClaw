@@ -2,7 +2,7 @@
 
 Endpoint attendu par l'app:
 
-`POST /api/license/activate`
+`POST /api/license/v2/activate`
 
 ## Request JSON
 
@@ -20,7 +20,7 @@ Endpoint attendu par l'app:
 ```json
 {
   "ok": true,
-  "token": "signed-token",
+  "token": "ed25519-or-jws-signed-receipt",
   "message": "Activated",
   "expiresAt": "2027-02-19T00:00:00Z"
 }
@@ -51,3 +51,7 @@ Endpoint attendu par l'app:
 - limite d'activation machine: 1 ou 2
 - enregistrer IP + user agent + timestamp
 - possibilité de révoquer une clé
+- le reçu doit être signé par une clé serveur; l'app embarque seulement la clé publique
+- l'app vérifie signature, `machineId`, email, licence, expiration et identifiant de clé
+- aucune absence d'expiration ne doit être interprétée comme une licence permanente
+- prévoir rotation de clé, révocation et une grâce hors ligne explicitement bornée

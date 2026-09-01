@@ -1,14 +1,18 @@
 // Example minimal backend (Node.js, no framework)
 // Endpoints:
-// - POST /api/license/activate
+// - POST /api/license/v2/activate
 // - GET /api/download?token=...
 
 const http = require('http');
 const crypto = require('crypto');
 
 const PORT = process.env.PORT || 3000;
-const SECRET = process.env.DOWNLOAD_SECRET || 'change-me';
+const SECRET = process.env.DOWNLOAD_SECRET;
 const DMG_URL = process.env.DMG_URL || 'https://localclaw.io/downloads/builds/localclaw.dmg';
+
+if (!SECRET || SECRET.length < 32) {
+  throw new Error('DOWNLOAD_SECRET must be set to at least 32 random characters. This example is not a production license server.');
+}
 
 // fake in-memory db
 const licenses = new Map();
@@ -24,7 +28,9 @@ function verifyToken(token) {
   const [body, sig] = token.split('.');
   if (!body || !sig) return null;
   const expected = crypto.createHmac('sha256', SECRET).update(body).digest('base64url');
-  if (sig !== expected) return null;
+  const supplied = Buffer.from(sig);
+  const wanted = Buffer.from(expected);
+  if (supplied.length !== wanted.length || !crypto.timingSafeEqual(supplied, wanted)) return null;
   const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
   if (Date.now() > payload.exp) return null;
   return payload;
@@ -42,7 +48,7 @@ function readJson(req) {
 }
 
 const server = http.createServer(async (req, res) => {
-  if (req.method === 'POST' && req.url === '/api/license/activate') {
+  if (req.method === 'POST' && req.url === '/api/license/v2/activate') {
     try {
       const body = await readJson(req);
       const email = String(body.email || '').trim().toLowerCase();
@@ -62,9 +68,13 @@ const server = http.createServer(async (req, res) => {
         return res.end(JSON.stringify({ ok: false, message: 'Machine limit reached' }));
       }
 
-      const token = signToken({ email, licenseKey, machineId, exp: Date.now() + 1000 * 60 * 60 * 24 * 30 });
+      const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30);
+      const token = signToken({ email, licenseKey, machineId, exp: expiresAt.getTime() });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ ok: true, token, message: 'Activated', expiresAt: null }));
+      // HTTP-flow example only: the LocalClaw app must not trust this HMAC token.
+      // Production activation requires an asymmetric receipt verifiable with an
+      // embedded public key, plus server-side revocation/rotation semantics.
+      return res.end(JSON.stringify({ ok: true, token, message: 'Activated', expiresAt: expiresAt.toISOString() }));
     } catch {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ ok: false, message: 'Bad request' }));

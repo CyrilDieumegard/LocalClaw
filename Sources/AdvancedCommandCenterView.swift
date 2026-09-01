@@ -12,7 +12,7 @@ final class AsyncCommandRunner: @unchecked Sendable {
         let process = Process()
         self.process = process
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lc", InstallerEngine.shellPathPrefix + command]
+        process.arguments = ["-lc", InstallerEngine.shellPathPrefix(for: command) + command]
         
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -171,9 +171,51 @@ final class CommandCenterViewModel: ObservableObject {
         let state: State
         let repairHint: String?
     }
+
+    private func selectedConfigPath(logFailure: Bool = true) -> String? {
+        do {
+            return try OpenClawRuntimeInstallation.selectedConfig().path
+        } catch {
+            if logFailure {
+                addLog(.error, "OpenClaw profile selection is ambiguous: \(error.localizedDescription)")
+            }
+            return nil
+        }
+    }
+
+    private func selectedStatePath(logFailure: Bool = true) -> String? {
+        do {
+            return try OpenClawRuntimeInstallation.selectedState().path
+        } catch {
+            if logFailure {
+                addLog(.error, "OpenClaw profile selection is ambiguous: \(error.localizedDescription)")
+            }
+            return nil
+        }
+    }
+
+    private func selectedGatewayPort(logFailure: Bool = true) -> Int? {
+        do {
+            if let port = try OpenClawRuntimeInstallation.managed()?.port { return port }
+            let config = try OpenClawRuntimeInstallation.selectedConfig()
+            if let data = FileManager.default.contents(atPath: config.path),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let gateway = json["gateway"] as? [String: Any],
+               let port = gateway["port"] as? Int,
+               (1...65535).contains(port) {
+                return port
+            }
+            return 18789
+        } catch {
+            if logFailure {
+                addLog(.error, "OpenClaw profile selection is ambiguous: \(error.localizedDescription)")
+            }
+            return nil
+        }
+    }
     
     private func syncModeFromConfig() {
-        let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
+        guard let configPath = selectedConfigPath() else { return }
         guard let data = FileManager.default.contents(atPath: configPath),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let agents = json["agents"] as? [String: Any],
@@ -235,27 +277,9 @@ final class CommandCenterViewModel: ObservableObject {
     
     func checkGatewayStatus() {
         gatewayStatus = .checking
-
-        // Fast probe first
-        let (_, portCheck) = engine.shell("curl -s -o /dev/null -w '%{http_code}' http://localhost:18789/api/health 2>/dev/null || echo '000'")
-        let portResponds = portCheck.trimmingCharacters(in: .whitespacesAndNewlines) == "200"
-
-        if portResponds {
-            gatewayStatus = .online
-            return
-        }
-
-        // Slower CLI check only when fast probe fails
-        let (_, output) = engine.shell("openclaw gateway status --no-color 2>&1")
-        let cliSaysRunning = output.contains("running") || output.contains("Online")
-
-        if cliSaysRunning {
-            gatewayStatus = .online
-        } else if output.contains("not running") || output.contains("Offline") {
-            gatewayStatus = .offline
-        } else {
-            gatewayStatus = .error
-        }
+        let result = engine.getGatewayStatus()
+        gatewayStatus = result.isRunning ? .online :
+            (result.message.lowercased().contains("stopped") ? .offline : .error)
     }
     
     func refreshSystemInfo() {
@@ -264,6 +288,9 @@ final class CommandCenterViewModel: ObservableObject {
         
         systemInfo.openclawVersion = ocVersion.isEmpty ? "Not installed" : ocVersion
         systemInfo.nodeVersion = nodeVer.isEmpty ? "Not installed" : nodeVer
+        if let port = selectedGatewayPort(logFailure: false) { systemInfo.gatewayPort = String(port) }
+        if let config = selectedConfigPath(logFailure: false) { systemInfo.configPath = config }
+        if let state = selectedStatePath(logFailure: false) { systemInfo.logPath = state + "/logs/" }
     }
 
     func runHealthCheck() {
@@ -292,11 +319,13 @@ final class CommandCenterViewModel: ObservableObject {
     private func buildHealthCheckItems() -> [HealthCheckItem] {
         var items: [HealthCheckItem] = []
 
-        let (_, gatewayHTTP) = engine.shell("curl -s -o /dev/null -w '%{http_code}' http://localhost:18789/api/health 2>/dev/null || echo '000'")
-        let gatewayOK = gatewayHTTP.trimmingCharacters(in: .whitespacesAndNewlines) == "200"
+        let gateway = engine.getGatewayStatus()
+        let gatewayOK = gateway.isRunning
+        let port = selectedGatewayPort(logFailure: false)
+        let endpoint = port.map { "localhost:\($0)" } ?? "the selected Gateway"
         items.append(HealthCheckItem(
             title: "Gateway",
-            detail: gatewayOK ? "Responding on localhost:18789" : "Gateway is not responding on localhost:18789",
+            detail: gatewayOK ? "RPC healthy on \(endpoint)" : gateway.message,
             state: gatewayOK ? .ok : .failed,
             repairHint: gatewayOK ? nil : "Use Repair OpenClaw Connection."
         ))
@@ -310,17 +339,17 @@ final class CommandCenterViewModel: ObservableObject {
             repairHint: openClawInstalled ? nil : "Run Updates, then update OpenClaw runtime."
         ))
 
-        let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
-        let configExists = FileManager.default.fileExists(atPath: configPath)
+        let configPath = selectedConfigPath(logFailure: false)
+        let configExists = configPath.map(FileManager.default.fileExists(atPath:)) ?? false
         items.append(HealthCheckItem(
             title: "Config",
-            detail: configExists ? "~/.openclaw/openclaw.json found" : "Missing ~/.openclaw/openclaw.json",
+            detail: configExists ? "\(configPath ?? "Selected config") found" : "Selected OpenClaw config is missing or ambiguous",
             state: configExists ? .ok : .failed,
             repairHint: configExists ? nil : "Use Repair OpenClaw Connection."
         ))
 
         var tokenOK = false
-        if let data = FileManager.default.contents(atPath: configPath),
+        if let configPath, let data = FileManager.default.contents(atPath: configPath),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let gateway = json["gateway"] as? [String: Any],
            let auth = gateway["auth"] as? [String: Any],
@@ -461,11 +490,16 @@ final class CommandCenterViewModel: ObservableObject {
     }
 
     func exportDiagnosticReport() {
-        let dir = NSHomeDirectory() + "/.openclaw"
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let dir = NSHomeDirectory() + "/Library/Application Support/LocalClaw/Diagnostics"
+        try? FileManager.default.createDirectory(
+            atPath: dir,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
         let path = dir + "/localclaw-control-center-report.txt"
         do {
             try diagnosticReport().write(toFile: path, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
             addLog(.success, "Diagnostic report exported to \(path)")
             _ = engine.shell("open -R '\(path)' 2>/dev/null || true")
         } catch {
@@ -668,68 +702,8 @@ final class CommandCenterViewModel: ObservableObject {
 
     func repairOpenClawConnection() {
         addLog(.command, "Repairing OpenClaw connection...")
-        addLog(.info, "This can take up to two minutes. LocalClaw will fix config, reinstall the Gateway service, restart it, then open the dashboard.")
-
-        let repairCommand = """
-        set -o pipefail
-        mkdir -p "$HOME/.openclaw"
-        python3 - <<'PY'
-        import json, os, secrets
-        path = os.path.expanduser("~/.openclaw/openclaw.json")
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-        except Exception:
-            cfg = {}
-        gateway = cfg.setdefault("gateway", {})
-        gateway["mode"] = "local"
-        gateway["port"] = 18789
-        gateway["bind"] = "loopback"
-        auth = gateway.setdefault("auth", {})
-        auth["mode"] = "token"
-        if not auth.get("token"):
-            auth["token"] = secrets.token_hex(32)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2, sort_keys=True)
-            f.write("\n")
-        print("Config checked: gateway local mode + token auth")
-        PY
-        perl -e 'alarm 120; exec @ARGV' openclaw doctor --fix --yes --non-interactive 2>&1 || true
-        openclaw gateway stop 2>&1 || true
-        openclaw gateway uninstall 2>&1 || true
-        sleep 1
-        openclaw gateway install 2>&1
-        openclaw gateway start 2>&1 || true
-        sleep 3
-        openclaw status 2>&1 | sed -n '1,40p'
-        openclaw dashboard --no-open 2>&1 || true
-        """
-
-        executeCommandAsync(repairCommand, onOutput: { line in
-            DispatchQueue.main.async {
-                let lower = line.lowercased()
-                if lower.contains("error") || lower.contains("failed") || lower.contains("invalid") {
-                    self.addLog(.error, line)
-                } else if lower.contains("warning") || lower.contains("warn") {
-                    self.addLog(.warning, line)
-                } else if lower.contains("ready") || lower.contains("reachable") || lower.contains("copied") || lower.contains("config checked") {
-                    self.addLog(.success, line)
-                } else {
-                    self.addLog(.info, line)
-                }
-            }
-        }, onComplete: { code in
-            DispatchQueue.main.async {
-                self.syncTokenFromConfig()
-                self.checkGatewayStatus()
-                if code == 0 {
-                    self.addLog(.success, "Repair completed. Dashboard URL has been copied to clipboard.")
-                    self.openDashboard()
-                } else {
-                    self.addLog(.error, "Repair finished with exit code \(code). Copy logs and send them to support.")
-                }
-            }
-        })
+        addLog(.info, "LocalClaw will identify the installed Gateway, create and verify an offline backup, run OpenClaw's migrations, then require version and RPC health proof.")
+        runVerifiedOpenClawMaintenance(successMessage: "Repair completed and the Gateway passed version and RPC checks.", openDashboardOnSuccess: true)
     }
     
 
@@ -780,14 +754,25 @@ final class CommandCenterViewModel: ObservableObject {
         }.resume()
     }
     
-    private func ensureLMStudioAuthProfile() {
-        let authPath = NSHomeDirectory() + "/.openclaw/agents/main/agent/auth-profiles.json"
+    private func ensureLMStudioAuthProfile() -> Bool {
+        if OpenClawCompatibility.usesUnifiedOpenAIRoutes(version: systemInfo.openclawVersion) { return true }
+        guard let statePath = selectedStatePath() else { return false }
+        let authPath = statePath + "/agents/main/agent/auth-profiles.json"
         let authDir = (authPath as NSString).deletingLastPathComponent
-        try? FileManager.default.createDirectory(atPath: authDir, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(atPath: authDir, withIntermediateDirectories: true)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: authDir)
+        } catch {
+            addLog(.error, "Could not prepare the selected legacy credential store: \(error.localizedDescription)")
+            return false
+        }
 
         var root: [String: Any] = ["version": 1, "profiles": [:]]
-        if let data = FileManager.default.contents(atPath: authPath),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        if let data = FileManager.default.contents(atPath: authPath) {
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                addLog(.error, "The selected legacy credential store is invalid JSON and was left unchanged.")
+                return false
+            }
             root = json
         }
 
@@ -796,83 +781,34 @@ final class CommandCenterViewModel: ObservableObject {
         root["profiles"] = profiles
         if root["version"] == nil { root["version"] = 1 }
 
-        if let out = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]) {
-            try? out.write(to: URL(fileURLWithPath: authPath), options: .atomic)
+        do {
+            let out = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
+            try out.write(to: URL(fileURLWithPath: authPath), options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: authPath)
+            return true
+        } catch {
+            addLog(.error, "Could not update the selected legacy credential store: \(error.localizedDescription)")
+            return false
         }
     }
 
     private func setPrimaryModel(_ modelId: String, mode: String) {
-        let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
-
-        guard let data = FileManager.default.contents(atPath: configPath),
-              var json = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) else {
-            addLog(.error, "Cannot read ~/.openclaw/openclaw.json")
-            return
-        }
-
-        var agents = json["agents"] as? [String: Any] ?? [:]
-        var defaults = agents["defaults"] as? [String: Any] ?? [:]
-        var model = defaults["model"] as? [String: Any] ?? [:]
-        model["primary"] = modelId
-        defaults["model"] = model
-        defaults = ensureAgentModelAllowlist(defaults: defaults, modelIdentifier: modelId)
-
-        // Apply runtime profile depending on Local vs Cloud switch
-        var sandbox = defaults["sandbox"] as? [String: Any] ?? [:]
-        sandbox["mode"] = "off"
-        defaults["sandbox"] = sandbox
-
-        var tools = json["tools"] as? [String: Any] ?? [:]
-        var deny = Set((tools["deny"] as? [String]) ?? [])
-
-        if mode == "local" {
-            deny.insert("group:web")
-            deny.insert("browser")
-            deny.insert("web_search")
-            deny.insert("web_fetch")
-        } else {
-            deny.remove("group:web")
-            deny.remove("browser")
-            deny.remove("web_search")
-            deny.remove("web_fetch")
-        }
-
-        tools["deny"] = Array(deny).sorted()
-        json["tools"] = tools
-
-        agents["defaults"] = defaults
-        json["agents"] = agents
-
-        do {
-            let out = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
-            try out.write(to: URL(fileURLWithPath: configPath), options: .atomic)
-
-            if mode == "local" {
-                ensureLMStudioAuthProfile()
+        guard mode != "local" || ensureLMStudioAuthProfile() else { return }
+        addLog(.command, "Applying \(mode) model \(modelId) to the selected OpenClaw profile...")
+        let engine = self.engine
+        Task.detached(priority: .userInitiated) {
+            let result = engine.changeModel(modelId)
+            await MainActor.run {
+                if result.state == .ok {
+                    self.addLog(.success, result.message)
+                    self.syncModeFromConfig()
+                } else {
+                    self.addLog(.error, result.message)
+                }
+                self.checkGatewayStatus()
+                self.refreshSystemInfo()
             }
-
-            addLog(.success, "Mode switched to \(mode) + model \(modelId)")
-            addLog(.info, "Restarting Gateway to apply changes...")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                self.restartGateway()
-            }
-        } catch {
-            addLog(.error, "Failed writing config: \(error.localizedDescription)")
         }
-    }
-
-    private func ensureAgentModelAllowlist(defaults: [String: Any], modelIdentifier: String) -> [String: Any] {
-        var updated = defaults
-        var models = updated["models"] as? [String: Any] ?? [:]
-        var entry = models[modelIdentifier] as? [String: Any] ?? [:]
-        var runtime = entry["agentRuntime"] as? [String: Any] ?? [:]
-        if runtime["id"] == nil {
-            runtime["id"] = modelIdentifier.hasPrefix("openai/") ? "codex" : "auto"
-        }
-        entry["agentRuntime"] = runtime
-        models[modelIdentifier] = entry
-        updated["models"] = models
-        return updated
     }
 
     private func detectInstalledLocalModel() -> String {
@@ -882,8 +818,8 @@ final class CommandCenterViewModel: ObservableObject {
         if !liveId.isEmpty { return liveId }
 
         // 2) Fallback to config models.providers.lmstudio.models[0].id
-        let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
-        if let data = FileManager.default.contents(atPath: configPath),
+        if let configPath = selectedConfigPath(logFailure: false),
+           let data = FileManager.default.contents(atPath: configPath),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let models = json["models"] as? [String: Any],
            let providers = models["providers"] as? [String: Any],
@@ -941,7 +877,7 @@ final class CommandCenterViewModel: ObservableObject {
     func openDashboard() {
         addLog(.command, "Opening dashboard...")
         // Read current token and open with tokenized URL
-        let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
+        guard let configPath = selectedConfigPath(), let port = selectedGatewayPort() else { return }
         var token = ""
         if let data = try? Data(contentsOf: URL(fileURLWithPath: configPath)),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -952,11 +888,11 @@ final class CommandCenterViewModel: ObservableObject {
         }
         
         if !token.isEmpty {
-            let url = "http://localhost:18789?token=\(token)"
-            _ = engine.shell("open '\(url)' 2>&1 || open http://localhost:18789 2>&1 || true")
+            let url = "http://localhost:\(port)?token=\(token)"
+            _ = engine.shell("open \(OpenClawRuntimeInstallation.quote(url))")
             addLog(.success, "Dashboard opened with token")
         } else {
-            _ = engine.shell("open http://localhost:18789 2>&1 || true")
+            _ = engine.shell("open \(OpenClawRuntimeInstallation.quote("http://localhost:\(port)"))")
             addLog(.success, "Dashboard opened (no token found)")
         }
     }
@@ -982,7 +918,7 @@ final class CommandCenterViewModel: ObservableObject {
     }
     
     private func syncTokenFromConfig() {
-        let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
+        guard let configPath = selectedConfigPath() else { return }
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: configPath)),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let gateway = json["gateway"] as? [String: Any],
@@ -991,13 +927,13 @@ final class CommandCenterViewModel: ObservableObject {
             return
         }
         if !token.isEmpty {
-            addLog(.info, "Token: \(token.prefix(16))...")
+            addLog(.info, "Gateway token synced from the selected OpenClaw configuration (value hidden).")
         }
     }
     
     func viewConfig() {
         addLog(.command, "Reading redacted config...")
-        let path = NSHomeDirectory() + "/.openclaw/openclaw.json"
+        guard let path = selectedConfigPath() else { return }
         guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else {
             addLog(.error, "Config not found")
             return
@@ -1013,40 +949,8 @@ final class CommandCenterViewModel: ObservableObject {
     }
     
     func fixAuth() {
-        addLog(.command, "Fixing authentication (reinstalling gateway)...")
-        // Stop, uninstall, install, start
-        executeCommandAsync("openclaw gateway stop 2>&1; openclaw gateway uninstall 2>&1; sleep 1; openclaw gateway install 2>&1", onOutput: { line in
-            DispatchQueue.main.async {
-                self.addLog(.info, line)
-            }
-        }, onComplete: { code in
-            DispatchQueue.main.async {
-                // Sync token after reinstall
-                self.syncTokenFromConfig()
-                
-                if code == 0 {
-                    self.addLog(.success, "Gateway reinstalled. Starting...")
-                    // Now start
-                    self.executeCommandAsync("openclaw gateway start", onOutput: { line in
-                        DispatchQueue.main.async { self.addLog(.info, line) }
-                    }, onComplete: { startCode in
-                        DispatchQueue.main.async {
-                            // Sync token again after start
-                            self.syncTokenFromConfig()
-                            
-                            if startCode == 0 {
-                                self.addLog(.success, "Gateway restarted. Dashboard should work now.")
-                            } else {
-                                self.addLog(.error, "Gateway start failed (exit \(startCode))")
-                            }
-                            self.checkGatewayStatus()
-                        }
-                    })
-                } else {
-                    self.addLog(.error, "Reinstall failed (exit \(code))")
-                }
-            }
-        })
+        addLog(.command, "Repairing authentication and Gateway binding safely...")
+        repairOpenClawConnection()
     }
     
     func copyLogsToClipboard() {
@@ -1064,26 +968,42 @@ final class CommandCenterViewModel: ObservableObject {
     
     func openWorkspace() {
         addLog(.command, "Opening workspace...")
-        _ = engine.shell("open ~/.openclaw 2>&1 || true")
-        addLog(.success, "Workspace opened in Finder")
+        guard let statePath = selectedStatePath() else { return }
+        let result = engine.shell("open \(OpenClawRuntimeInstallation.quote(statePath))")
+        if result.0 == 0 {
+            addLog(.success, "Selected OpenClaw state opened in Finder")
+        } else {
+            addLog(.error, "Could not open selected OpenClaw state")
+        }
     }
     
     func updateOpenClaw() {
         addLog(.command, "Updating OpenClaw...")
-        executeCommandAsync("npm i -g openclaw@latest", onOutput: { line in
-            DispatchQueue.main.async {
-                self.addLog(.info, line)
+        addLog(.info, "Update is backup-first and remains bound to the installed Gateway runtime, profile, state directory, configuration and port.")
+        runVerifiedOpenClawMaintenance(successMessage: "OpenClaw updated; the loaded Gateway version and RPC health were verified.")
+    }
+
+    private func runVerifiedOpenClawMaintenance(successMessage: String, openDashboardOnSuccess: Bool = false) {
+        let engine = self.engine
+        Task.detached(priority: .userInitiated) {
+            let result = engine.updateOpenClawIfInstalled { message in
+                Task { @MainActor in self.addLog(.info, message) }
             }
-        }, onComplete: { code in
-            DispatchQueue.main.async {
-                if code == 0 {
-                    self.addLog(.success, "OpenClaw updated")
-                    self.refreshSystemInfo()
-                } else {
-                    self.addLog(.error, "Update failed")
+            await MainActor.run {
+                self.syncTokenFromConfig()
+                self.checkGatewayStatus()
+                self.refreshSystemInfo()
+                switch result.state {
+                case .ok:
+                    self.addLog(.success, successMessage)
+                    if openDashboardOnSuccess { self.openDashboard() }
+                case .skip:
+                    self.addLog(.warning, result.message)
+                case .fail, .pending:
+                    self.addLog(.error, result.message)
                 }
             }
-        })
+        }
     }
 }
 

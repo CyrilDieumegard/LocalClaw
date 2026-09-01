@@ -84,21 +84,101 @@ struct StabilityServicesTests {
         }
     }
 
+    @Test @MainActor func catalogValidationRejectsExecutableModelIdentifiers() throws {
+        let maliciousValues = [
+            "foo; touch /tmp/localclaw-catalog-pwned",
+            "foo$(touch /tmp/localclaw-catalog-pwned)",
+            "foo\nbar",
+        ]
+
+        for malicious in maliciousValues {
+            let candidate: [String: Any] = [
+                "name": "Unsafe",
+                "query": malicious,
+                "providerId": "test/safe",
+                "family": "test",
+                "summary": "Unsafe candidate",
+                "fileSizeGB": 2,
+                "maxContextK": 128,
+                "qualityScore": 4,
+                "codingScore": 4,
+                "reasoningScore": 4,
+                "speedScore": 4,
+                "toolUseScore": 4,
+                "multimodal": false,
+                "badges": [],
+            ]
+            let document: [String: Any] = [
+                "schemaVersion": 1,
+                "catalogVersion": 1,
+                "generatedAt": "2026-07-18T12:00:00Z",
+                "source": "test",
+                "models": [candidate],
+            ]
+            let data = try JSONSerialization.data(withJSONObject: document)
+            #expect(throws: LocalModelCatalogService.CatalogError.self) {
+                try LocalModelCatalogService().decodeAndValidate(data)
+            }
+        }
+
+        #expect(!LocalModelCatalogService.isValidProviderID("safe/model$(id)"))
+        #expect(InstallerEngine().installModelStreaming("safe; id", onLine: { _ in }).state == .fail)
+    }
+
     @Test func recoveryPointRestoresOpenClawConfiguration() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("localclaw-recovery-test-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         let config = root.appendingPathComponent(".openclaw/openclaw.json")
+        let preferences = root.appendingPathComponent("Library/Preferences/io.localclaw.installer.plist")
         try FileManager.default.createDirectory(at: config.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: preferences.deletingLastPathComponent(), withIntermediateDirectories: true)
         try #"{"agents":{"defaults":{"model":{"primary":"lmstudio/test"}}}}"#.write(to: config, atomically: true, encoding: .utf8)
+        try Data("snapshot preferences".utf8).write(to: preferences)
         let service = RecoveryService(homeDirectory: root.path)
 
         let point = try service.createSnapshot(reason: "Test")
         try #"{"changed":true}"#.write(to: config, atomically: true, encoding: .utf8)
+        try Data("changed preferences".utf8).write(to: preferences)
         try service.restore(point)
         let restored = try String(contentsOf: config, encoding: .utf8)
+        let restoredPreferences = try String(contentsOf: preferences, encoding: .utf8)
 
         #expect(point.files.contains("openclaw.json"))
+        #expect(point.files.contains("LocalClaw-preferences.plist"))
         #expect(restored.contains("lmstudio/test"))
+        #expect(restoredPreferences == "snapshot preferences")
+    }
+
+    @Test func recoveryPreparationFailureNeverDeletesUntouchedLiveFiles() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("localclaw-recovery-atomic-test-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: root) }
+        let state = root.appendingPathComponent(".openclaw")
+        let config = state.appendingPathComponent("openclaw.json")
+        let auth = state.appendingPathComponent("agents/main/agent/auth-profiles.json")
+        try fm.createDirectory(at: auth.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("snapshot config".utf8).write(to: config)
+        try Data("snapshot auth".utf8).write(to: auth)
+        let point = try RecoveryService(homeDirectory: root.path).createSnapshot(reason: "Atomic restore test")
+
+        try Data("live config".utf8).write(to: config)
+        try Data("live auth".utf8).write(to: auth)
+        var preparedCopies = 0
+        let failing = RecoveryService(homeDirectory: root.path, copyItem: { source, destination in
+            preparedCopies += 1
+            if preparedCopies == 2 { throw CocoaError(.fileWriteUnknown) }
+            try fm.copyItem(at: source, to: destination)
+        })
+
+        #expect(throws: (any Error).self) { try failing.restore(point) }
+        #expect(try String(contentsOf: config, encoding: .utf8) == "live config")
+        #expect(try String(contentsOf: auth, encoding: .utf8) == "live auth")
+        let configSiblings = try fm.contentsOfDirectory(at: config.deletingLastPathComponent(), includingPropertiesForKeys: nil)
+        let authSiblings = try fm.contentsOfDirectory(at: auth.deletingLastPathComponent(), includingPropertiesForKeys: nil)
+        #expect((configSiblings + authSiblings).allSatisfy {
+            !$0.lastPathComponent.hasPrefix(".localclaw-restore-") &&
+                !$0.lastPathComponent.hasPrefix(".localclaw-previous-")
+        })
     }
 
     @Test func automationReceiptTracksDurationAndOutcome() throws {
@@ -122,6 +202,25 @@ struct StabilityServicesTests {
         #expect(decoded.status == .succeeded)
         #expect(decoded.durationLabel == "4.2s")
         #expect(decoded.destination == "Telegram")
+    }
+
+    @Test func automationReceiptCanRepresentAnUnknownRemoteOutcome() throws {
+        let receipt = AutomationReceipt(
+            source: .cron,
+            sourceID: "job-unknown",
+            title: "Long-running job",
+            status: .unknown,
+            agentID: "main",
+            modelID: nil,
+            destination: nil,
+            summary: "Completion was not proven"
+        )
+
+        let data = try JSONEncoder().encode(receipt)
+        let decoded = try JSONDecoder().decode(AutomationReceipt.self, from: data)
+
+        #expect(decoded.status == .unknown)
+        #expect(decoded.summary == "Completion was not proven")
     }
 
     @Test func chatRecoveryClassifiesCommonOpenClawFailures() {

@@ -7,8 +7,7 @@ cd "$ROOT"
 APP_NAME="LocalClaw"
 DMG_NAME="localclaw"
 BUNDLE_ID="io.localclaw.installer"
-MARKETING_VERSION="1.0.201"
-BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
+MARKETING_VERSION="1.0.202"
 DIST_DIR="dist"
 DIST_APP_PATH="${DIST_DIR}/${APP_NAME}.app"
 DIST_DMG_PATH="${DIST_DIR}/${DMG_NAME}.dmg"
@@ -17,6 +16,21 @@ NOTARY_PROFILE="${NOTARY_PROFILE:-localclaw-notary}"
 RELEASE_NOTARIZE="${RELEASE_NOTARIZE:-0}"
 NOTARY_TIMEOUT_SECONDS="${NOTARY_TIMEOUT_SECONDS:-900}"
 NOTARY_POLL_SECONDS="${NOTARY_POLL_SECONDS:-15}"
+
+if [[ "$RELEASE_NOTARIZE" == "1" ]]; then
+  if [[ ! "${LOCALCLAW_BUILD_NUMBER:-}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "LOCALCLAW_BUILD_NUMBER must be set to a positive integer for a notarized release." >&2
+    exit 1
+  fi
+  BUILD_NUMBER="$LOCALCLAW_BUILD_NUMBER"
+else
+  # Development bundles keep the convenient repository-count fallback.
+  BUILD_NUMBER="${LOCALCLAW_BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
+  if [[ ! "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+    echo "LocalClaw build number must be a positive integer." >&2
+    exit 1
+  fi
+fi
 
 mkdir -p "$DIST_DIR"
 # Always stage outside synced workspace folders. File-provider metadata can be

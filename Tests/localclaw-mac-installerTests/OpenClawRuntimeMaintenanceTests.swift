@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Testing
 @testable import localclaw_mac_installer
 
@@ -9,6 +10,45 @@ extension RuntimeRecoveryTests {
 @Suite(.serialized)
 struct OpenClawRuntimeMaintenanceTests {
     private let mismatch = "OpenClaw state database /Users/bot/.openclaw/state/openclaw.sqlite uses newer schema version 15; this OpenClaw build supports 1."
+
+    private struct LegacyCheckpointFixture: Codable {
+        let package: String
+        let node: String
+        let state: String
+        let config: String
+        let target: String
+        let archive: String
+        let archiveSize: UInt64
+        let archiveModified: Date
+
+        init(_ value: OpenClawUpdateCheckpoint) {
+            package = value.package
+            node = value.node
+            state = value.state
+            config = value.config
+            target = value.target
+            archive = value.archive
+            archiveSize = value.archiveSize
+            archiveModified = value.archiveModified
+        }
+
+        init(
+            runtime: OpenClawRuntimeInstallation,
+            target: String,
+            archive: URL,
+            size: UInt64,
+            modified: Date
+        ) {
+            package = runtime.package.resolvingSymlinksInPath().path
+            node = runtime.node.resolvingSymlinksInPath().path
+            state = runtime.state.resolvingSymlinksInPath().path
+            config = runtime.config.resolvingSymlinksInPath().path
+            self.target = target
+            self.archive = archive.path
+            archiveSize = size
+            archiveModified = modified
+        }
+    }
 
     @Test func schemaErrorTakesPriorityOverConnectionAndModelErrors() throws {
         let diagnostic = mismatch + "\nECONNREFUSED lmstudio Gateway may still be running this turn"
@@ -84,7 +124,8 @@ struct OpenClawRuntimeMaintenanceTests {
         )
         #expect(process.executableURL?.path == fixture.home.appendingPathComponent(".hermes/node/bin/node").path)
         #expect(process.arguments == [fixture.package.appendingPathComponent("openclaw.mjs").path] + arguments)
-        #expect(process.environment?["OPENCLAW_CONFIG_PATH"] == fixture.home.appendingPathComponent(".openclaw/openclaw.json").path)
+        #expect(process.environment?["OPENCLAW_CONFIG_PATH"].map { URL(fileURLWithPath: $0).resolvingSymlinksInPath() } ==
+                fixture.home.appendingPathComponent(".openclaw/openclaw.json").resolvingSymlinksInPath())
         #expect(process.environment?["OPENCLAW_DIST_DIR"] == fixture.package.appendingPathComponent("dist").path)
         #expect(process.environment?["KEPT"] == "yes")
     }
@@ -112,6 +153,175 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(runtime?.package.path == fixture.package.path)
         #expect(runtime?.state.path == fixture.home.appendingPathComponent(".openclaw").path)
         #expect(runtime?.config.path == fixture.home.appendingPathComponent(".openclaw/openclaw.json").path)
+    }
+
+    @Test func managedSelectionAcceptsSymlinkEquivalentMissingStateAndConfigPaths() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let canonicalParent = fixture.home.appendingPathComponent("canonical-root", isDirectory: true)
+        let aliasParent = fixture.home.appendingPathComponent("selected-root", isDirectory: true)
+        let state = canonicalParent.appendingPathComponent("missing-state", isDirectory: true)
+        let config = state.appendingPathComponent("openclaw.json")
+        try FileManager.default.createDirectory(at: canonicalParent, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: aliasParent, withDestinationURL: canonicalParent)
+
+        let plist = fixture.home.appendingPathComponent("Library/LaunchAgents/ai.openclaw.gateway.plist")
+        var root = try #require(
+            try PropertyListSerialization.propertyList(from: Data(contentsOf: plist), format: nil) as? [String: Any]
+        )
+        root["EnvironmentVariables"] = [
+            "OPENCLAW_STATE_DIR": state.path,
+            "OPENCLAW_CONFIG_PATH": config.path,
+        ]
+        try PropertyListSerialization.data(fromPropertyList: root, format: .xml, options: 0).write(to: plist)
+        #expect(!FileManager.default.fileExists(atPath: state.path))
+
+        let runtime = try #require(try OpenClawRuntimeInstallation.managed(
+            home: fixture.home,
+            environment: [
+                "OPENCLAW_STATE_DIR": aliasParent.appendingPathComponent("missing-state").path,
+                "OPENCLAW_CONFIG_PATH": aliasParent.appendingPathComponent("missing-state/openclaw.json").path,
+            ]
+        ))
+
+        #expect(runtime.state.path == state.path)
+        #expect(runtime.config.path == config.path)
+    }
+
+    @Test func namedProfileUsesItsOwnStateConfigPortAndServiceIdentity() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        try fixture.addNamedProfile("client", port: 19789, removeDefault: true)
+
+        let runtime = try #require(try OpenClawRuntimeInstallation.managed(
+            home: fixture.home,
+            environment: ["OPENCLAW_PROFILE": "client"]
+        ))
+        #expect(runtime.serviceLabel == "ai.openclaw.client")
+        #expect(runtime.profile == "client")
+        #expect(runtime.state.path == fixture.home.appendingPathComponent(".openclaw-client").path)
+        #expect(runtime.config.path == fixture.home.appendingPathComponent(".openclaw-client/openclaw.json").path)
+        #expect(runtime.port == 19789)
+        let environment = runtime.applying(to: [:])
+        #expect(environment["OPENCLAW_PROFILE"] == "client")
+        #expect(environment["OPENCLAW_GATEWAY_PORT"] == "19789")
+    }
+
+    @Test func freshProfilePortAndProfileSelectorsAreValidatedBeforeConfiguration() throws {
+        #expect(try OpenClawRuntimeInstallation.gatewayPort(environment: ["OPENCLAW_GATEWAY_PORT": "19999"]) == 19999)
+        #expect(try OpenClawRuntimeInstallation.gatewayPort(environment: [:]) == nil)
+        #expect(throws: MaintenanceError.self) {
+            try OpenClawRuntimeInstallation.gatewayPort(environment: ["OPENCLAW_GATEWAY_PORT": "70000"])
+        }
+        #expect(throws: MaintenanceError.self) {
+            try OpenClawRuntimeInstallation.selectedState(
+                home: FileManager.default.temporaryDirectory,
+                environment: ["OPENCLAW_PROFILE": "../another-user"]
+            )
+        }
+    }
+
+    @Test func newNamedProfileRequiresAnUnusedPortWhenDefaultPortIsAlreadyOccupied() throws {
+        let occupied = Set([18789])
+
+        #expect(throws: MaintenanceError.self) {
+            try OpenClawRuntimeInstallation.gatewayPortForConfiguration(
+                managedPort: nil,
+                configuredPort: nil,
+                isManaged: false,
+                environment: ["OPENCLAW_PROFILE": "client"],
+                occupiedPorts: occupied
+            )
+        }
+        #expect(try OpenClawRuntimeInstallation.gatewayPortForConfiguration(
+            managedPort: nil,
+            configuredPort: nil,
+            isManaged: false,
+            environment: [
+                "OPENCLAW_PROFILE": "client",
+                "OPENCLAW_GATEWAY_PORT": "19789",
+            ],
+            occupiedPorts: occupied
+        ) == 19789)
+        #expect(throws: MaintenanceError.self) {
+            try OpenClawRuntimeInstallation.gatewayPortForConfiguration(
+                managedPort: nil,
+                configuredPort: nil,
+                isManaged: false,
+                environment: [
+                    "OPENCLAW_PROFILE": "client",
+                    "OPENCLAW_GATEWAY_PORT": "18789",
+                ],
+                occupiedPorts: occupied
+            )
+        }
+    }
+
+    @Test func existingNamedProfileConfigSuppliesPortWhenItsServiceIsMissing() throws {
+        let config: [String: Any] = [
+            "gateway": [
+                "mode": "local",
+                "port": 19789,
+            ],
+        ]
+        let configuredPort = try #require(
+            try OpenClawRuntimeInstallation.configuredGatewayPort(in: config)
+        )
+
+        #expect(try OpenClawRuntimeInstallation.gatewayPortForConfiguration(
+            managedPort: nil,
+            configuredPort: configuredPort,
+            isManaged: false,
+            environment: ["OPENCLAW_PROFILE": "client"],
+            occupiedPorts: Set([18789])
+        ) == 19789)
+    }
+
+    @Test func installedServicePortFallsBackToItsConfigThenOpenClawDefault() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        var runtime = try #require(try OpenClawRuntimeInstallation.managed(home: fixture.home))
+        runtime.port = nil
+        #expect(runtime.port == nil)
+
+        let customConfig: [String: Any] = ["gateway": ["port": 19789]]
+        let customData = try JSONSerialization.data(withJSONObject: customConfig)
+        try customData.write(to: runtime.config, options: .atomic)
+        #expect(try runtime.gatewayPortForCollisionCheck() == 19789)
+
+        try FileManager.default.removeItem(at: runtime.config)
+        #expect(try runtime.gatewayPortForCollisionCheck() == 18789)
+    }
+
+    @Test func unmanagedProfileCannotUpdateAPackageUsedByAnotherGatewayService() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let managed = try #require(try OpenClawRuntimeInstallation.managed(home: fixture.home))
+        let unmanaged = try OpenClawRuntimeInstallation.resolve(
+            node: managed.node,
+            entry: managed.cli,
+            state: fixture.home.appendingPathComponent(".openclaw-new-client"),
+            config: fixture.home.appendingPathComponent(".openclaw-new-client/openclaw.json"),
+            serviceLabel: nil,
+            selectedProfile: "new-client"
+        )
+        #expect(OpenClawRuntimeMaintenance.hasUnsafeSharedRuntimeConsumer(selected: unmanaged, consumers: [managed]))
+        #expect(!OpenClawRuntimeMaintenance.hasUnsafeSharedRuntimeConsumer(selected: managed, consumers: [managed]))
+    }
+
+    @Test func multipleGatewayProfilesFailClosedWithoutASelector() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        try fixture.addNamedProfile("client", port: 19789)
+
+        #expect(throws: MaintenanceError.self) {
+            try OpenClawRuntimeInstallation.managed(home: fixture.home, environment: [:])
+        }
+        let selected = try #require(try OpenClawRuntimeInstallation.managed(
+            home: fixture.home,
+            environment: ["OPENCLAW_STATE_DIR": fixture.home.appendingPathComponent(".openclaw-client").path]
+        ))
+        #expect(selected.serviceLabel == "ai.openclaw.client")
     }
 
     @Test func migratedDatabaseUsesOfflineBackupAndFreshUpdaterBeforeActivation() throws {
@@ -224,6 +434,26 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(runtime?.version == "2026.7.1-2")
     }
 
+    @Test(arguments: [Failure.corruptArchive, .activeWriter, .staging])
+    func offlineFailureRestartsAPreviouslyLoadedGateway(_ failure: Failure) throws {
+        let fixture = try Fixture(failure: failure)
+        defer { fixture.cleanUp() }
+        let result = fixture.maintenance().update()
+        #expect(result.state == .fail)
+        let stopped = try #require(fixture.commands.firstIndex { $0.contains("launchctl bootout") })
+        let activated = try #require(fixture.commands.lastIndex {
+            $0.contains("gateway start --json") || $0.contains("gateway restart --json")
+        })
+        #expect(stopped < activated)
+        if failure == .staging {
+            #expect(fixture.commands.contains { $0.contains("gateway install --force --json") })
+            #expect(fixture.commands.contains { $0.contains("gateway status --json --require-rpc") })
+            #expect(result.message.contains("Gateway compensation was attempted but RPC health was not verified"))
+        }
+        #expect(result.message.contains("previously loaded Gateway service was restarted") ||
+                result.message.contains("database was not deleted"))
+    }
+
     @Test(arguments: [Failure.update, .wrongVersion, .unhealthy, .schemaRemains, .pluginWarning, .configRemains, .consent, .malformedResult, .wrongResultRoot, .nonzeroSuccess])
     func PostUpdateFailuresAreNotReportedAsSuccess(_ failure: Failure) throws {
         let fixture = try Fixture(failure: failure)
@@ -306,6 +536,14 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(OpenClawRuntimeMaintenance.npmLifecycleFlags(version: "11.15.0") == "")
         #expect(OpenClawRuntimeMaintenance.npmLifecycleFlags(version: "11.16.0").contains("--allow-scripts=openclaw"))
         #expect(OpenClawRuntimeMaintenance.npmLifecycleFlags(version: "12.0.0").contains("--allow-scripts=openclaw"))
+    }
+
+    @Test func automaticUpdateTargetsOnlyStableOpenClawTwoReleases() {
+        #expect(!OpenClawRuntimeMaintenance.isSupportedUpdateTarget("2026.7.1-2"))
+        #expect(!OpenClawRuntimeMaintenance.isSupportedUpdateTarget("2026.8.1-beta.1"))
+        #expect(!OpenClawRuntimeMaintenance.isSupportedUpdateTarget("2026.8.0"))
+        #expect(OpenClawRuntimeMaintenance.isSupportedUpdateTarget("2026.8.1"))
+        #expect(OpenClawRuntimeMaintenance.isSupportedUpdateTarget("2026.9.0"))
     }
 
     @Test func registryDiskFailureStaysActionableWithoutBackingUpOrStoppingService() throws {
@@ -461,6 +699,161 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(!fixture.commands.contains { $0.contains("npm install") || ($0.contains("update --tag") && $0.contains("--yes")) })
     }
 
+    @Test func invalidSelectedProfileRepairsSharedCurrentCoreWithoutMutatingPeerProfile() throws {
+        let fixture = try Fixture(schemaMismatch: false, invalidConfig: true, failure: .newerRegistry)
+        defer { fixture.cleanUp() }
+        try fixture.writeVersion("2026.8.1")
+        try fixture.addNamedProfile("client", port: 19789)
+        let packageManifest = fixture.package.appendingPathComponent("package.json")
+        let peerState = fixture.home.appendingPathComponent(".openclaw-client")
+        let peerConfig = peerState.appendingPathComponent("openclaw.json")
+        let peerMarker = peerState.appendingPathComponent("state/peer.sqlite")
+        let peerPlist = fixture.home.appendingPathComponent("Library/LaunchAgents/ai.openclaw.client.plist")
+        try FileManager.default.createDirectory(at: peerMarker.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("peer state must not change".utf8).write(to: peerMarker)
+        let originalPeerConfig = try Data(contentsOf: peerConfig)
+        let originalPeerMarker = try Data(contentsOf: peerMarker)
+        let originalPeerPlist = try Data(contentsOf: peerPlist)
+        let originalPackageManifest = try Data(contentsOf: packageManifest)
+
+        let result = fixture.maintenance(environment: ["OPENCLAW_PROFILE": "default"]).update()
+
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        let backup = try #require(fixture.commands.firstIndex { $0.contains("/usr/bin/tar -czf") })
+        let repair = try #require(fixture.commands.firstIndex { $0.contains("update repair --yes --json") })
+        #expect(backup < repair)
+        #expect(fixture.commands[repair].contains("OPENCLAW_SERVICE_REPAIR_POLICY=external"))
+        let selectedState = fixture.home.appendingPathComponent(".openclaw").path
+        #expect(fixture.commands[repair].contains(
+            "OPENCLAW_STATE_DIR=\(OpenClawRuntimeInstallation.quote(selectedState))"
+        ))
+        #expect(fixture.commands[repair].contains("OPENCLAW_LAUNCHD_LABEL='ai.openclaw.gateway'"))
+        #expect(!fixture.commands.contains { $0.contains("npm install") || ($0.contains("update --tag") && $0.contains("--yes --json")) })
+        #expect(!fixture.commands.contains { $0.contains("npm view openclaw@latest") || $0.contains("--dry-run") })
+        #expect(!fixture.commands.contains { $0.contains("ai.openclaw.client") })
+        #expect(try fixture.archives().count == 1)
+        #expect(try Data(contentsOf: peerConfig) == originalPeerConfig)
+        #expect(try Data(contentsOf: peerMarker) == originalPeerMarker)
+        #expect(try Data(contentsOf: peerPlist) == originalPeerPlist)
+        #expect(try Data(contentsOf: packageManifest) == originalPackageManifest)
+    }
+
+    @Test func sharedRuntimeStillBlocksCoreUpgradeBeforeBackupOrServiceMutation() throws {
+        let fixture = try Fixture(schemaMismatch: false, invalidConfig: true)
+        defer { fixture.cleanUp() }
+        try fixture.addNamedProfile("client", port: 19789)
+
+        let result = fixture.maintenance(environment: ["OPENCLAW_PROFILE": "default"]).update()
+
+        #expect(result.state == .fail)
+        #expect(result.message.contains("shared core"))
+        #expect(!FileManager.default.fileExists(atPath: fixture.backups.path))
+        #expect(!fixture.commands.contains {
+            $0.contains("/usr/bin/tar") || $0.contains("npm install") ||
+                $0.contains("--yes --json") || $0.contains("launchctl") ||
+                $0.contains("gateway install") || $0.contains("gateway restart")
+        })
+    }
+
+    @Test func samePackageWithDifferentNodeStillCountsAsSharedCoreAndBlocksUpgrade() throws {
+        let fixture = try Fixture(schemaMismatch: false, invalidConfig: true)
+        defer { fixture.cleanUp() }
+        let alternateNode = fixture.home.appendingPathComponent("alternate-node/bin/node")
+        try FileManager.default.createDirectory(
+            at: alternateNode.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+            at: alternateNode, withDestinationURL: URL(fileURLWithPath: "/usr/bin/false")
+        )
+        try fixture.addNamedProfile("client", port: 19789, node: alternateNode)
+        let selected = try #require(try OpenClawRuntimeInstallation.managed(
+            home: fixture.home, environment: ["OPENCLAW_PROFILE": "default"]
+        ))
+        let consumers = try OpenClawRuntimeInstallation.installedGatewayServices(home: fixture.home)
+        #expect(OpenClawRuntimeMaintenance.hasUnsafeSharedRuntimeConsumer(
+            selected: selected, consumers: consumers
+        ))
+
+        let result = fixture.maintenance(environment: ["OPENCLAW_PROFILE": "default"]).update()
+
+        #expect(result.state == .fail)
+        #expect(result.message.contains("shared core"))
+        #expect(!FileManager.default.fileExists(atPath: fixture.backups.path))
+        #expect(!fixture.commands.contains {
+            $0.contains("update repair") || $0.contains("npm install") ||
+                $0.contains("--yes --json") || $0.contains("launchctl")
+        })
+    }
+
+    @Test func sharedRuntimeDoesNotRunRepairOnlyForHealthyConfiguration() throws {
+        let fixture = try Fixture(schemaMismatch: false)
+        defer { fixture.cleanUp() }
+        try fixture.writeVersion("2026.8.1")
+        try fixture.addNamedProfile("client", port: 19789)
+
+        let result = fixture.maintenance(environment: ["OPENCLAW_PROFILE": "default"]).update()
+
+        #expect(result.state == .fail)
+        #expect(result.message.contains("shared core"))
+        #expect(!FileManager.default.fileExists(atPath: fixture.backups.path))
+        #expect(!fixture.commands.contains {
+            $0.contains("update repair") || $0.contains("npm install") ||
+                $0.contains("--yes --json") || $0.contains("launchctl")
+        })
+    }
+
+    @Test func sharedRuntimeRejectsRepairWhenAnotherProfileStateOverlapsSelection() throws {
+        let fixture = try Fixture(schemaMismatch: false, invalidConfig: true)
+        defer { fixture.cleanUp() }
+        try fixture.writeVersion("2026.8.1")
+        try fixture.addNamedProfile("client", port: 19789)
+        let overlappingState = fixture.home.appendingPathComponent(".openclaw/client-profile")
+        let overlappingConfig = overlappingState.appendingPathComponent("openclaw.json")
+        try FileManager.default.createDirectory(at: overlappingState, withIntermediateDirectories: true)
+        try Data(#"{"gateway":{"mode":"local","port":19789}}"#.utf8).write(to: overlappingConfig)
+        let plist = fixture.home.appendingPathComponent("Library/LaunchAgents/ai.openclaw.client.plist")
+        var root = try #require(
+            try PropertyListSerialization.propertyList(from: Data(contentsOf: plist), format: nil) as? [String: Any]
+        )
+        var serviceEnvironment = try #require(root["EnvironmentVariables"] as? [String: String])
+        serviceEnvironment["OPENCLAW_STATE_DIR"] = overlappingState.path
+        serviceEnvironment["OPENCLAW_CONFIG_PATH"] = overlappingConfig.path
+        root["EnvironmentVariables"] = serviceEnvironment
+        try PropertyListSerialization.data(fromPropertyList: root, format: .xml, options: 0).write(to: plist)
+        let originalPeerConfig = try Data(contentsOf: overlappingConfig)
+        let originalPeerPlist = try Data(contentsOf: plist)
+
+        let result = fixture.maintenance(environment: ["OPENCLAW_PROFILE": "default"]).update()
+
+        #expect(result.state == .fail)
+        #expect(result.message.contains("overlapping states"))
+        #expect(!FileManager.default.fileExists(atPath: fixture.backups.path))
+        #expect(!fixture.commands.contains {
+            $0.contains("update repair") || $0.contains("/usr/bin/tar") || $0.contains("launchctl")
+        })
+        #expect(try Data(contentsOf: overlappingConfig) == originalPeerConfig)
+        #expect(try Data(contentsOf: plist) == originalPeerPlist)
+    }
+
+    @Test func sharedRuntimeRejectsRepairResultWithoutFinalizeOnlyProof() throws {
+        let fixture = try Fixture(
+            schemaMismatch: false, invalidConfig: true, failure: .wrongRepairMode
+        )
+        defer { fixture.cleanUp() }
+        try fixture.writeVersion("2026.8.1")
+        try fixture.addNamedProfile("client", port: 19789)
+        let packageManifest = fixture.package.appendingPathComponent("package.json")
+        let originalPackageManifest = try Data(contentsOf: packageManifest)
+
+        let result = fixture.maintenance(environment: ["OPENCLAW_PROFILE": "default"]).update()
+
+        #expect(result.state == .fail)
+        #expect(result.message.contains("finalize-only mode"))
+        #expect(fixture.commands.contains { $0.contains("update repair --yes --json") })
+        #expect(!fixture.commands.contains { $0.contains("npm install") })
+        #expect(try Data(contentsOf: packageManifest) == originalPackageManifest)
+    }
+
     @Test func pluginConsentSurvivesRelaunchAndReusesBackupWithoutCoreReinstall() throws {
         let fixture = try Fixture(failure: .consent)
         defer { fixture.cleanUp() }
@@ -483,15 +876,170 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(!fixture.commands.contains { $0.contains("backup create") || $0.contains("npm ") || $0.contains("--dry-run") || $0.contains("tar ") || $0.contains("--accept-capabilities") })
     }
 
+    @Test func sharedRuntimeResumesVerifiedConsentCheckpointWithoutCoreOrPeerMutation() throws {
+        let fixture = try Fixture(schemaMismatch: false, invalidConfig: true, failure: .consent)
+        defer { fixture.cleanUp() }
+        try fixture.writeVersion("2026.8.1")
+        try fixture.addNamedProfile("client", port: 19789)
+        let peerConfig = fixture.home.appendingPathComponent(".openclaw-client/openclaw.json")
+        let peerPlist = fixture.home.appendingPathComponent("Library/LaunchAgents/ai.openclaw.client.plist")
+        let packageManifest = fixture.package.appendingPathComponent("package.json")
+        let originalPeerConfig = try Data(contentsOf: peerConfig)
+        let originalPeerPlist = try Data(contentsOf: peerPlist)
+        let originalPackageManifest = try Data(contentsOf: packageManifest)
+        let maintenance = fixture.maintenance(environment: ["OPENCLAW_PROFILE": "default"])
+
+        let first = maintenance.update()
+        #expect(first.state == .fail)
+        #expect(ChatRecoveryPlan.classify(error: first.message).kind == .pluginPermissions)
+        #expect(maintenance.hasPendingUpdate())
+        #expect(try fixture.archives().count == 1)
+
+        fixture.commands.removeAll()
+        fixture.failure = nil
+        let resumed = maintenance.update()
+
+        #expect(resumed.state == .ok, Comment(rawValue: resumed.message))
+        #expect(!maintenance.hasPendingUpdate())
+        let repair = try #require(fixture.commands.first { $0.contains("update repair --yes --json") })
+        #expect(repair.contains("OPENCLAW_SERVICE_REPAIR_POLICY=external"))
+        #expect(!fixture.commands.contains {
+            $0.contains("npm view") || $0.contains("npm install") ||
+                $0.contains("--dry-run") || $0.contains("/usr/bin/tar")
+        })
+        #expect(try fixture.archives().count == 1)
+        #expect(try Data(contentsOf: peerConfig) == originalPeerConfig)
+        #expect(try Data(contentsOf: peerPlist) == originalPeerPlist)
+        #expect(try Data(contentsOf: packageManifest) == originalPackageManifest)
+    }
+
+    @Test func resumedCheckpointFailureCompensatesServiceAndVerifiesRPC() throws {
+        let fixture = try Fixture(failure: .consent)
+        defer { fixture.cleanUp() }
+        #expect(fixture.maintenance().update().state == .fail)
+        #expect(fixture.maintenance().hasPendingUpdate())
+
+        fixture.commands.removeAll()
+        fixture.failure = .restart
+        let result = fixture.maintenance().prepareGateway(allowRuntimeUpdate: true)
+
+        #expect(result.state == .fail)
+        #expect(fixture.commands.filter { $0.contains("gateway install --force --json") }.count == 2)
+        #expect(fixture.commands.filter { $0.contains("gateway restart --json") }.count == 2)
+        #expect(fixture.commands.contains { $0.contains("gateway start --json") })
+        #expect(result.message.contains("service was reinstalled and RPC health was verified"))
+        #expect(fixture.maintenance().hasPendingUpdate())
+    }
+
     @Test func changedOrMissingBackupCannotBeReused() throws {
         let fixture = try Fixture(failure: .pluginWarning)
         defer { fixture.cleanUp() }
         #expect(fixture.maintenance().update().state == .fail)
         let runtime = try #require(try OpenClawRuntimeInstallation.managed(home: fixture.home))
         let checkpoint = try #require(OpenClawUpdateCheckpoint.load(home: fixture.home, runtime: runtime))
-        try Data("changed".utf8).write(to: URL(fileURLWithPath: checkpoint.archive))
+        let archive = URL(fileURLWithPath: checkpoint.archive)
+        let original = try Data(contentsOf: archive)
+        let modified = try #require(try FileManager.default.attributesOfItem(atPath: archive.path)[.modificationDate] as? Date)
+        var tampered = original
+        tampered[0] ^= 0xff
+        try tampered.write(to: archive)
+        try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: archive.path)
+        #expect((try FileManager.default.attributesOfItem(atPath: archive.path)[.size] as? NSNumber)?.uint64Value == checkpoint.archiveSize)
         #expect(OpenClawUpdateCheckpoint.load(home: fixture.home, runtime: runtime) == nil)
         #expect(throws: MaintenanceError.self) { try OpenClawPluginReview.prepare(home: fixture.home, runtime: runtime) }
+    }
+
+    @Test func legacyGlobalCheckpointMigratesToScopedDigestAndResumesWithoutAnotherBackup() throws {
+        let fixture = try Fixture(failure: .consent)
+        defer { fixture.cleanUp() }
+        let maintenance = fixture.maintenance()
+        #expect(maintenance.update().state == .fail)
+        let runtime = try #require(try OpenClawRuntimeInstallation.managed(home: fixture.home))
+        let scoped = OpenClawUpdateCheckpoint.location(home: fixture.home, runtime: runtime)
+        let current = try JSONDecoder().decode(
+            OpenClawUpdateCheckpoint.self,
+            from: Data(contentsOf: scoped)
+        )
+        let legacy = fixture.backups.appendingPathComponent("pending-update.json")
+        try JSONEncoder().encode(LegacyCheckpointFixture(current)).write(to: legacy, options: .atomic)
+        try FileManager.default.removeItem(at: scoped)
+
+        let migrated = try #require(OpenClawUpdateCheckpoint.load(home: fixture.home, runtime: runtime))
+        let expectedDigest = SHA256.hash(
+            data: try Data(contentsOf: URL(fileURLWithPath: migrated.archive))
+        ).map { String(format: "%02x", $0) }.joined()
+        #expect(migrated.archiveSHA256 == expectedDigest)
+        #expect(migrated.archiveSHA256.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil)
+        #expect(FileManager.default.fileExists(atPath: scoped.path))
+        #expect(!FileManager.default.fileExists(atPath: legacy.path))
+
+        fixture.commands.removeAll()
+        fixture.failure = nil
+        let resumed = maintenance.update()
+        #expect(resumed.state == .ok, Comment(rawValue: resumed.message))
+        #expect(try fixture.archives().count == 1)
+        #expect(fixture.commands.contains { $0.contains("update repair --yes --json") })
+        #expect(!fixture.commands.contains {
+            $0.contains("npm view") || $0.contains("npm install") ||
+                $0.contains("--dry-run") || $0.contains("/usr/bin/tar")
+        })
+    }
+
+    @Test func corruptScopedCheckpointNeverFallsBackToValidLegacyCheckpoint() throws {
+        let fixture = try Fixture(schemaMismatch: false)
+        defer { fixture.cleanUp() }
+        try fixture.writeVersion("2026.8.1")
+        let runtime = try #require(try OpenClawRuntimeInstallation.managed(home: fixture.home))
+        try FileManager.default.createDirectory(at: fixture.backups, withIntermediateDirectories: true)
+        let archive = fixture.backups.appendingPathComponent("verified.tar.gz")
+        try Data("verified backup".utf8).write(to: archive)
+        try OpenClawUpdateCheckpoint.save(
+            home: fixture.home,
+            runtime: runtime,
+            target: try #require(runtime.version),
+            archive: archive
+        )
+        let scoped = OpenClawUpdateCheckpoint.location(home: fixture.home, runtime: runtime)
+        let current = try JSONDecoder().decode(
+            OpenClawUpdateCheckpoint.self,
+            from: Data(contentsOf: scoped)
+        )
+        let legacy = fixture.backups.appendingPathComponent("pending-update.json")
+        try JSONEncoder().encode(LegacyCheckpointFixture(current)).write(to: legacy, options: .atomic)
+        try Data("{}".utf8).write(to: scoped, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: scoped.path)
+
+        #expect(OpenClawUpdateCheckpoint.load(home: fixture.home, runtime: runtime) == nil)
+        #expect(FileManager.default.fileExists(atPath: legacy.path))
+        #expect(FileManager.default.fileExists(atPath: archive.path))
+    }
+
+    @Test func legacyCheckpointRejectsArchiveOutsideBackupDirectoryWithoutMutation() throws {
+        let fixture = try Fixture(schemaMismatch: false)
+        defer { fixture.cleanUp() }
+        try fixture.writeVersion("2026.8.1")
+        let runtime = try #require(try OpenClawRuntimeInstallation.managed(home: fixture.home))
+        try FileManager.default.createDirectory(at: fixture.backups, withIntermediateDirectories: true)
+        let archive = fixture.home.appendingPathComponent("outside-backup.tar.gz")
+        try Data("outside".utf8).write(to: archive)
+        let attributes = try FileManager.default.attributesOfItem(atPath: archive.path)
+        let size = try #require(attributes[.size] as? NSNumber).uint64Value
+        let modified = try #require(attributes[.modificationDate] as? Date)
+        let legacy = fixture.backups.appendingPathComponent("pending-update.json")
+        try JSONEncoder().encode(LegacyCheckpointFixture(
+            runtime: runtime,
+            target: try #require(runtime.version),
+            archive: archive,
+            size: size,
+            modified: modified
+        )).write(to: legacy, options: .atomic)
+
+        #expect(OpenClawUpdateCheckpoint.load(home: fixture.home, runtime: runtime) == nil)
+        #expect(!FileManager.default.fileExists(
+            atPath: OpenClawUpdateCheckpoint.location(home: fixture.home, runtime: runtime).path
+        ))
+        #expect(FileManager.default.fileExists(atPath: legacy.path))
+        #expect(FileManager.default.fileExists(atPath: archive.path))
     }
 
     @Test func failedGatewayRestartKeepsCheckpointAndDoesNotClaimSuccess() throws {
@@ -504,7 +1052,39 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(fixture.maintenance().hasPendingUpdate())
     }
 
-    enum Failure: String, Sendable { case backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, pluginWarning, configRemains, registryUnavailable, registryNoSpace, invalidRegistryVersion, approvalsMigration, unverifiedApprovalsMigration, consent, malformedResult, wrongResultRoot, nonzeroSuccess, restart }
+    @Test func pendingUpdateCheckpointsAreNamespacedByRuntimeIdentity() throws {
+        let fixture = try Fixture(schemaMismatch: false)
+        defer { fixture.cleanUp() }
+        try fixture.writeVersion("2026.8.1")
+        let first = try #require(try OpenClawRuntimeInstallation.managed(home: fixture.home))
+        let second = try OpenClawRuntimeInstallation.resolve(
+            node: first.node,
+            entry: first.cli,
+            state: fixture.home.appendingPathComponent(".openclaw-client"),
+            config: fixture.home.appendingPathComponent(".openclaw-client/openclaw.json"),
+            serviceLabel: "ai.openclaw.client",
+            selectedProfile: "client"
+        )
+        try FileManager.default.createDirectory(at: fixture.backups, withIntermediateDirectories: true)
+        let firstArchive = fixture.backups.appendingPathComponent("first.tar.gz")
+        let secondArchive = fixture.backups.appendingPathComponent("second.tar.gz")
+        try Data("first verified backup".utf8).write(to: firstArchive)
+        try Data("second verified backup".utf8).write(to: secondArchive)
+
+        try OpenClawUpdateCheckpoint.save(home: fixture.home, runtime: first, target: "2026.8.1", archive: firstArchive)
+        try OpenClawUpdateCheckpoint.save(home: fixture.home, runtime: second, target: "2026.8.1", archive: secondArchive)
+
+        #expect(OpenClawUpdateCheckpoint.location(home: fixture.home, runtime: first) !=
+                OpenClawUpdateCheckpoint.location(home: fixture.home, runtime: second))
+        #expect(OpenClawUpdateCheckpoint.load(home: fixture.home, runtime: first)?.archive == firstArchive.resolvingSymlinksInPath().path)
+        #expect(OpenClawUpdateCheckpoint.load(home: fixture.home, runtime: second)?.archive == secondArchive.resolvingSymlinksInPath().path)
+
+        try OpenClawUpdateCheckpoint.remove(home: fixture.home, runtime: first)
+        #expect(OpenClawUpdateCheckpoint.load(home: fixture.home, runtime: first) == nil)
+        #expect(OpenClawUpdateCheckpoint.load(home: fixture.home, runtime: second) != nil)
+    }
+
+    enum Failure: String, Sendable { case backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, pluginWarning, configRemains, registryUnavailable, registryNoSpace, invalidRegistryVersion, newerRegistry, approvalsMigration, unverifiedApprovalsMigration, consent, malformedResult, wrongRepairMode, wrongResultRoot, nonzeroSuccess, restart }
 
     private final class Fixture {
         let home: URL
@@ -543,7 +1123,11 @@ struct OpenClawRuntimeMaintenanceTests {
             try data.write(to: plist)
         }
 
-        func maintenance() -> OpenClawRuntimeMaintenance { .init(home: home, run: execute, wait: { _ in }) }
+        func maintenance(
+            environment: [String: String] = ProcessInfo.processInfo.environment
+        ) -> OpenClawRuntimeMaintenance {
+            .init(home: home, environment: environment, run: execute, wait: { _ in })
+        }
         func cleanUp() { try? FileManager.default.removeItem(at: home) }
         func archives() throws -> [URL] { try FileManager.default.contentsOfDirectory(at: backups, includingPropertiesForKeys: nil).filter { $0.pathExtension == "gz" } }
         func writeVersion(_ version: String) throws {
@@ -565,6 +1149,32 @@ struct OpenClawRuntimeMaintenanceTests {
             try PropertyListSerialization.data(fromPropertyList: root, format: .xml, options: 0).write(to: plist)
         }
 
+        func addNamedProfile(_ name: String, port: Int, removeDefault: Bool = false,
+                             node alternateNode: URL? = nil) throws {
+            let fm = FileManager.default
+            let node = alternateNode ?? home.appendingPathComponent(".hermes/node/bin/node")
+            let state = home.appendingPathComponent(".openclaw-\(name)")
+            try fm.createDirectory(at: state, withIntermediateDirectories: true)
+            try Data("{\"gateway\":{\"mode\":\"local\",\"port\":\(port)}}".utf8)
+                .write(to: state.appendingPathComponent("openclaw.json"))
+            let label = "ai.openclaw.\(name)"
+            let plist = home.appendingPathComponent("Library/LaunchAgents/\(label).plist")
+            let data = try PropertyListSerialization.data(fromPropertyList: [
+                "Label": label,
+                "EnvironmentVariables": [
+                    "OPENCLAW_PROFILE": name,
+                    "OPENCLAW_STATE_DIR": state.path,
+                    "OPENCLAW_CONFIG_PATH": state.appendingPathComponent("openclaw.json").path,
+                    "OPENCLAW_GATEWAY_PORT": String(port),
+                ],
+                "ProgramArguments": [node.path, package.appendingPathComponent("dist/index.js").path, "gateway", "--port", String(port)],
+            ], format: .xml, options: 0)
+            try data.write(to: plist)
+            if removeDefault {
+                try fm.removeItem(at: home.appendingPathComponent("Library/LaunchAgents/ai.openclaw.gateway.plist"))
+            }
+        }
+
         func execute(_ command: String) -> (Int32, String) {
             commands.append(command)
             do {
@@ -578,6 +1188,7 @@ struct OpenClawRuntimeMaintenanceTests {
                     if failure == .registryNoSpace { return (1, "npm error code ENOSPC\nnpm error path /Users/bot/.npm/_cacache/tmp/example\nno space left on device") }
                     if failure == .registryUnavailable { return (1, "registry unavailable") }
                     if failure == .invalidRegistryVersion { return (0, #""2026.8.1; unwanted-command""#) }
+                    if failure == .newerRegistry { return (0, #""2026.9.0""#) }
                     return (0, failure == .downgrade ? #""2026.6.1""# : #""2026.8.1""#)
                 }
                 if command.contains("--dry-run") {
@@ -599,6 +1210,7 @@ struct OpenClawRuntimeMaintenanceTests {
                     }
                     return (0, #"{"service":{"runtime":{"status":"running"}},"rpc":{"ok":true},"gateway":{"version":"VERSION"}}"#.replacingOccurrences(of: "VERSION", with: failure == .unhealthy ? "2026.7.1-2" : "2026.8.1"))
                 }
+                if command.contains("gateway start --json") { return (0, #"{"ok":true}"#) }
                 if command.contains("backup create") {
                     let regex = try NSRegularExpression(pattern: #"openclaw-[0-9A-Fa-f-]+\.tar\.gz"#)
                     let match = regex.firstMatch(in: command, range: NSRange(command.startIndex..., in: command))!
@@ -647,11 +1259,13 @@ struct OpenClawRuntimeMaintenanceTests {
                 if command.contains("--yes --json") {
                     if failure == .update { return (1, "post-core repair failed") }
                     didUpdate = true
-                    if failure != .wrongVersion { try writeVersion("2026.8.1") }
+                    if !command.contains("update repair"), failure != .wrongVersion {
+                        try writeVersion("2026.8.1")
+                    }
                     if !command.contains("update repair") { try wrapService() }
                     if failure == .malformedResult { return (0, #"{"status":"ok"}"#) }
                     var result: [String: Any] = ["status": "ok", "mode": "npm", "root": failure == .wrongResultRoot ? "/wrong/package" : package.path, "steps": []]
-                    if command.contains("update repair") {
+                    if command.contains("update repair"), failure != .wrongRepairMode {
                         result["mode"] = "finalize"
                         result.removeValue(forKey: "steps")
                         result["restart"] = false

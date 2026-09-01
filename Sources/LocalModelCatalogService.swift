@@ -70,6 +70,8 @@ final class LocalModelCatalogService: @unchecked Sendable {
             guard !model.name.isEmpty,
                   !model.query.isEmpty,
                   !model.providerId.isEmpty,
+                  Self.isValidModelQuery(model.query),
+                  Self.isValidProviderID(model.providerId),
                   model.fileSizeGB > 0,
                   model.maxContextK > 0,
                   (0...5).contains(model.qualityScore),
@@ -82,5 +84,42 @@ final class LocalModelCatalogService: @unchecked Sendable {
             }
         }
         return document
+    }
+
+    static func isValidModelQuery(_ value: String) -> Bool {
+        isValidSlugPath(value, allowsQuantization: true)
+    }
+
+    static func isValidProviderID(_ value: String) -> Bool {
+        isValidSlugPath(value, allowsQuantization: false)
+    }
+
+    private static func isValidSlugPath(_ value: String, allowsQuantization: Bool) -> Bool {
+        guard value == value.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty,
+              value.utf8.count <= 200 else {
+            return false
+        }
+        let quantized = value.split(separator: "@", omittingEmptySubsequences: false)
+        guard quantized.count == 1 || (allowsQuantization && quantized.count == 2) else {
+            return false
+        }
+        let path = String(quantized[0])
+        let segments = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard !segments.isEmpty, segments.allSatisfy({ segment in
+            let text = String(segment)
+            return text != "." && text != ".." &&
+                text.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]*$"#, options: .regularExpression) != nil
+        }) else {
+            return false
+        }
+        if quantized.count == 2 {
+            let quantization = String(quantized[1])
+            return quantization.range(
+                of: #"^[A-Za-z0-9][A-Za-z0-9._-]*$"#,
+                options: .regularExpression
+            ) != nil
+        }
+        return true
     }
 }

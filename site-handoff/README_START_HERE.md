@@ -23,7 +23,7 @@ Ce dossier est prêt à copier sur Genspark/site.
 
 1. Uploader ton DMG dans un chemin stable (ou versionné)
 2. Publier `localclaw-installer-latest.json`
-3. Implémenter l'endpoint `/api/license/activate`
+3. Implémenter l'endpoint `/api/license/v2/activate`
 4. Envoyer email client après paiement avec clé + lien
 5. Tester l'activation depuis l'app
 
@@ -32,7 +32,7 @@ Ce dossier est prêt à copier sur Genspark/site.
 Pour tester un endpoint custom:
 
 ```bash
-export LOCALCLAW_LICENSE_ENDPOINT="https://ton-domaine/api/license/activate"
+export LOCALCLAW_LICENSE_ENDPOINT="https://ton-domaine/api/license/v2/activate"
 export LOCALCLAW_INSTALLER_UPDATE_URL="https://ton-domaine/downloads/localclaw-installer-latest.json"
 swift run
 ```

@@ -1,7 +1,7 @@
 import Foundation
 import AppKit
 
-enum InstallState: String {
+enum InstallState: String, Sendable {
     case pending = "PENDING"
     case ok = "OK"
     case skip = "SKIP"
@@ -64,7 +64,7 @@ struct LocalModelMatch: Identifiable, Equatable, Sendable {
     let rationale: String
 }
 
-struct StepResult {
+struct StepResult: Sendable {
     let state: InstallState
     let message: String
 }
@@ -73,20 +73,6 @@ struct VersionInfo {
     let installed: String
     let latest: String
     let updateAvailable: Bool
-}
-
-struct LicenseActivationPayload: Codable {
-    let email: String
-    let licenseKey: String
-    let machineId: String
-    let appVersion: String
-}
-
-struct LicenseActivationResponse: Codable {
-    let ok: Bool
-    let token: String?
-    let message: String?
-    let expiresAt: String?
 }
 
 struct SystemUsageSnapshot {
@@ -111,11 +97,44 @@ struct ProcessUsageItem: Identifiable {
 
 final class InstallerEngine: @unchecked Sendable {
     static var shellPathPrefix: String {
+        shellPathPrefix(
+            home: FileManager.default.homeDirectoryForCurrentUser,
+            environment: ProcessInfo.processInfo.environment
+        )
+    }
+
+    static func shellPathPrefix(home: URL, environment: [String: String]) -> String {
         let base = #"export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"; "#
-        guard let runtime = try? OpenClawRuntimeInstallation.managed() else { return base }
-        let paths = runtime.node.deletingLastPathComponent().path + ":" + runtime.bin.path
-        return base + "export PATH=\(OpenClawRuntimeInstallation.quote(paths)):\"$PATH\"; " +
-            "export OPENCLAW_DIST_DIR=\(OpenClawRuntimeInstallation.quote(runtime.package.appendingPathComponent("dist").path)); "
+        do {
+            guard let runtime = try OpenClawRuntimeInstallation.managed(home: home, environment: environment) else {
+                return base
+            }
+            let paths = runtime.node.deletingLastPathComponent().path + ":" + runtime.bin.path
+            return base + "export PATH=\(OpenClawRuntimeInstallation.quote(paths)):\"$PATH\"; " +
+                "export OPENCLAW_DIST_DIR=\(OpenClawRuntimeInstallation.quote(runtime.package.appendingPathComponent("dist").path)); " +
+                "export OPENCLAW_STATE_DIR=\(OpenClawRuntimeInstallation.quote(runtime.state.path)); " +
+                "export OPENCLAW_CONFIG_PATH=\(OpenClawRuntimeInstallation.quote(runtime.config.path)); " +
+                (runtime.profile.map { "export OPENCLAW_PROFILE=\(OpenClawRuntimeInstallation.quote($0)); " } ?? "") +
+                (runtime.port.map { "export OPENCLAW_GATEWAY_PORT=\($0); " } ?? "")
+        } catch {
+            // This prefix is also used by Homebrew, Node, LM Studio, Finder and
+            // developer commands. Keep those usable; OpenClaw-specific command
+            // paths perform their own fail-closed profile check.
+            return base
+        }
+    }
+
+    static func shellPathPrefix(for command: String) -> String {
+        let base = shellPathPrefix
+        guard command.range(of: #"(^|[^A-Za-z0-9_-])openclaw([^A-Za-z0-9_-]|$)"#, options: .regularExpression) != nil else {
+            return base
+        }
+        do {
+            _ = try OpenClawRuntimeInstallation.managed()
+            return base
+        } catch {
+            return base + "printf '%s\\n' 'LocalClaw blocked this OpenClaw command because the profile is not uniquely selected.' >&2; exit 78; "
+        }
     }
     static let minimumNodeVersion = "22.22.3"
     static let nodeRequirementDescription = "Node 22.22.3+, 24.15+, 25.9+, or 26+"
@@ -123,7 +142,7 @@ final class InstallerEngine: @unchecked Sendable {
     private var providerAuthCache: (checkedAt: Date, configuredProviders: Set<String>, oauthProviders: Set<String>)?
 
     func readOpenClawConfig() -> [String: Any]? {
-        let path = (try? OpenClawRuntimeInstallation.managed())?.config.path ?? NSHomeDirectory() + "/.openclaw/openclaw.json"
+        guard let path = try? OpenClawRuntimeInstallation.selectedConfig().path else { return nil }
         guard let data = FileManager.default.contents(atPath: path) else { return nil }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
@@ -343,11 +362,11 @@ final class InstallerEngine: @unchecked Sendable {
     }
 
     func shell(_ command: String) -> (Int32, String) {
-        runShell(command, separateDiagnostics: false)
+        runShell(command, separateDiagnostics: false, enforceOpenClawSelection: true)
     }
 
     func maintenanceShell(_ command: String) -> (Int32, String) {
-        runShell(command, separateDiagnostics: true)
+        runShell(command, separateDiagnostics: true, enforceOpenClawSelection: true)
     }
 
     private final class DiagnosticOutput: @unchecked Sendable {
@@ -357,7 +376,15 @@ final class InstallerEngine: @unchecked Sendable {
         func get() -> Data { lock.lock(); defer { lock.unlock() }; return data }
     }
 
-    private func runShell(_ command: String, separateDiagnostics: Bool) -> (Int32, String) {
+    private func runShell(_ command: String, separateDiagnostics: Bool, enforceOpenClawSelection: Bool) -> (Int32, String) {
+        if enforceOpenClawSelection,
+           command.range(of: #"(^|[^A-Za-z0-9_-])openclaw([^A-Za-z0-9_-]|$)"#, options: .regularExpression) != nil {
+            do {
+                _ = try OpenClawRuntimeInstallation.managed()
+            } catch {
+                return (78, "OpenClaw command blocked: \(error.localizedDescription)")
+            }
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = ["-lc", Self.shellPathPrefix + command]
@@ -518,6 +545,7 @@ final class InstallerEngine: @unchecked Sendable {
 
     func recommend(for profile: HardwareProfile) -> Recommendation {
         let candidates = [
+            LocalModelScoringInput(name: "Qwen 3.8 27B", fileSizeGB: 16.1, maxContextK: 262, quality: 5.0, coding: 5.0, reasoning: 5.0, speed: 3.2, toolUse: 5.0, multimodal: true),
             LocalModelScoringInput(name: "Qwen 3.5 2B", fileSizeGB: 1.7, maxContextK: 256, quality: 3.0, coding: 3.2, reasoning: 2.9, speed: 5.0, toolUse: 3.5, multimodal: true),
             LocalModelScoringInput(name: "Qwen 3.5 4B", fileSizeGB: 2.7, maxContextK: 256, quality: 3.6, coding: 3.9, reasoning: 3.6, speed: 4.8, toolUse: 4.1, multimodal: true),
             LocalModelScoringInput(name: "Nemotron 3 Nano 4B", fileSizeGB: 4.2, maxContextK: 256, quality: 3.9, coding: 4.0, reasoning: 4.1, speed: 4.4, toolUse: 4.2, multimodal: false),
@@ -553,7 +581,12 @@ final class InstallerEngine: @unchecked Sendable {
     }
 
     func hasCommand(_ name: String) -> Bool {
-        let (code, out) = shell("command -v \(name)")
+        guard name.range(of: #"^[A-Za-z0-9._+-]+$"#, options: .regularExpression) != nil else { return false }
+        let (code, out) = runShell(
+            "command -v \(name)",
+            separateDiagnostics: false,
+            enforceOpenClawSelection: false
+        )
         return code == 0 && !out.isEmpty
     }
 
@@ -581,13 +614,13 @@ final class InstallerEngine: @unchecked Sendable {
 
     func runBrewDoctorCheck() -> StepResult {
         if !hasCommand("brew") {
-            return StepResult(state: .fail, message: "Homebrew missing, brew doctor skipped")
+            return StepResult(state: .skip, message: "Homebrew is not installed; brew doctor is not required for an existing supported Node runtime")
         }
         let (code, out) = shell("brew doctor 2>&1")
         if code == 0 {
             return StepResult(state: .ok, message: "brew doctor OK")
         }
-        return StepResult(state: .fail, message: "brew doctor failed:\n\(out)")
+        return StepResult(state: .skip, message: "brew doctor reported advisory warnings; setup will continue and surface any real dependency failure:\n\(out)")
     }
 
     func hasLMStudioApp() -> Bool {
@@ -678,43 +711,106 @@ final class InstallerEngine: @unchecked Sendable {
         if node.state == .fail {
             return StepResult(state: .fail, message: "Node setup failed before OpenClaw install.\n\(node.message)")
         }
-        let (code, out) = shell("npm i -g openclaw@latest")
-        return code == 0
-            ? StepResult(state: .ok, message: "Installed with: npm i -g openclaw@latest")
-            : StepResult(state: .fail, message: out)
+        let lifecycleFlags: String
+        do {
+            lifecycleFlags = try openClawNpmLifecycleFlags()
+        } catch {
+            return StepResult(state: .fail, message: "OpenClaw install stopped before changing npm packages. \(error.localizedDescription)")
+        }
+        let command = "npm i -g openclaw@latest\(lifecycleFlags)"
+        let (code, out) = shell(command)
+        guard code == 0 else { return StepResult(state: .fail, message: out) }
+        let verification = shell("openclaw --version 2>&1")
+        guard verification.0 == 0,
+              verification.1.range(of: #"\d{4}\.\d+\.\d+"#, options: .regularExpression) != nil else {
+            return StepResult(
+                state: .fail,
+                message: "npm completed, but the OpenClaw CLI could not be verified. Its Gateway was not installed. \(verification.1)"
+            )
+        }
+        return StepResult(state: .ok, message: "Installed and verified OpenClaw with npm lifecycle policy for this npm version")
+    }
+
+    private func openClawNpmLifecycleFlags() throws -> String {
+        let result = shell("npm --version 2>&1")
+        let version = result.1.components(separatedBy: .newlines).first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard result.0 == 0,
+              version.range(of: #"^[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[-+][0-9A-Za-z.-]+)?$"#, options: .regularExpression) != nil else {
+            throw MaintenanceError("npm did not return a supported version; LocalClaw could not choose a safe postinstall policy.")
+        }
+        return OpenClawRuntimeMaintenance.npmLifecycleFlags(version: version)
     }
 
     /// Write gateway.mode=local and gateway auth token to openclaw.json (Bug 5)
     func writeOpenClawConfig(gatewayToken: String) -> StepResult {
-        let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
-        let configDir = NSHomeDirectory() + "/.openclaw"
-
-        // Ensure directory exists
-        try? FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
-
-        var config: [String: Any] = [:]
-        if let data = FileManager.default.contents(atPath: configPath),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            config = json
+        let runtime: OpenClawRuntimeInstallation?
+        do {
+            runtime = try OpenClawRuntimeInstallation.managed()
+        } catch {
+            return StepResult(state: .fail, message: "Could not select the Gateway configuration. No settings were changed. \(error.localizedDescription)")
         }
+        let configURL: URL
+        do {
+            configURL = try OpenClawRuntimeInstallation.selectedConfig()
+        } catch {
+            return StepResult(state: .fail, message: "Could not select an OpenClaw configuration safely. No settings were changed. \(error.localizedDescription)")
+        }
+        let configPath = configURL.path
+        let configDir = configURL.deletingLastPathComponent().path
+
+        var config: [String: Any]
+        if let data = FileManager.default.contents(atPath: configPath) {
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return StepResult(state: .fail, message: "The existing OpenClaw configuration is invalid JSON. It was left unchanged; use Repair Gateway to back it up and migrate it safely.")
+            }
+            config = json
+        } else {
+            config = [:]
+        }
+
+        let selectedPort: Int?
+        do {
+            let occupiedPorts = runtime == nil
+                ? Set(try OpenClawRuntimeInstallation.installedGatewayServices().map {
+                    try $0.gatewayPortForCollisionCheck()
+                })
+                : []
+            selectedPort = try OpenClawRuntimeInstallation.gatewayPortForConfiguration(
+                managedPort: runtime?.port,
+                configuredPort: try OpenClawRuntimeInstallation.configuredGatewayPort(in: config),
+                isManaged: runtime != nil,
+                environment: ProcessInfo.processInfo.environment,
+                occupiedPorts: occupiedPorts
+            )
+        } catch {
+            return StepResult(
+                state: .fail,
+                message: "Could not select a collision-free Gateway port. No settings were changed. \(error.localizedDescription)"
+            )
+        }
+
+        // The profile and port are proven safe before LocalClaw creates or writes anything.
+        try? FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
 
         // Set gateway.mode = "local" and auth
         var gateway = config["gateway"] as? [String: Any] ?? [:]
-        gateway["mode"] = "local"
-        gateway["port"] = 18789
-        gateway["bind"] = "loopback"
+        if gateway["mode"] == nil { gateway["mode"] = "local" }
+        if gateway["port"] == nil { gateway["port"] = selectedPort ?? 18789 }
+        if gateway["bind"] == nil { gateway["bind"] = "loopback" }
         if !gatewayToken.isEmpty {
             var auth: [String: Any] = gateway["auth"] as? [String: Any] ?? [:]
-            auth["mode"] = "token"
-            auth["token"] = gatewayToken
+            if auth["mode"] == nil { auth["mode"] = "token" }
+            if auth["token"] == nil && auth["password"] == nil { auth["token"] = gatewayToken }
             gateway["auth"] = auth
         }
         config["gateway"] = gateway
 
         do {
             let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
-            try data.write(to: URL(fileURLWithPath: configPath), options: .atomic)
-            return StepResult(state: .ok, message: "Config written: gateway.mode=local")
+            try data.write(to: configURL, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
+            return StepResult(state: .ok, message: "Gateway configuration completed without replacing existing mode, port, bind, or credentials")
         } catch {
             return StepResult(state: .fail, message: "Failed to write config: \(error.localizedDescription)")
         }
@@ -726,12 +822,16 @@ final class InstallerEngine: @unchecked Sendable {
             return StepResult(state: .skip, message: "No model to configure")
         }
 
-        let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
+        let configPath: String
+        do {
+            configPath = try OpenClawRuntimeInstallation.selectedConfig().path
+        } catch {
+            return StepResult(state: .fail, message: "Could not select the Gateway configuration. No model setting was changed. \(error.localizedDescription)")
+        }
 
-        var config: [String: Any] = [:]
-        if let data = FileManager.default.contents(atPath: configPath),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            config = json
+        guard let data = FileManager.default.contents(atPath: configPath),
+              var config = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return StepResult(state: .fail, message: "The existing OpenClaw configuration is missing or invalid JSON. It was left unchanged; repair the Gateway before changing models.")
         }
 
         // Register model settings without changing explicit modelPolicy.allow restrictions.
@@ -748,6 +848,7 @@ final class InstallerEngine: @unchecked Sendable {
         do {
             let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
             try data.write(to: URL(fileURLWithPath: configPath), options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
             return StepResult(state: .ok, message: "Model configured: \(modelIdentifier)")
         } catch {
             return StepResult(state: .fail, message: "Failed to write model config: \(error.localizedDescription)")
@@ -763,7 +864,7 @@ final class InstallerEngine: @unchecked Sendable {
 
         let configPath: String
         do {
-            configPath = try OpenClawRuntimeInstallation.managed()?.config.path ?? NSHomeDirectory() + "/.openclaw/openclaw.json"
+            configPath = try OpenClawRuntimeInstallation.selectedConfig().path
         } catch {
             return StepResult(state: .fail, message: "Could not identify the Gateway configuration. No settings were changed. \(error.localizedDescription)")
         }
@@ -819,8 +920,8 @@ final class InstallerEngine: @unchecked Sendable {
         "apply_patch",
         "exec",
         "process",
-        "get_goal",
         "create_goal",
+        "get_goal",
         "update_goal",
         "session_status",
     ]
@@ -866,10 +967,18 @@ final class InstallerEngine: @unchecked Sendable {
         }
 
         let fm = FileManager.default
-        let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
-        let authStorePath = NSHomeDirectory() + "/.openclaw/agents/main/agent/auth-profiles.json"
+        let state: URL
+        let configURL: URL
+        do {
+            state = try OpenClawRuntimeInstallation.selectedState()
+            configURL = try OpenClawRuntimeInstallation.selectedConfig()
+        } catch {
+            return StepResult(state: .fail, message: "Could not select an OpenClaw profile safely. No credential was written. \(error.localizedDescription)")
+        }
+        let configPath = configURL.path
+        let authStorePath = state.appendingPathComponent("agents/main/agent/auth-profiles.json").path
 
-        // 1) Write ~/.openclaw/openclaw.json (legacy/global path)
+        // 1) Write the selected profile's openclaw.json (legacy schema path)
         var config: [String: Any] = [:]
         if let data = fm.contents(atPath: configPath),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -892,11 +1001,12 @@ final class InstallerEngine: @unchecked Sendable {
         do {
             let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
             try data.write(to: URL(fileURLWithPath: configPath), options: .atomic)
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
         } catch {
             return StepResult(state: .fail, message: "Failed to write openclaw.json API key: \(error.localizedDescription)")
         }
 
-        // 2) Write ~/.openclaw/agents/main/agent/auth-profiles.json (actual runtime store)
+        // 2) Write the selected profile's agent credential store
         do {
             let authStoreDir = (authStorePath as NSString).deletingLastPathComponent
             try fm.createDirectory(atPath: authStoreDir, withIntermediateDirectories: true)
@@ -914,12 +1024,13 @@ final class InstallerEngine: @unchecked Sendable {
 
             let data = try JSONSerialization.data(withJSONObject: authStore, options: [.prettyPrinted, .sortedKeys])
             try data.write(to: URL(fileURLWithPath: authStorePath), options: .atomic)
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: authStorePath)
         } catch {
             return StepResult(state: .fail, message: "Failed to write auth-profiles.json: \(error.localizedDescription)")
         }
 
-        // 3) Also write key into ~/.openclaw/.env
-        let envPath = NSHomeDirectory() + "/.openclaw/.env"
+        // 3) Also write the key into the selected profile's .env
+        let envPath = state.appendingPathComponent(".env").path
         var envLines: [String] = []
         if let existing = try? String(contentsOfFile: envPath, encoding: .utf8) {
             envLines = existing.components(separatedBy: "\n")
@@ -936,7 +1047,12 @@ final class InstallerEngine: @unchecked Sendable {
         if let envKey = envKeyMap[provider] {
             envLines = envLines.filter { !$0.hasPrefix("\(envKey)=") }
             envLines.append("\(envKey)=\(apiKey)")
-            try? envLines.joined(separator: "\n").write(toFile: envPath, atomically: true, encoding: .utf8)
+            do {
+                try envLines.joined(separator: "\n").write(toFile: envPath, atomically: true, encoding: .utf8)
+                try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: envPath)
+            } catch {
+                return StepResult(state: .fail, message: "Credential store was updated, but the selected profile environment file could not be secured: \(error.localizedDescription)")
+            }
         }
 
         return StepResult(state: .ok, message: "API key saved for \(provider) (openclaw.json + auth store + .env)")
@@ -968,8 +1084,13 @@ final class InstallerEngine: @unchecked Sendable {
            agents["entries"] != nil || agents["list"] != nil {
             return StepResult(state: .fail, message: "Multiple OpenClaw agents need an explicit selection. Existing agents were left unchanged.")
         }
-        let workspace = (NSHomeDirectory() + "/.openclaw/workspace").replacingOccurrences(of: "'", with: "'\\''")
-        let (code, out) = shell("openclaw agents add main --workspace '\(workspace)' --non-interactive --json")
+        let workspace: String
+        do {
+            workspace = try OpenClawRuntimeInstallation.selectedState().appendingPathComponent("workspace").path
+        } catch {
+            return StepResult(state: .fail, message: "Could not select an OpenClaw profile safely. No agent was created. \(error.localizedDescription)")
+        }
+        let (code, out) = shell("openclaw agents add main --workspace \(OpenClawRuntimeInstallation.quote(workspace)) --non-interactive --json")
         return code == 0
             ? StepResult(state: .ok, message: "Agent 'main' created")
             : StepResult(state: .fail, message: out)
@@ -1008,7 +1129,13 @@ final class InstallerEngine: @unchecked Sendable {
 
     private func archiveLegacyPluginInstallIndexIfSafe(registryOutput: String) -> StepResult {
         let fileManager = FileManager.default
-        let sourcePath = NSHomeDirectory() + "/.openclaw/plugins/installs.json"
+        let selectedState: URL
+        do {
+            selectedState = try OpenClawRuntimeInstallation.selectedState()
+        } catch {
+            return StepResult(state: .fail, message: "Could not select one OpenClaw profile for plugin migration. No metadata was changed. \(error.localizedDescription)")
+        }
+        let sourcePath = selectedState.appendingPathComponent("plugins/installs.json").path
         guard fileManager.fileExists(atPath: sourcePath) else {
             return StepResult(state: .skip, message: "No legacy plugin install index found")
         }
@@ -1046,7 +1173,13 @@ final class InstallerEngine: @unchecked Sendable {
         }
 
         let fileManager = FileManager.default
-        let allowedRoot = URL(fileURLWithPath: NSHomeDirectory() + "/.openclaw/agents", isDirectory: true)
+        let selectedState: URL
+        do {
+            selectedState = try OpenClawRuntimeInstallation.selectedState()
+        } catch {
+            return StepResult(state: .fail, message: "Could not select one OpenClaw profile for session-sidecar migration. No sidecar was changed. \(error.localizedDescription)")
+        }
+        let allowedRoot = selectedState.appendingPathComponent("agents", isDirectory: true)
             .resolvingSymlinksInPath().standardizedFileURL.path + "/"
         var archivedNames: [String] = []
 
@@ -1103,7 +1236,34 @@ final class InstallerEngine: @unchecked Sendable {
         }
 
         let maintenance = OpenClawRuntimeMaintenance(run: maintenanceShell)
-        if maintenance.hasPendingUpdate() || OpenClawRuntimeMaintenance.supportsPostCoreRepair((try? maintenance.installation())?.version) {
+        let selectedRuntime: OpenClawRuntimeInstallation
+        let installedConsumers: [OpenClawRuntimeInstallation]
+        do {
+            selectedRuntime = try maintenance.installation()
+            installedConsumers = try OpenClawRuntimeInstallation.installedGatewayServices()
+        } catch {
+            return StepResult(state: .fail, message: "OpenClaw runtime selection failed safely. No profile or service was changed. \(error.localizedDescription)")
+        }
+        let installedVersion = selectedRuntime.version
+        if OpenClawRuntimeMaintenance.hasUnsafeSharedRuntimeConsumer(
+            selected: selectedRuntime,
+            consumers: installedConsumers
+        ) {
+            guard OpenClawRuntimeMaintenance.supportsPostCoreRepair(installedVersion) else {
+                return StepResult(
+                    state: .fail,
+                    message: "This pre-2.0 npm runtime is shared by another Gateway profile. LocalClaw will not update one profile behind the others; update or separate every profile first. No package or state was changed."
+                )
+            }
+            guard FileManager.default.fileExists(atPath: selectedRuntime.config.path) else {
+                return StepResult(
+                    state: .skip,
+                    message: "OpenClaw 2.0 core is shared and already installed. The selected new profile can now be configured without mutating the shared package."
+                )
+            }
+            return maintenance.prepareGateway(allowRuntimeUpdate: true)
+        }
+        if maintenance.hasPendingUpdate() || installedVersion != nil {
             return maintenance.update()
         }
         if maintenance.schemaMismatch() != nil || maintenance.configurationNeedsRepair() { return maintenance.update() }
@@ -1225,7 +1385,13 @@ final class InstallerEngine: @unchecked Sendable {
             return version
         }()
         let packageSpec = installedVersion.map { "openclaw@\($0)" } ?? "openclaw@latest"
-        let (installCode, installOutput) = shell("npm i -g '\(packageSpec)' --force 2>&1")
+        let lifecycleFlags: String
+        do {
+            lifecycleFlags = try openClawNpmLifecycleFlags()
+        } catch {
+            return StepResult(state: .fail, message: "OpenClaw package repair stopped before reinstalling. \(error.localizedDescription)")
+        }
+        let (installCode, installOutput) = shell("npm i -g '\(packageSpec)' --force\(lifecycleFlags) 2>&1")
         guard installCode == 0 else {
             return StepResult(state: .fail, message: "OpenClaw package reinstall failed. \(installOutput)")
         }
@@ -1243,31 +1409,96 @@ final class InstallerEngine: @unchecked Sendable {
 
     /// Change model
     func changeModel(_ modelId: String) -> StepResult {
-        // Write model to config directly
-        let result = writeModelToConfig(modelIdentifier: modelId)
-        
-        // Also update the agents/main/.session file if it exists
-        let workspacePath = NSHomeDirectory() + "/.openclaw/agents/main"
+        guard !modelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return StepResult(state: .fail, message: "Choose a model before applying this change.")
+        }
+        let configURL: URL
+        let selectedState: URL
+        do {
+            configURL = try OpenClawRuntimeInstallation.selectedConfig()
+            selectedState = try OpenClawRuntimeInstallation.selectedState()
+        } catch {
+            return StepResult(state: .fail, message: "Model configuration was not changed because the OpenClaw profile is ambiguous. \(error.localizedDescription)")
+        }
+        guard let originalConfig = FileManager.default.contents(atPath: configURL.path) else {
+            return StepResult(state: .fail, message: "The selected OpenClaw configuration is missing. Repair the Gateway before changing models.")
+        }
+        let workspacePath = selectedState.appendingPathComponent("agents/main", isDirectory: true).path
         let modelFilePath = workspacePath + "/.model"
-        
+        let originalModel = FileManager.default.contents(atPath: modelFilePath)
+
+        let result = writeModelToConfig(modelIdentifier: modelId)
+        guard result.state == .ok else { return result }
+
         do {
             try FileManager.default.createDirectory(atPath: workspacePath, withIntermediateDirectories: true)
             try modelId.write(toFile: modelFilePath, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: modelFilePath)
         } catch {
-            // Non-critical, just log
+            try? originalConfig.write(to: configURL, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
+            return StepResult(state: .fail, message: "The model selector file could not be written, so the OpenClaw configuration was restored. \(error.localizedDescription)")
         }
-        
-        // Just restart gateway, don't regenerate token
-        _ = shell("openclaw gateway restart --preserve-token 2>&1 || openclaw gateway restart 2>&1 || true")
-        
-        return StepResult(state: result.state, message: "Model set to \(modelId). Gateway restarted to apply changes.")
+
+        func restorePreviousSelection(reason: String) -> StepResult {
+            var restoreErrors: [String] = []
+            do {
+                try originalConfig.write(to: configURL, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
+            } catch {
+                restoreErrors.append("config restore failed: \(error.localizedDescription)")
+            }
+            do {
+                if let originalModel {
+                    try originalModel.write(to: URL(fileURLWithPath: modelFilePath), options: .atomic)
+                } else if FileManager.default.fileExists(atPath: modelFilePath) {
+                    try FileManager.default.removeItem(atPath: modelFilePath)
+                }
+            } catch {
+                restoreErrors.append("model selector restore failed: \(error.localizedDescription)")
+            }
+            let rollbackRestart = gatewayCLI("gateway restart")
+            let rollbackHealth = verifyOpenClawSetup()
+            if rollbackRestart.0 != 0 || rollbackHealth.state != .ok {
+                restoreErrors.append("previous Gateway health could not be verified: \(rollbackHealth.message)")
+            }
+            let suffix = restoreErrors.isEmpty
+                ? "The previous model configuration was restored and its Gateway health was verified."
+                : "Rollback needs attention: \(restoreErrors.joined(separator: "; "))"
+            return StepResult(state: .fail, message: "\(reason) \(suffix)")
+        }
+
+        let validation = gatewayCLI("config validate --json")
+        guard validation.0 == 0,
+              Self.firstJSONObject(in: validation.1)?["valid"] as? Bool == true else {
+            return restorePreviousSelection(reason: "OpenClaw rejected the new model configuration.")
+        }
+        let restart = gatewayCLI("gateway restart")
+        guard restart.0 == 0 else {
+            return restorePreviousSelection(reason: "Gateway restart failed after changing the model. \(restart.1)")
+        }
+        let verification = verifyOpenClawSetup()
+        guard verification.state == .ok else {
+            return restorePreviousSelection(reason: "Gateway RPC health failed after changing the model. \(verification.message)")
+        }
+        return StepResult(state: .ok, message: "Model set to \(modelId). The selected configuration, restart, and RPC health were verified.")
     }
 
 
     /// Disable a stale user-installed plugin that overrides a bundled plugin and breaks CLI startup.
     func disableBrokenGlobalPlugin(id: String) -> StepResult {
-        let safeId = id.replacingOccurrences(of: "'", with: "")
-        let pluginPath = NSHomeDirectory() + "/.openclaw/extensions/\(safeId)"
+        let safeId = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !safeId.isEmpty, safeId != ".", safeId != "..",
+              safeId.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]*$"#, options: .regularExpression) != nil else {
+            return StepResult(state: .fail, message: "Plugin repair refused an unsafe plugin identifier. No plugin was changed.")
+        }
+        let selectedState: URL
+        do {
+            selectedState = try OpenClawRuntimeInstallation.selectedState()
+        } catch {
+            return StepResult(state: .fail, message: "Plugin repair was blocked because the OpenClaw profile is ambiguous. No plugin was changed. \(error.localizedDescription)")
+        }
+        let pluginPath = selectedState.appendingPathComponent("extensions/\(safeId)").path
         if !FileManager.default.fileExists(atPath: pluginPath) {
             return StepResult(state: .skip, message: "No global \(safeId) plugin found")
         }
@@ -1309,7 +1540,10 @@ final class InstallerEngine: @unchecked Sendable {
 
     /// Get current model
     func getCurrentModel() -> String {
-        let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
+        guard let configPath = try? OpenClawRuntimeInstallation.selectedConfig().path,
+              let statePath = try? OpenClawRuntimeInstallation.selectedState().path else {
+            return "Profile selection required"
+        }
         if let data = FileManager.default.contents(atPath: configPath),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let agents = json["agents"] as? [String: Any],
@@ -1320,7 +1554,7 @@ final class InstallerEngine: @unchecked Sendable {
             return primary.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
-        if let data = FileManager.default.contents(atPath: NSHomeDirectory() + "/.openclaw/agents/main/.model"),
+        if let data = FileManager.default.contents(atPath: statePath + "/agents/main/.model"),
            let model = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
            !model.isEmpty {
             return model
@@ -1331,9 +1565,13 @@ final class InstallerEngine: @unchecked Sendable {
 
     func hasProviderAuth(provider: String) -> Bool {
         let fm = FileManager.default
+        guard let statePath = try? OpenClawRuntimeInstallation.selectedState().path,
+              let configPath = try? OpenClawRuntimeInstallation.selectedConfig().path else {
+            return false
+        }
         let authPaths = [
-            NSHomeDirectory() + "/.openclaw/agents/main/agent/auth-profiles.json",
-            NSHomeDirectory() + "/.openclaw/openclaw.json"
+            statePath + "/agents/main/agent/auth-profiles.json",
+            configPath
         ]
 
         for path in authPaths where fm.fileExists(atPath: path) {
@@ -1356,7 +1594,7 @@ final class InstallerEngine: @unchecked Sendable {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if !launchEnvironmentValue.isEmpty { return true }
 
-            for path in [NSHomeDirectory() + "/.openclaw/.env", NSHomeDirectory() + "/.openclaw/.env.local"] where fm.fileExists(atPath: path) {
+            for path in [statePath + "/.env", statePath + "/.env.local"] where fm.fileExists(atPath: path) {
                 guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
                 if raw.components(separatedBy: .newlines).contains(where: { line in
                     let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1459,15 +1697,21 @@ final class InstallerEngine: @unchecked Sendable {
         return configured
     }
 
-    private func runOpenClawWithInput(arguments: [String], input: String) -> (Int32, String) {
+    private func runOpenClawWithInput(arguments: [String], input: String, timeoutSeconds: Int = 120) -> (Int32, String) {
         let process = Process()
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["perl", "-e", "alarm 60; exec @ARGV", "openclaw"] + arguments
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:\(NSHomeDirectory())/.npm-global/bin:\(environment["PATH"] ?? "")"
-        process.environment = environment
+        do {
+            try OpenClawRuntimeInstallation.configureCLIProcess(
+                process,
+                arguments: arguments,
+                environment: environment
+            )
+        } catch {
+            return (78, "Could not select the Gateway credential store. No key was written. \(error.localizedDescription)")
+        }
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
         process.standardError = stdoutPipe
@@ -1475,9 +1719,36 @@ final class InstallerEngine: @unchecked Sendable {
             try process.run()
             try stdinPipe.fileHandleForWriting.write(contentsOf: Data((input + "\n").utf8))
             try stdinPipe.fileHandleForWriting.close()
+            let timeoutLock = NSLock()
+            var timedOut = false
+            let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+            timer.schedule(deadline: .now() + .seconds(max(timeoutSeconds, 1)))
+            timer.setEventHandler {
+                timeoutLock.lock()
+                timedOut = true
+                timeoutLock.unlock()
+                if process.isRunning {
+                    process.terminate()
+                    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
+                        if process.isRunning {
+                            _ = try? Process.run(URL(fileURLWithPath: "/bin/kill"), arguments: ["-9", "\(process.processIdentifier)"])
+                        }
+                    }
+                }
+            }
+            timer.resume()
             let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
-            return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+            timer.cancel()
+            timeoutLock.lock()
+            let didTimeout = timedOut
+            timeoutLock.unlock()
+            let output = String(data: data, encoding: .utf8) ?? ""
+            if didTimeout {
+                let detail = "OpenClaw credential input timed out after \(max(timeoutSeconds, 1)) seconds. The process was stopped; no success was assumed."
+                return (124, output.isEmpty ? detail : "\(output)\n\(detail)")
+            }
+            return (process.terminationStatus, output)
         } catch {
             if process.isRunning { process.terminate() }
             return (1, error.localizedDescription)
@@ -1649,13 +1920,22 @@ final class InstallerEngine: @unchecked Sendable {
 
     /// Open the OpenClaw dashboard in the default browser
     func openDashboard() -> StepResult {
-        // Start gateway if not running
-        _ = shell("openclaw gateway start 2>/dev/null || true")
+        let runtime: OpenClawRuntimeInstallation?
+        let configPath: String
+        do {
+            runtime = try OpenClawRuntimeInstallation.managed()
+            configPath = try OpenClawRuntimeInstallation.selectedConfig().path
+        } catch {
+            return StepResult(state: .fail, message: "Could not select an OpenClaw profile safely. No dashboard was opened. \(error.localizedDescription)")
+        }
+        let start = gatewayCLI("gateway start --json", timeout: 90)
+        guard start.0 == 0 else {
+            return StepResult(state: .fail, message: "Gateway start failed: \(SecretRedactor.redactConfigText(start.1))")
+        }
         // Give it a moment
         _ = shell("sleep 2")
         
         // Read token from config
-        let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
         var token = ""
         if let data = FileManager.default.contents(atPath: configPath),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1666,8 +1946,10 @@ final class InstallerEngine: @unchecked Sendable {
         }
         
         // Open dashboard with token if available
-        let url = token.isEmpty ? "http://localhost:18789" : "http://localhost:18789?token=\(token)"
-        let (code, _) = shell("open '\(url)'")
+        let port = runtime?.port ?? ((readOpenClawConfig()?["gateway"] as? [String: Any])?["port"] as? Int) ?? 18789
+        let baseURL = "http://localhost:\(port)"
+        let url = token.isEmpty ? baseURL : "\(baseURL)?token=\(token)"
+        let (code, _) = shell("open \(OpenClawRuntimeInstallation.quote(url))")
         return code == 0
             ? StepResult(state: .ok, message: token.isEmpty ? "Dashboard opened" : "Dashboard opened with token")
             : StepResult(state: .fail, message: "Could not open dashboard")
@@ -1732,22 +2014,22 @@ final class InstallerEngine: @unchecked Sendable {
     }
 
     func installModelIfNeeded(_ query: String) -> StepResult {
-        if query.isEmpty {
-            return StepResult(state: .skip, message: "Model query missing")
+        guard LocalModelCatalogService.isValidModelQuery(query) else {
+            return StepResult(state: .fail, message: "The LM Studio model query is invalid and was not executed")
         }
         if hasModelInstalled(query) {
             return StepResult(state: .skip, message: "Model already installed")
         }
         let lms = lmsCommandPath()
-        let (code, out) = shell("\(lms) get \(query) --gguf -y")
+        let (code, out) = shell("\(lms) get \(shellQuote(query)) --gguf -y")
         return code == 0
             ? StepResult(state: .ok, message: "Model installed in LM Studio")
             : StepResult(state: .fail, message: out)
     }
 
     func installModelStreaming(_ query: String, onLine: @escaping @Sendable (String) -> Void) -> StepResult {
-        if query.isEmpty {
-            return StepResult(state: .skip, message: "Model query missing")
+        guard LocalModelCatalogService.isValidModelQuery(query) else {
+            return StepResult(state: .fail, message: "The LM Studio model query is invalid and was not executed")
         }
         if hasModelInstalled(query) {
             return StepResult(state: .skip, message: "Model already installed")
@@ -1755,7 +2037,10 @@ final class InstallerEngine: @unchecked Sendable {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lc", Self.shellPathPrefix + "\(lmsCommandPath()) get \(query) --gguf -y"]
+        process.arguments = [
+            "-lc",
+            Self.shellPathPrefix + "\(lmsCommandPath()) get \(shellQuote(query)) --gguf -y"
+        ]
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -1831,25 +2116,35 @@ final class InstallerEngine: @unchecked Sendable {
         _ = shell("\(lms) unload --all >/dev/null 2>&1 || true")
     }
 
-    func autoSetupLMStudioModel(modelId: String, contextLength: Int = 32768, onProgress: ((String) -> Void)? = nil) -> StepResult {
-        if modelId.isEmpty { return StepResult(state: .fail, message: "No local model selected") }
+    func autoSetupLMStudioModel(
+        modelId: String,
+        contextLength: Int = 32768,
+        configureOpenClaw: Bool = true,
+        onProgress: ((String) -> Void)? = nil
+    ) -> StepResult {
+        guard LocalModelCatalogService.isValidProviderID(modelId) else {
+            return StepResult(state: .fail, message: "The local model identifier is invalid and was not executed")
+        }
         let lms = lmsCommandPath()
         onProgress?("Opening LM Studio and starting local server")
         _ = shell("open -a 'LM Studio' >/dev/null 2>&1 || true")
         _ = shell("\(lms) server start >/dev/null 2>&1 || true")
-        onProgress?("Unloading stale LM Studio models")
-        unloadAllLMStudioModels()
 
         let available = listLMStudioLLMModelIds()
         let candidates = orderedLMStudioSetupCandidates(preferred: modelId, available: available)
         onProgress?("Found \(available.count) local LLM model(s)")
         if let already = usableLoadedLMStudioModel(preferred: modelId, minimumContext: 16000) {
             onProgress?("Model already loaded with usable context: \(already.model), \(already.context)")
-            let config = writeModelToConfig(modelIdentifier: "lmstudio/\(already.model)")
-            if config.state == .fail { return config }
-            _ = restartGateway()
-            return StepResult(state: .ok, message: "LM Studio already ready with \(already.model), context \(already.context)")
+            let readiness = finalizeLMStudioReadiness(
+                modelId: already.model,
+                configureOpenClaw: configureOpenClaw
+            )
+            if readiness.state == .ok {
+                return StepResult(state: .ok, message: "LM Studio already ready with \(already.model), context \(already.context)")
+            }
         }
+        onProgress?("Unloading stale LM Studio models")
+        unloadAllLMStudioModels()
 
         let candidateContexts = [contextLength, 24576, 20000, 16384]
             .filter { $0 >= 16000 }
@@ -1865,12 +2160,17 @@ final class InstallerEngine: @unchecked Sendable {
                 unloadAllLMStudioModels()
                 let result = loadLMStudioModel(modelId: candidate, contextLength: ctx)
                 if result.state == .ok {
-                    onProgress?("Loaded \(candidate). Writing OpenClaw config and restarting gateway")
-                    let config = writeModelToConfig(modelIdentifier: "lmstudio/\(candidate)")
-                    if config.state == .fail { return config }
-                    _ = restartGateway()
-                    let fallbackNote = candidate == modelId ? "" : " (fallback from \(modelId))"
-                    return StepResult(state: .ok, message: "LM Studio ready with \(candidate), context \(ctx)\(fallbackNote)")
+                    onProgress?("Loaded \(candidate). Verifying context and provider endpoint")
+                    let readiness = finalizeLMStudioReadiness(
+                        modelId: candidate,
+                        configureOpenClaw: configureOpenClaw
+                    )
+                    if readiness.state == .ok {
+                        let fallbackNote = candidate == modelId ? "" : " (fallback from \(modelId))"
+                        return StepResult(state: .ok, message: "LM Studio ready with \(candidate), context \(ctx)\(fallbackNote)")
+                    }
+                    lastError = readiness.message
+                    continue
                 }
                 lastError = result.message
                 let lower = result.message.lowercased()
@@ -1898,12 +2198,16 @@ final class InstallerEngine: @unchecked Sendable {
                         unloadAllLMStudioModels()
                         let result = loadLMStudioModel(modelId: candidate, contextLength: ctx)
                         if result.state == .ok {
-                            onProgress?("Loaded \(candidate) after runtime rollback. Writing OpenClaw config and restarting gateway")
-                            let config = writeModelToConfig(modelIdentifier: "lmstudio/\(candidate)")
-                            if config.state == .fail { return config }
-                            _ = restartGateway()
-                            let fallbackNote = candidate == modelId ? "" : " (fallback from \(modelId))"
-                            return StepResult(state: .ok, message: "LM Studio ready with \(candidate), context \(ctx) after runtime rollback\(fallbackNote)")
+                            onProgress?("Loaded \(candidate) after runtime rollback. Verifying provider endpoint")
+                            let readiness = finalizeLMStudioReadiness(
+                                modelId: candidate,
+                                configureOpenClaw: configureOpenClaw
+                            )
+                            if readiness.state == .ok {
+                                let fallbackNote = candidate == modelId ? "" : " (fallback from \(modelId))"
+                                return StepResult(state: .ok, message: "LM Studio ready with \(candidate), context \(ctx) after runtime rollback\(fallbackNote)")
+                            }
+                            lastError = readiness.message
                         }
                     }
                 }
@@ -1917,14 +2221,20 @@ final class InstallerEngine: @unchecked Sendable {
                     unloadAllLMStudioModels()
                     let result = loadLMStudioModel(modelId: retryCandidate, contextLength: retryContext)
                     if result.state == .ok {
-                        onProgress?("Loaded \(retryCandidate) after worker reset. Writing OpenClaw config and restarting gateway")
-                        let config = writeModelToConfig(modelIdentifier: "lmstudio/\(retryCandidate)")
-                        if config.state == .fail { return config }
-                        _ = restartGateway()
-                        let fallbackNote = retryCandidate == modelId ? "" : " (fallback from \(modelId))"
-                        return StepResult(state: .ok, message: "LM Studio ready with \(retryCandidate), context \(retryContext) after worker reset\(fallbackNote)")
+                        onProgress?("Loaded \(retryCandidate) after worker reset. Verifying provider endpoint")
+                        let readiness = finalizeLMStudioReadiness(
+                            modelId: retryCandidate,
+                            configureOpenClaw: configureOpenClaw
+                        )
+                        if readiness.state == .ok {
+                            let fallbackNote = retryCandidate == modelId ? "" : " (fallback from \(modelId))"
+                            return StepResult(state: .ok, message: "LM Studio ready with \(retryCandidate), context \(retryContext) after worker reset\(fallbackNote)")
+                        }
+                        lastError = readiness.message
                     }
-                    lastError = "\(combinedError). Runtime rollback and worker reset were applied but LM Studio still rejected model loading. Last error: \(result.message)"
+                    if result.state != .ok {
+                        lastError = "\(combinedError). Runtime rollback and worker reset were applied but LM Studio still rejected model loading. Last error: \(result.message)"
+                    }
                 } else {
                     lastError = "\(combinedError). Runtime rollback was applied but model loading still failed. Worker reset failed: \(hardReset.message)"
                 }
@@ -1949,7 +2259,11 @@ final class InstallerEngine: @unchecked Sendable {
         ]
         var result: [String] = []
         for id in preferredOrder + available {
-            if id.isEmpty || id.contains("embedding") || id.contains("qianfan-ocr") { continue }
+            if !LocalModelCatalogService.isValidProviderID(id) ||
+                id.contains("embedding") ||
+                id.contains("qianfan-ocr") {
+                continue
+            }
             if available.contains(id) && !result.contains(id) { result.append(id) }
         }
         return result
@@ -1963,11 +2277,77 @@ final class InstallerEngine: @unchecked Sendable {
         return nil
     }
 
+    private func finalizeLMStudioReadiness(modelId: String, configureOpenClaw: Bool) -> StepResult {
+        guard let loaded = loadedLMStudioModelInfo() else {
+            return StepResult(state: .fail, message: "LM Studio did not report a loaded model")
+        }
+        let (probeCode, probeOutput) = shell(
+            "curl --fail --silent --show-error --max-time 10 http://127.0.0.1:1234/v1/models 2>&1"
+        )
+        guard probeCode == 0,
+              Self.lmStudioReadinessIsVerified(
+                expectedModelID: modelId,
+                loadedIdentifier: loaded.identifier,
+                loadedModel: loaded.model,
+                context: loaded.context,
+                providerResponse: probeOutput
+              ) else {
+            return StepResult(
+                state: .fail,
+                message: "LM Studio provider readiness could not be verified with the selected model and at least 16K context"
+            )
+        }
+        if configureOpenClaw {
+            let config = writeModelToConfig(modelIdentifier: "lmstudio/\(loaded.model)")
+            if config.state == .fail { return config }
+            let restart = restartGateway()
+            if restart.state == .fail { return restart }
+        }
+        return StepResult(
+            state: .ok,
+            message: "LM Studio provider verified with \(loaded.model), context \(loaded.context ?? 0)"
+        )
+    }
+
+    static func lmStudioReadinessIsVerified(
+        expectedModelID: String,
+        loadedIdentifier: String,
+        loadedModel: String,
+        context: Int?,
+        providerResponse: String
+    ) -> Bool {
+        guard let context, context >= 16_000,
+              let data = providerResponse.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rows = root["data"] as? [[String: Any]] else {
+            return false
+        }
+        let expected = normalizedLMStudioModelID(expectedModelID)
+        let loadedMatches = [loadedIdentifier, loadedModel]
+            .map(normalizedLMStudioModelID)
+            .contains(expected)
+        let providerMatches = rows.compactMap { $0["id"] as? String }
+            .map(normalizedLMStudioModelID)
+            .contains(expected)
+        return !expected.isEmpty && loadedMatches && providerMatches
+    }
+
+    private static func normalizedLMStudioModelID(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let unprefixed = trimmed.hasPrefix("lmstudio/")
+            ? String(trimmed.dropFirst("lmstudio/".count))
+            : trimmed
+        return unprefixed.split(separator: "@", maxSplits: 1).first.map(String.init) ?? ""
+    }
+
     private func shellQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\''") + "'"
     }
 
     private func loadLMStudioModel(modelId: String, contextLength: Int) -> StepResult {
+        guard LocalModelCatalogService.isValidProviderID(modelId) else {
+            return StepResult(state: .fail, message: "LM Studio returned an unsafe model identifier")
+        }
         let api = loadLMStudioModelViaAPI(modelId: modelId, contextLength: contextLength)
         if api.state == .ok { return api }
 

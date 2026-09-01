@@ -36,6 +36,7 @@
 - [ ] DMG is signed, notarized, and stapled
 - [ ] `xcrun stapler validate` and Gatekeeper checks pass
 - [ ] Manifest SHA-256 is calculated from the final stapled DMG
+- [ ] Public preflight reads the current manifest and the new versioned URL returns exactly HTTP 404
 - [ ] Public DMG and manifest return HTTP 200
 - [ ] Remote model catalog returns valid schema v1 JSON
 

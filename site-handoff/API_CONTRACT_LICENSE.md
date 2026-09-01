@@ -2,7 +2,7 @@
 
 Endpoint attendu par l'app:
 
-`POST /api/license/activate`
+`POST /api/license/v2/activate`
 
 ## Request JSON
 

@@ -24,7 +24,7 @@ Option mieux:
 
 L'app envoie email + licence + machineId sur:
 
-`POST /api/license/activate`
+`POST /api/license/v2/activate`
 
 Le serveur répond `ok:true` si valide.
 
@@ -52,6 +52,6 @@ Exemple:
 Exemple:
 
 ```bash
-export LOCALCLAW_LICENSE_ENDPOINT="https://localclaw.io/api/license/activate"
+export LOCALCLAW_LICENSE_ENDPOINT="https://localclaw.io/api/license/v2/activate"
 export LOCALCLAW_INSTALLER_UPDATE_URL="https://localclaw.io/downloads/localclaw-installer-latest.json"
 ```

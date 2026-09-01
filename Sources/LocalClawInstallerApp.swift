@@ -23,6 +23,12 @@ final class InstallerViewModel: ObservableObject {
         var id: String { rawValue }
     }
 
+    struct GuidedSetupModelPlan: Equatable, Sendable {
+        let requiresLMStudio: Bool
+        let modelQuery: String?
+        let modelIdentifier: String
+    }
+
     enum ChatResponseMode: String, CaseIterable, Identifiable {
         case fast = "Fast"
         case deep = "Deep"
@@ -778,6 +784,58 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    private struct KanbanCronFields: Equatable, Sendable {
+        var title: String
+        var detail: String
+        var agentID: String
+        var reviewSchedule: String
+        var scheduleTimeZoneID: String
+        var scheduleKind: String
+        var cronEnabled: Bool
+        var deliveryMode: String
+        var deliveryChannel: String
+        var deliveryAccount: String
+        var deliveryTo: String
+        var cronJobID: String
+
+        init(card: KanbanCard) {
+            title = card.title
+            detail = card.detail
+            agentID = card.agentID
+            reviewSchedule = card.reviewSchedule
+            scheduleTimeZoneID = card.scheduleTimeZoneID
+            scheduleKind = card.scheduleKind
+            cronEnabled = card.cronEnabled
+            deliveryMode = card.deliveryMode
+            deliveryChannel = card.deliveryChannel
+            deliveryAccount = card.deliveryAccount
+            deliveryTo = card.deliveryTo
+            cronJobID = card.cronJobID
+        }
+
+        func applying(to card: KanbanCard) -> KanbanCard {
+            var restored = card
+            restored.title = title
+            restored.detail = detail
+            restored.agentID = agentID
+            restored.reviewSchedule = reviewSchedule
+            restored.scheduleTimeZoneID = scheduleTimeZoneID
+            restored.scheduleKind = scheduleKind
+            restored.cronEnabled = cronEnabled
+            restored.deliveryMode = deliveryMode
+            restored.deliveryChannel = deliveryChannel
+            restored.deliveryAccount = deliveryAccount
+            restored.deliveryTo = deliveryTo
+            restored.cronJobID = cronJobID
+            return restored
+        }
+    }
+
+    private struct KanbanCronRollback: Sendable {
+        let previous: KanbanCronFields
+        let attempted: KanbanCronFields
+    }
+
     struct KanbanColumn: Identifiable, Codable, Equatable {
         let id: String
         var title: String
@@ -839,10 +897,10 @@ final class InstallerViewModel: ObservableObject {
         var modelIdentifier: String {
             switch self {
             case .openRouter: return "openrouter/auto"
-            case .openAI: return "openai/gpt-4o-mini"
-            case .anthropic: return "anthropic/claude-3-5-haiku-20241022"
-            case .gemini: return "google/gemini-2.5-flash-preview"
-            case .xAI: return "x-ai/grok-2-1212"
+            case .openAI: return "openai/gpt-5.6-sol"
+            case .anthropic: return "anthropic/claude-sonnet-5"
+            case .gemini: return "google/gemini-3.7-flash"
+            case .xAI: return "xai/grok-4.3"
             case .custom: return ""
             }
         }
@@ -896,76 +954,23 @@ final class InstallerViewModel: ObservableObject {
     ]
 
     static let openRouterModels: [OpenRouterModel] = [
-        // Recommended / Popular
+        // Small offline fallback, verified against OpenRouter's live catalog on
+        // 2026-09-01. The live API remains the source of truth whenever it is
+        // reachable; retired model IDs must not accumulate here.
+        OpenRouterModel(id: "openrouter/qwen/qwen3.8-flash", displayName: "⭐ Qwen 3.8 Flash"),
+        OpenRouterModel(id: "openrouter/qwen/qwen3.8-27b", displayName: "⭐ Qwen 3.8 27B"),
+        OpenRouterModel(id: "openrouter/qwen/qwen3.8-max", displayName: "Qwen 3.8 Max"),
+        OpenRouterModel(id: "openrouter/z-ai/glm-5.3-flash", displayName: "⭐ GLM 5.3 Flash"),
+        OpenRouterModel(id: "openrouter/deepseek/deepseek-v4-flash", displayName: "⭐ DeepSeek V4 Flash"),
+        OpenRouterModel(id: "openrouter/nvidia/nemotron-3.5-lightning", displayName: "⭐ Nemotron 3.5 Lightning"),
         OpenRouterModel(id: "openrouter/openai/gpt-5.4-mini", displayName: "⭐ GPT-5.4 Mini"),
-        OpenRouterModel(id: "openrouter/anthropic/claude-3.5-sonnet", displayName: "⭐ Claude 3.5 Sonnet"),
-        OpenRouterModel(id: "openrouter/openai/gpt-4o", displayName: "⭐ GPT-4o"),
-        OpenRouterModel(id: "openrouter/openai/gpt-4o-mini", displayName: "⭐ GPT-4o Mini"),
-        
-        // Claude family
-        OpenRouterModel(id: "openrouter/anthropic/claude-3.5-haiku", displayName: "Claude 3.5 Haiku"),
-        OpenRouterModel(id: "openrouter/anthropic/claude-3-opus", displayName: "Claude 3 Opus"),
-        OpenRouterModel(id: "openrouter/anthropic/claude-3-sonnet", displayName: "Claude 3 Sonnet"),
-        OpenRouterModel(id: "openrouter/anthropic/claude-3-haiku", displayName: "Claude 3 Haiku"),
-        
-        // GPT family
+        OpenRouterModel(id: "openrouter/openai/gpt-5.4", displayName: "GPT-5.4"),
         OpenRouterModel(id: "openrouter/openai/gpt-5.5", displayName: "OpenAI: GPT-5.5"),
-        OpenRouterModel(id: "openrouter/openai/gpt-5.4", displayName: "OpenAI: GPT-5.4"),
-        OpenRouterModel(id: "openrouter/openai/gpt-5.4-mini", displayName: "OpenAI: GPT-5.4 Mini"),
-        OpenRouterModel(id: "openrouter/openai/gpt-4-turbo", displayName: "GPT-4 Turbo"),
-        OpenRouterModel(id: "openrouter/openai/gpt-4", displayName: "GPT-4"),
-        OpenRouterModel(id: "openrouter/openai/gpt-3.5-turbo", displayName: "GPT-3.5 Turbo"),
-        
-        // Google/Gemini
-        OpenRouterModel(id: "openrouter/google/gemini-2.5-flash-preview", displayName: "Gemini 2.5 Flash"),
-        OpenRouterModel(id: "openrouter/google/gemini-2.0-flash-exp", displayName: "Gemini 2.0 Flash"),
-        OpenRouterModel(id: "openrouter/google/gemini-1.5-pro", displayName: "Gemini 1.5 Pro"),
-        OpenRouterModel(id: "openrouter/google/gemini-1.5-flash", displayName: "Gemini 1.5 Flash"),
-        
-        // Meta/Llama
-        OpenRouterModel(id: "openrouter/meta-llama/llama-3.3-70b-instruct", displayName: "Llama 3.3 70B"),
-        OpenRouterModel(id: "openrouter/meta-llama/llama-3.2-90b-vision-instruct", displayName: "Llama 3.2 90B Vision"),
-        OpenRouterModel(id: "openrouter/meta-llama/llama-3.2-11b-vision-instruct", displayName: "Llama 3.2 11B Vision"),
-        OpenRouterModel(id: "openrouter/meta-llama/llama-3.1-405b-instruct", displayName: "Llama 3.1 405B"),
-        OpenRouterModel(id: "openrouter/meta-llama/llama-3.1-70b-instruct", displayName: "Llama 3.1 70B"),
-        OpenRouterModel(id: "openrouter/meta-llama/llama-3.1-8b-instruct", displayName: "Llama 3.1 8B"),
-        
-        // DeepSeek
-        OpenRouterModel(id: "openrouter/deepseek/deepseek-chat", displayName: "DeepSeek Chat"),
-        OpenRouterModel(id: "openrouter/deepseek/deepseek-coder", displayName: "DeepSeek Coder"),
-        
-        // Mistral
-        OpenRouterModel(id: "openrouter/mistralai/mistral-large", displayName: "Mistral Large"),
-        OpenRouterModel(id: "openrouter/mistralai/mistral-medium", displayName: "Mistral Medium"),
-        OpenRouterModel(id: "openrouter/mistralai/mistral-small", displayName: "Mistral Small"),
-        OpenRouterModel(id: "openrouter/mistralai/codestral", displayName: "Codestral"),
-        
-        // Qwen
-        OpenRouterModel(id: "openrouter/nvidia/nemotron-3-nano-4b", displayName: "Nemotron 3 Nano 4B"),
-        OpenRouterModel(id: "openrouter/qwen/qwen3.5-35b-a3b", displayName: "Qwen 3.5 35B-A3B"),
-        OpenRouterModel(id: "openrouter/qwen/qwen3.5-27b", displayName: "Qwen 3.5 27B"),
-        OpenRouterModel(id: "openrouter/qwen/qwen3.5-122b-a10b", displayName: "Qwen 3.5 122B-A10B"),
-        OpenRouterModel(id: "openrouter/qwen/qwen3.5-9b", displayName: "Qwen 3.5 9B"),
-        OpenRouterModel(id: "openrouter/qwen/qwen3.5-4b", displayName: "Qwen 3.5 4B"),
-        OpenRouterModel(id: "openrouter/qwen/qwen3.5-2b", displayName: "Qwen 3.5 2B"),
-        OpenRouterModel(id: "openrouter/qwen/qwen3.5-0.8b", displayName: "Qwen 3.5 0.8B"),
-        OpenRouterModel(id: "openrouter/qwen/qwen-2.5-72b-instruct", displayName: "Qwen 2.5 72B"),
-        OpenRouterModel(id: "openrouter/qwen/qwen-2.5-32b-instruct", displayName: "Qwen 2.5 32B"),
-        OpenRouterModel(id: "openrouter/qwen/qwen-2.5-14b-instruct", displayName: "Qwen 2.5 14B"),
-        
-        // xAI/Grok
-        OpenRouterModel(id: "openrouter/x-ai/grok-2", displayName: "Grok 2"),
-        OpenRouterModel(id: "openrouter/x-ai/grok-2-mini", displayName: "Grok 2 Mini"),
-        OpenRouterModel(id: "openrouter/x-ai/grok-beta", displayName: "Grok Beta"),
-        
-        // Cohere
-        OpenRouterModel(id: "openrouter/cohere/command-r-plus", displayName: "Command R+"),
-        OpenRouterModel(id: "openrouter/cohere/command-r", displayName: "Command R"),
-        
-        // Other
-        OpenRouterModel(id: "openrouter/nousresearch/nous-hermes-2-mixtral-8x7b", displayName: "Nous Hermes 2 Mixtral"),
-        OpenRouterModel(id: "openrouter/01-ai/yi-large", displayName: "Yi Large"),
-        OpenRouterModel(id: "openrouter/perplexity/sonar", displayName: "Perplexity Sonar")
+        OpenRouterModel(id: "openrouter/google/gemini-3.7-flash", displayName: "Gemini 3.7 Flash"),
+        OpenRouterModel(id: "openrouter/google/gemini-2.5-flash", displayName: "Gemini 2.5 Flash"),
+        OpenRouterModel(id: "openrouter/anthropic/claude-sonnet-5", displayName: "Claude Sonnet 5"),
+        OpenRouterModel(id: "openrouter/x-ai/grok-4.6", displayName: "Grok 4.6"),
+        OpenRouterModel(id: "openrouter/mistralai/mistral-small-2603", displayName: "Mistral Small 4")
     ]
 
     @Published var screen: Screen = .license
@@ -1277,6 +1282,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var cronRunHistory: [String: [CronRunInfo]] = [:]
     @Published var cronJobsStatus: String = "Not loaded"
     @Published var cronJobsIsLoading = false
+    @Published private(set) var cronManualRunInFlightJobIDs: Set<String> = []
     @Published var automationReadinessIsLoading = false
     @Published var cronJobLogs: String = ""
     @Published var automationReceipts: [AutomationReceipt] = AutomationReceiptStore.load() {
@@ -1422,7 +1428,7 @@ final class InstallerViewModel: ObservableObject {
     private static let developerFreshContextDefaultsKey = "localclaw.developer.freshContext.v1"
     private static let modelUsageDefaultsKey = "localclaw.modelUsage.records.v1"
     private static let homeUsageWindowDefaultsKey = "localclaw.home.usageWindow.v1"
-    private static let kanbanDefaultsKey = "localclaw.kanban.board.v1"
+    private static let legacyKanbanDefaultsKey = "localclaw.kanban.board.v1"
     nonisolated static let simpleDeveloperEditTimeoutSeconds = 60
     nonisolated static let developerContinuationPrompt = "Continue the previous Developer task from the current workspace state. Inspect the files and generated assets that already exist before changing anything. Preserve completed work, finish only what remains, and do not repeat successful external API calls or recreate existing paid assets."
 
@@ -1799,20 +1805,23 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
-    nonisolated static func configuredChannelSnapshots(configPath: String = NSHomeDirectory() + "/.openclaw/openclaw.json") -> [String: ChannelConfigSnapshot] {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: configPath)),
+    nonisolated static func configuredChannelSnapshots(configPath: String? = nil) -> [String: ChannelConfigSnapshot] {
+        guard let resolvedPath = configPath ?? (try? OpenClawRuntimeInstallation.selectedConfig().path),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: resolvedPath)),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return [:]
         }
         return configuredChannelSnapshots(from: root)
     }
 
-    nonisolated static func persistentTelegramTokenFilePath() -> String {
-        NSHomeDirectory() + "/.openclaw/secrets/telegram-default-token"
+    nonisolated static func persistentTelegramTokenFilePath() -> String? {
+        guard let state = try? OpenClawRuntimeInstallation.selectedState().path else { return nil }
+        return state + "/secrets/telegram-default-token"
     }
 
-    nonisolated static func ensureTelegramDefaultAccountToken(configPath: String = NSHomeDirectory() + "/.openclaw/openclaw.json") {
-        let configURL = URL(fileURLWithPath: configPath)
+    nonisolated static func ensureTelegramDefaultAccountToken(configPath: String? = nil) {
+        guard let resolvedPath = configPath ?? (try? OpenClawRuntimeInstallation.selectedConfig().path) else { return }
+        let configURL = URL(fileURLWithPath: resolvedPath)
         guard let data = try? Data(contentsOf: configURL),
               var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               var channels = root["channels"] as? [String: Any],
@@ -1845,7 +1854,12 @@ final class InstallerViewModel: ObservableObject {
         root["channels"] = channels
 
         guard let updated = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]) else { return }
-        try? updated.write(to: configURL, options: .atomic)
+        do {
+            try updated.write(to: configURL, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
+        } catch {
+            return
+        }
     }
 
     // Installation status tracking (using existing status variables)
@@ -1865,7 +1879,17 @@ final class InstallerViewModel: ObservableObject {
     }
 
     var localModelCatalog: [LocalModelCandidate] {
-        remoteLocalModelCandidates.isEmpty ? builtInLocalModelCandidates : remoteLocalModelCandidates
+        guard !remoteLocalModelCandidates.isEmpty else { return builtInLocalModelCandidates }
+        // The remote catalog can lag a just-released model. Keep a tiny,
+        // source-verified latest set available without resurrecting every
+        // built-in entry that the remote catalog may intentionally retire.
+        var merged = remoteLocalModelCandidates
+        for candidate in builtInLocalModelCandidates.reversed()
+            where candidate.badges.contains("Latest") &&
+                !merged.contains(where: { $0.providerId == candidate.providerId }) {
+            merged.insert(candidate, at: 0)
+        }
+        return merged
     }
 
     func localModelCandidate(named name: String) -> LocalModelCandidate? {
@@ -1874,6 +1898,7 @@ final class InstallerViewModel: ObservableObject {
 
     private var builtInLocalModelCandidates: [LocalModelCandidate] {
         [
+            LocalModelCandidate(name: "Qwen 3.8 27B Q4_K_M", query: "lmstudio-community/Qwen3.8-27B-GGUF@Q4_K_M", providerId: "qwen/qwen3.8-27b", family: "qwen", summary: "Current laptop-size Qwen for coding, tools, vision, and long-horizon agents", fileSizeGB: 16.1, maxContextK: 262, qualityScore: 5.0, codingScore: 5.0, reasoningScore: 5.0, speedScore: 3.2, toolUseScore: 5.0, multimodal: true, badges: ["Latest", "Recommended", "High Performance"]),
             LocalModelCandidate(name: "Gemma 4 E2B Q4_K_M", query: "gemma-4-e2b@q4_k_m", providerId: "google/gemma-4-e2b", family: "google", summary: "Small multimodal model for low-memory Macs", fileSizeGB: 3.4, maxContextK: 128, qualityScore: 3.3, codingScore: 3.4, reasoningScore: 3.2, speedScore: 4.9, toolUseScore: 3.8, multimodal: true, badges: ["Low RAM"]),
             LocalModelCandidate(name: "Gemma 4 E4B Q4_K_M", query: "gemma-4-e4b@q4_k_m", providerId: "google/gemma-4-e4b", family: "google", summary: "Compact multimodal reasoning", fileSizeGB: 5.0, maxContextK: 128, qualityScore: 3.9, codingScore: 4.0, reasoningScore: 3.9, speedScore: 4.5, toolUseScore: 4.2, multimodal: true, badges: []),
             LocalModelCandidate(name: "Gemma 4 26B-A4B Q4_K_M", query: "gemma-4-26b-a4b@q4_k_m", providerId: "google/gemma-4-26b-a4b", family: "google", summary: "Efficient MoE for coding and reasoning", fileSizeGB: 16.9, maxContextK: 256, qualityScore: 4.7, codingScore: 4.5, reasoningScore: 4.7, speedScore: 3.8, toolUseScore: 4.5, multimodal: true, badges: ["High Performance"]),
@@ -1911,15 +1936,6 @@ final class InstallerViewModel: ObservableObject {
     private let runtimeSnapshotResolver = RuntimeSnapshotResolver()
     private let recoveryService = RecoveryService()
     private let localModelCatalogService = LocalModelCatalogService()
-
-    private struct LocalLicenseRecord: Codable {
-        let email: String
-        let licenseKey: String
-        let token: String
-        let machineId: String
-        let activatedAt: String
-        let expiresAt: String?
-    }
 
     private struct InstallerUpdateManifest: Codable {
         let latestVersion: String
@@ -1980,7 +1996,7 @@ final class InstallerViewModel: ObservableObject {
     }
 
     private var licenseEndpoint: String {
-        ProcessInfo.processInfo.environment["LOCALCLAW_LICENSE_ENDPOINT"] ?? "https://localclaw.io/api/license/activate"
+        ProcessInfo.processInfo.environment["LOCALCLAW_LICENSE_ENDPOINT"] ?? "https://localclaw.io/api/license/v2/activate"
     }
 
     var isMockLicenseEndpoint: Bool {
@@ -1988,7 +2004,11 @@ final class InstallerViewModel: ObservableObject {
     }
 
     private var allowsOfflineLicenses: Bool {
-        ProcessInfo.processInfo.environment["LOCALCLAW_ALLOW_OFFLINE_LICENSE"] == "1"
+        #if DEBUG
+        return isMockLicenseEndpoint && ProcessInfo.processInfo.environment["LOCALCLAW_ALLOW_OFFLINE_LICENSE"] == "1"
+        #else
+        return false
+        #endif
     }
 
     static func normalizedLicenseEmail(_ value: String) -> String {
@@ -2018,11 +2038,6 @@ final class InstallerViewModel: ObservableObject {
         return parts.joined(separator: "-")
     }
 
-    private func isEmergencyCustomerLicense(email: String, key: String) -> Bool {
-        email == "18609505168@163.com"
-            && key == "LCW-20260519-1860-9516"
-    }
-
     private var installerUpdateManifestURL: String {
         ProcessInfo.processInfo.environment["LOCALCLAW_INSTALLER_UPDATE_URL"] ?? "https://raw.githubusercontent.com/CyrilDieumegard/localclaw.io/main/downloads/localclaw-installer-latest.json"
     }
@@ -2031,6 +2046,10 @@ final class InstallerViewModel: ObservableObject {
         let base = URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent(".localclaw-installer", isDirectory: true)
         return base.appendingPathComponent("license.json")
+    }
+
+    private var licenseRecordStore: LicenseRecordStore {
+        LicenseRecordStore(legacyRecordURL: localLicenseFile)
     }
 
     // Offline key format for manual subscription renewals:
@@ -2067,11 +2086,8 @@ final class InstallerViewModel: ObservableObject {
             return false
         }
 
-        if let date = ISO8601DateFormatter().date(from: raw) {
-            return date < Date()
-        }
-
-        return false
+        guard let date = ISO8601DateFormatter().date(from: raw) else { return true }
+        return date < Date()
     }
 
     var progress: Double {
@@ -2171,7 +2187,7 @@ final class InstallerViewModel: ObservableObject {
         loadOpenRouterModelFromConfig()
         refreshUninstallInventory()
 
-        if isActivated && !engine.hasCommand("brew") {
+        if isActivated && !engine.hasCommand("brew") && !engine.isInstalledNodeSupported() {
             showHomebrewPrompt = true
         }
 
@@ -2266,8 +2282,8 @@ final class InstallerViewModel: ObservableObject {
     }
 
     private func loadOpenRouterModelFromConfig() {
-        let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: configPath)),
+        guard let configURL = try? OpenClawRuntimeInstallation.selectedConfig(),
+              let data = try? Data(contentsOf: configURL),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let agents = json["agents"] as? [String: Any],
               let defaults = agents["defaults"] as? [String: Any],
@@ -2309,8 +2325,8 @@ final class InstallerViewModel: ObservableObject {
     }
     
     private func loadTokenFromConfig() {
-        let configPath = NSHomeDirectory() + "/.openclaw/openclaw.json"
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: configPath)),
+        guard let configURL = try? OpenClawRuntimeInstallation.selectedConfig(),
+              let data = try? Data(contentsOf: configURL),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let gateway = json["gateway"] as? [String: Any],
               let auth = gateway["auth"] as? [String: Any],
@@ -2965,6 +2981,9 @@ final class InstallerViewModel: ObservableObject {
         
         // OpenRouter specific validation
         if isCloudLikeInferenceMode && selectedProvider == .openRouter {
+            if selectedOpenRouterModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                errors.append("Select an OpenRouter model")
+            }
             let key = openRouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
             if !key.hasPrefix("sk-or-") {
                 errors.append("OpenRouter key should start with 'sk-or-'")
@@ -2991,7 +3010,53 @@ final class InstallerViewModel: ObservableObject {
 
     func effectiveModelIdentifier() -> String {
         if isOpenAIOAuthMode { return selectedOAuthModelIdentifier() }
+        if selectedProvider == .openRouter {
+            return selectedOpenRouterModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         return selectedProvider.modelIdentifier
+    }
+
+    nonisolated static func guidedSetupModelPlan(
+        localInference: Bool,
+        selectedLocalModel: String,
+        recommendation: String,
+        modelQueries: [String: String],
+        localProviderModelIDs: [String: String],
+        cloudModelIdentifier: String
+    ) -> GuidedSetupModelPlan? {
+        guard localInference else {
+            return GuidedSetupModelPlan(
+                requiresLMStudio: false,
+                modelQuery: nil,
+                modelIdentifier: cloudModelIdentifier
+            )
+        }
+        let localModel = selectedLocalModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? recommendation.trimmingCharacters(in: .whitespacesAndNewlines)
+            : selectedLocalModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !localModel.isEmpty,
+              let query = modelQueries[localModel]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !query.isEmpty,
+              let providerID = localProviderModelIDs[localModel]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !providerID.isEmpty else {
+            return nil
+        }
+        return GuidedSetupModelPlan(
+            requiresLMStudio: true,
+            modelQuery: query,
+            modelIdentifier: "lmstudio/\(providerID)"
+        )
+    }
+
+    nonisolated static func guidedSetupLocalRuntimeIsReady(
+        plan: GuidedSetupModelPlan,
+        lmStudioState: InstallState,
+        modelState: InstallState
+    ) -> Bool {
+        guard plan.requiresLMStudio else { return true }
+        let lmStudioReady = lmStudioState == .ok || lmStudioState == .skip
+        let modelReady = modelState == .ok || modelState == .skip
+        return lmStudioReady && modelReady
     }
 
     func selectedOAuthModelIdentifier() -> String {
@@ -3109,7 +3174,6 @@ final class InstallerViewModel: ObservableObject {
             return
         }
         let version = openclawInstalledVersion
-        let fallbackModels = runtimeOAuthFallbackModels
         Task.detached {
             let engine = InstallerEngine()
             let agentArgument = engine.resolvedChatAgentID().map { " --agent '\($0)'" } ?? ""
@@ -3135,13 +3199,13 @@ final class InstallerViewModel: ObservableObject {
             do {
                 let decoded = try JSONDecoder().decode(OpenClawModelsResponse.self, from: data)
                 var seenOAuthModelIDs = Set<String>()
-                let mapped = (fallbackModels + decoded.models
+                let mapped = decoded.models
                     .filter { item in
                         Self.isOAuthRuntimeModelID(item.key) && item.local != true && item.available != false
                     }
                     .map { item in
                         OpenRouterModel(id: OpenClawCompatibility.modelID(item.key, version: version), displayName: item.name ?? Self.readableModelName(item.key))
-                    })
+                    }
                     .filter { model in
                         if seenOAuthModelIDs.contains(model.id) { return false }
                         seenOAuthModelIDs.insert(model.id)
@@ -3153,13 +3217,16 @@ final class InstallerViewModel: ObservableObject {
                     self.oauthModelsLive = mapped
                     if self.inferenceMode == .oauth || self.selectedCloudAuthMode == .oauth {
                         let selected = OpenClawCompatibility.modelID(self.selectedChatModel, version: version)
-                        if Self.isOAuthRuntimeModelID(selected) {
+                        if mapped.contains(where: { $0.id == selected }) {
                             self.selectedChatModel = selected
-                        } else {
-                            self.selectedChatModel = fallbackModels.first?.id ?? self.selectedOAuthProviderOption.modelIdentifier
+                        } else if let firstAvailable = mapped.first {
+                            self.selectedChatModel = firstAvailable.id
                         }
                         self.currentModel = self.selectedChatModel
                         self.refreshOAuthUsage()
+                    }
+                    if mapped.isEmpty {
+                        self.oauthSetupStatus = "No available OAuth models reported by OpenClaw"
                     }
                     self.append("✓ Loaded \(mapped.count) OAuth models")
                 }
@@ -3245,10 +3312,17 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func loadExistingConfigIfPresent() {
+        let selectedState: URL
+        do {
+            selectedState = try OpenClawRuntimeInstallation.selectedState()
+        } catch {
+            append("Skipped saved environment values because the OpenClaw profile is ambiguous: \(error.localizedDescription)")
+            cloudProviderAuthConfigured = false
+            return
+        }
         let candidates = [
-            FileManager.default.currentDirectoryPath + "/.env",
-            NSHomeDirectory() + "/.openclaw/.env",
-            NSHomeDirectory() + "/.openclaw/.env.local"
+            selectedState.appendingPathComponent(".env").path,
+            selectedState.appendingPathComponent(".env.local").path
         ]
 
         var loadedAny = false
@@ -3491,7 +3565,7 @@ final class InstallerViewModel: ObservableObject {
         }
 
         if allowsOfflineLicenses && isValidOfflineKey(key) {
-            let record = LocalLicenseRecord(
+            let record = LegacyLicenseRecord(
                 email: email,
                 licenseKey: key,
                 token: "offline-token",
@@ -3500,32 +3574,18 @@ final class InstallerViewModel: ObservableObject {
                 expiresAt: nil
             )
             do {
-                try persistLicenseRecord(record)
+                let verifier = try LicenseProductionTrust.verifier()
+                let evaluator = LicenseMigrationEvaluator(verifier: verifier)
+                let state = evaluator.securityStateForExistingLegacyCache(
+                    from: licenseRecordStore.loadSecurityState()
+                )
+                try licenseRecordStore.saveLegacyRecordPreservingExisting(record)
+                try licenseRecordStore.saveSecurityState(state)
+                try licenseRecordStore.repairPermissionsIfPresent()
                 isActivated = true
                 activationStatus = "License activated (offline)"
                 screen = .home
                 append("Offline license activated for \(email)")
-            } catch {
-                activationStatus = "Activation save failed: \(error.localizedDescription)"
-            }
-            return
-        }
-
-        if isEmergencyCustomerLicense(email: email, key: key) {
-            let record = LocalLicenseRecord(
-                email: email,
-                licenseKey: key,
-                token: "customer-override-token",
-                machineId: machineId,
-                activatedAt: ISO8601DateFormatter().string(from: Date()),
-                expiresAt: nil
-            )
-            do {
-                try persistLicenseRecord(record)
-                isActivated = true
-                activationStatus = "License activated"
-                screen = .home
-                append("Emergency customer license activated for \(email)")
             } catch {
                 activationStatus = "Activation save failed: \(error.localizedDescription)"
             }
@@ -3539,63 +3599,157 @@ final class InstallerViewModel: ObservableObject {
 
         isActivating = true
         activationStatus = "Activating..."
-        let payload = LicenseActivationPayload(email: email, licenseKey: key, machineId: machineId, appVersion: installerCurrentVersion)
+        let store = licenseRecordStore
+        let cachedRecord = try? store.loadLegacyRecord()
+        let reusesCachedIdentity = cachedRecord.map {
+            Self.normalizedLicenseEmail($0.email) == email
+                && Self.normalizedLicenseKey($0.licenseKey) == key
+                && $0.machineId == machineId
+        } ?? false
+        let currentSecurityState = store.loadSecurityState()
+        let payload = LicenseExchangeRequest(
+            email: email,
+            licenseKey: key,
+            machineId: machineId,
+            appVersion: installerCurrentVersion,
+            currentReceipt: reusesCachedIdentity ? currentSecurityState.signedReceipt : nil
+        )
+        let expectation = LicenseReceiptExpectation(
+            email: email,
+            licenseKey: key,
+            machineID: machineId,
+            appVersion: installerCurrentVersion
+        )
+        let acceptsDevelopmentMock = isMockLicenseEndpoint
+        let wasActivated = isActivated
+        let verifier: LicenseReceiptVerifier
+        do {
+            verifier = try LicenseProductionTrust.verifier()
+        } catch {
+            activationStatus = "License verification setup error"
+            isActivating = false
+            return
+        }
+        let evaluator = LicenseMigrationEvaluator(verifier: verifier)
+        let client = LicenseExchangeHTTPClient(endpoint: endpoint)
 
         Task.detached {
             do {
-                var request = URLRequest(url: endpoint)
-                request.httpMethod = "POST"
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                request.timeoutInterval = 20
-                request.httpBody = try JSONEncoder().encode(payload)
+                let response = try await client.exchange(payload)
+                let now = Date()
+                var securityState = currentSecurityState
+                let record: LegacyLicenseRecord
 
-                let (data, response) = try await URLSession.shared.data(for: request)
-                guard let http = response as? HTTPURLResponse else {
-                    await MainActor.run {
-                        self.activationStatus = "Activation failed: no server response"
-                        self.isActivating = false
+                if response.mode == "secure" {
+                    guard response.receiptFormat == "JWS-Compact" else {
+                        throw LicenseRefreshError.invalidSecureReceiptFormat
                     }
-                    return
-                }
+                    let receiptAlias = response.receipt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let tokenAlias = response.token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    if !receiptAlias.isEmpty, !tokenAlias.isEmpty, receiptAlias != tokenAlias {
+                        throw LicenseRefreshError.secureReceiptAliasesDiffer
+                    }
+                    let receipt = receiptAlias.isEmpty ? tokenAlias : receiptAlias
+                    guard !receipt.isEmpty else { throw LicenseRefreshError.secureReceiptMissing }
+                    _ = try verifier.verify(compactJWS: receipt, expected: expectation, now: now)
 
-                let decoded = try? JSONDecoder().decode(LicenseActivationResponse.self, from: data)
-                if http.statusCode == 200, (decoded?.ok == true || decoded?.token != nil) {
-                    let token = decoded?.token ?? "ok"
-                    let record = LocalLicenseRecord(
+                    securityState.signedReceipt = receipt
+                    securityState.lastRefreshAttemptAt = ISO8601DateFormatter().string(from: now)
+                    securityState.lastRefreshSucceededAt = ISO8601DateFormatter().string(from: now)
+                    record = reusesCachedIdentity
+                        ? cachedRecord!
+                        : LegacyLicenseRecord(
+                            email: email,
+                            licenseKey: key,
+                            token: receipt,
+                            machineId: machineId,
+                            activatedAt: ISO8601DateFormatter().string(from: now),
+                            expiresAt: nil
+                        )
+                } else if response.mode == "legacy_rollback" {
+                    guard response.receipt == nil,
+                          response.receiptFormat == "legacy-base64",
+                          let rollbackToken = response.token?.trimmingCharacters(in: .whitespacesAndNewlines),
+                          !rollbackToken.isEmpty else {
+                        throw LicenseRefreshError.unsignedRollbackNotAccepted
+                    }
+                    record = reusesCachedIdentity
+                        ? cachedRecord!
+                        : LegacyLicenseRecord(
+                            email: email,
+                            licenseKey: key,
+                            token: rollbackToken,
+                            machineId: machineId,
+                            activatedAt: ISO8601DateFormatter().string(from: now),
+                            expiresAt: nil
+                        )
+                    securityState = reusesCachedIdentity
+                        ? evaluator.securityStateForExistingLegacyCache(from: securityState, now: now)
+                        : evaluator.securityStateStartingBoundedRollback(
+                            from: securityState,
+                            expected: expectation,
+                            now: now
+                        )
+                    securityState.signedReceipt = nil
+                    securityState.lastRefreshAttemptAt = ISO8601DateFormatter().string(from: now)
+                } else if acceptsDevelopmentMock,
+                          let mockToken = response.token?.trimmingCharacters(in: .whitespacesAndNewlines),
+                          !mockToken.isEmpty {
+                    record = LegacyLicenseRecord(
                         email: email,
                         licenseKey: key,
-                        token: token,
+                        token: mockToken,
                         machineId: machineId,
-                        activatedAt: ISO8601DateFormatter().string(from: Date()),
-                        expiresAt: decoded?.expiresAt
+                        activatedAt: ISO8601DateFormatter().string(from: now),
+                        expiresAt: response.expiresAt
                     )
-                    do {
-                        try await MainActor.run { try self.persistLicenseRecord(record) }
-                    } catch {
-                        await MainActor.run {
-                            self.activationStatus = "Activation saved failed: \(error.localizedDescription)"
-                            self.isActivating = false
-                        }
-                        return
-                    }
-
-                    await MainActor.run {
-                        self.isActivated = true
-                        self.activationStatus = "License activated"
-                        self.isActivating = false
-                        self.screen = .home
-                        self.append("License activated for \(email)")
-                    }
+                    securityState = evaluator.securityStateForExistingLegacyCache(from: securityState, now: now)
                 } else {
-                    let msg = decoded?.message ?? "Activation refused (\(http.statusCode))"
-                    await MainActor.run {
-                        self.activationStatus = msg
-                        self.isActivating = false
-                    }
+                    throw LicenseRefreshError.unsignedRollbackNotAccepted
+                }
+
+                // For a new identity, persist the JWS-bearing compatibility record
+                // first. If the process stops before the sidecar write, startup can
+                // authenticate that compact JWS and reconstruct the sidecar. Existing
+                // legacy identities are never rewritten.
+                if !reusesCachedIdentity, response.mode == "legacy_rollback" {
+                    // The sidecar is identity-bound. Writing it first makes a crash
+                    // harmless to any older cached identity, while the new rollback
+                    // record becomes bounded as soon as its atomic write completes.
+                    try store.saveSecurityState(securityState)
+                    try store.saveLegacyRecordPreservingExisting(record)
+                } else if !reusesCachedIdentity {
+                    try store.saveLegacyRecordPreservingExisting(record)
+                    try store.saveSecurityState(securityState)
+                } else {
+                    try store.saveSecurityState(securityState)
+                }
+                try store.repairPermissionsIfPresent()
+
+                let decision = evaluator.evaluate(
+                    record: record,
+                    securityState: securityState,
+                    expected: expectation,
+                    now: now
+                )
+                guard decision.allowsUse else {
+                    throw LicenseRefreshError.serverRefused(decision.message)
+                }
+
+                await MainActor.run {
+                    self.isActivated = true
+                    self.activationStatus = response.mode == "secure"
+                        ? "License activated securely"
+                        : "License activated · secure migration pending"
+                    self.isActivating = false
+                    self.screen = .home
+                    self.append("License activated for \(email)")
                 }
             } catch {
                 await MainActor.run {
-                    self.activationStatus = "Activation error: \(error.localizedDescription)"
+                    self.activationStatus = wasActivated
+                        ? "Saved license kept active · secure refresh pending"
+                        : "Activation error: \(error.localizedDescription)"
                     self.isActivating = false
                 }
             }
@@ -3604,14 +3758,16 @@ final class InstallerViewModel: ObservableObject {
 
     func clearLicense() {
         try? FileManager.default.removeItem(at: localLicenseFile)
+        try? FileManager.default.removeItem(at: licenseRecordStore.securityStateURL)
         isActivated = false
         activationStatus = "License required"
         screen = .license
     }
 
     private func loadLocalLicenseIfPresent() {
-        guard let data = try? Data(contentsOf: localLicenseFile),
-              let record = try? JSONDecoder().decode(LocalLicenseRecord.self, from: data) else {
+        let store = licenseRecordStore
+        try? store.repairPermissionsIfPresent()
+        guard let record = try? store.loadLegacyRecord() else {
             isActivated = false
             return
         }
@@ -3619,26 +3775,93 @@ final class InstallerViewModel: ObservableObject {
         licenseEmail = record.email
         licenseKey = record.licenseKey
         let currentMachineId = engine.machineIdentifier()
-        let isSameMachine = record.machineId == currentMachineId
-        let hasServerActivation = !record.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let hasValidOnlineActivation = isSameMachine && hasServerActivation && !isExpiredLicenseDate(record.expiresAt)
-        let hasValidOfflineActivation = allowsOfflineLicenses && isSameMachine && isValidOfflineKey(record.licenseKey)
-
-        if hasValidOnlineActivation || hasValidOfflineActivation {
-            isActivated = true
-            activationStatus = "Activated on this Mac"
-        } else {
+        let expectation = LicenseReceiptExpectation(
+            email: record.email,
+            licenseKey: record.licenseKey,
+            machineID: currentMachineId,
+            appVersion: installerCurrentVersion
+        )
+        guard let verifier = try? LicenseProductionTrust.verifier() else {
             isActivated = false
-            activationStatus = isSameMachine ? "License expired, renew required" : "License belongs to another Mac"
-            try? FileManager.default.removeItem(at: localLicenseFile)
+            activationStatus = "License verification setup error · saved data preserved"
+            return
+        }
+        let evaluator = LicenseMigrationEvaluator(verifier: verifier)
+        var securityState = evaluator.securityStateRecoveringCompactReceipt(
+            from: store.loadSecurityState(),
+            legacyRecord: record,
+            expected: expectation
+        )
+        if securityState.signedReceipt == nil {
+            securityState = evaluator.securityStateForExistingLegacyCache(from: securityState)
+        }
+        try? store.saveSecurityState(securityState)
+        try? store.repairPermissionsIfPresent()
+
+        let decision = evaluator.evaluate(
+            record: record,
+            securityState: securityState,
+            expected: expectation
+        )
+        isActivated = decision.allowsUse
+        activationStatus = decision.allowsUse
+            ? (decision.mode == .legacyMigrationPreserved
+                ? "Activated on this Mac · secure migration pending"
+                : "Activated on this Mac")
+            : decision.message
+
+        if decision.shouldRefresh,
+           record.machineId == currentMachineId,
+           !isMockLicenseEndpoint,
+           let endpoint = URL(string: licenseEndpoint) {
+            refreshLicenseReceiptInBackground(
+                record: record,
+                securityState: securityState,
+                expectation: expectation,
+                endpoint: endpoint,
+                verifier: verifier
+            )
         }
     }
 
-    private func persistLicenseRecord(_ record: LocalLicenseRecord) throws {
-        let dir = localLicenseFile.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let data = try JSONEncoder().encode(record)
-        try data.write(to: localLicenseFile, options: [.atomic])
+    private func refreshLicenseReceiptInBackground(
+        record: LegacyLicenseRecord,
+        securityState: LicenseSecurityState,
+        expectation: LicenseReceiptExpectation,
+        endpoint: URL,
+        verifier: LicenseReceiptVerifier
+    ) {
+        let store = licenseRecordStore
+        let coordinator = LicenseMigrationCoordinator(verifier: verifier)
+        let client = LicenseExchangeHTTPClient(endpoint: endpoint)
+
+        Task.detached {
+            let result = await coordinator.refresh(
+                record: record,
+                securityState: securityState,
+                expected: expectation
+            ) { request in
+                try await client.exchange(request)
+            }
+            try? store.saveSecurityState(result.securityState)
+            try? store.repairPermissionsIfPresent()
+
+            await MainActor.run {
+                guard Self.normalizedLicenseEmail(self.licenseEmail) == Self.normalizedLicenseEmail(record.email),
+                      Self.normalizedLicenseKey(self.licenseKey) == Self.normalizedLicenseKey(record.licenseKey) else {
+                    return
+                }
+                self.isActivated = result.decision.allowsUse
+                if result.refreshError == nil {
+                    self.activationStatus = "Activated on this Mac · secure receipt"
+                    self.append("Existing license migrated to a signed receipt")
+                } else if result.decision.allowsUse {
+                    self.activationStatus = "Activated on this Mac · secure migration pending"
+                } else {
+                    self.activationStatus = result.decision.message
+                }
+            }
+        }
     }
 
     func runInstall() {
@@ -3664,7 +3887,10 @@ final class InstallerViewModel: ObservableObject {
         let modelId = self.effectiveModelIdentifier()
 
         Task.detached {
-            let clt = await self.runStep(name: "Xcode CLI Tools") { engine.ensureXcodeCLITools() }
+            let needsBrew = installLMStudio || installMode == .llmOnly || !engine.isInstalledNodeSupported()
+            let clt = needsBrew && !engine.hasCommand("brew")
+                ? await self.runStep(name: "Xcode CLI Tools") { engine.ensureXcodeCLITools() }
+                : StepResult(state: .skip, message: "Existing dependencies do not require Xcode CLI Tools")
             if clt.state == .fail {
                 await MainActor.run {
                     self.isRunning = false
@@ -3674,7 +3900,9 @@ final class InstallerViewModel: ObservableObject {
                 return
             }
 
-            let brew = await self.runStep(name: "Homebrew") { engine.installHomebrewIfNeeded() }
+            let brew = needsBrew
+                ? await self.runStep(name: "Homebrew") { engine.installHomebrewIfNeeded() }
+                : StepResult(state: .skip, message: "Supported Node is already installed; Homebrew is not required")
             if brew.state == .fail {
                 await MainActor.run {
                     self.isRunning = false
@@ -3684,15 +3912,9 @@ final class InstallerViewModel: ObservableObject {
                 return
             }
 
-            let brewDoctor = await self.runStep(name: "Brew Doctor") { engine.runBrewDoctorCheck() }
-            if brewDoctor.state == .fail {
-                await MainActor.run {
-                    self.isRunning = false
-                    self.screen = .install
-                    self.append("Preflight blocked: fix brew doctor before OpenClaw/OAuth.")
-                }
-                return
-            }
+            _ = needsBrew
+                ? await self.runStep(name: "Brew Doctor") { engine.runBrewDoctorCheck() }
+                : StepResult(state: .skip, message: "Brew Doctor not required")
 
             if installLMStudio {
                 _ = await self.runStep(name: "LM Studio") { engine.installLMStudioIfNeeded() }
@@ -3701,7 +3923,7 @@ final class InstallerViewModel: ObservableObject {
             }
 
             if installMode == .llmOnly {
-                await self.runModelStep(engine: engine, query: modelQuery)
+                _ = await self.runModelStep(engine: engine, query: modelQuery)
             } else {
                 await MainActor.run { self.statusModel = "SKIP" }
             }
@@ -3718,10 +3940,34 @@ final class InstallerViewModel: ObservableObject {
                     return
                 }
                 // Bug 5: Write gateway config before verify
-                _ = await self.runStep(name: "Config") { engine.writeOpenClawConfig(gatewayToken: token) }
+                let config = await self.runStep(name: "Config") { engine.writeOpenClawConfig(gatewayToken: token) }
+                if config.state == .fail {
+                    await MainActor.run {
+                        self.isRunning = false
+                        self.screen = .install
+                        self.append("Setup stopped because the selected OpenClaw configuration could not be written safely.")
+                    }
+                    return
+                }
                 // Bug 6: Write model config
-                _ = await self.runStep(name: "Model Config") { engine.writeModelToConfig(modelIdentifier: modelId) }
-                _ = await self.runStep(name: "Default Agent") { engine.createDefaultAgent() }
+                let modelConfig = await self.runStep(name: "Model Config") { engine.writeModelToConfig(modelIdentifier: modelId) }
+                if modelConfig.state == .fail {
+                    await MainActor.run {
+                        self.isRunning = false
+                        self.screen = .install
+                        self.append("Setup stopped because the model could not be applied to the selected OpenClaw profile.")
+                    }
+                    return
+                }
+                let defaultAgent = await self.runStep(name: "Default Agent") { engine.createDefaultAgent() }
+                if defaultAgent.state == .fail {
+                    await MainActor.run {
+                        self.isRunning = false
+                        self.screen = .install
+                        self.append("Setup stopped because the default agent could not be created for the selected profile.")
+                    }
+                    return
+                }
                 let runtime = await self.runStep(name: "OpenClaw Check") { engine.finalizeOpenClawRuntime() }
                 if runtime.state == .fail {
                     await MainActor.run {
@@ -3829,15 +4075,6 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
-    func downloadLatestInstaller() {
-        guard let url = URL(string: installerDownloadURL), !installerDownloadURL.isEmpty else {
-            append("No installer download URL found in manifest")
-            return
-        }
-        NSWorkspace.shared.open(url)
-        append("Opened installer download: \(installerDownloadURL)")
-    }
-
     nonisolated static func shellSingleQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
     }
@@ -3847,9 +4084,19 @@ final class InstallerViewModel: ObservableObject {
     }
 
     nonisolated static func sha256Hex(for fileURL: URL) throws -> String {
-        let data = try Data(contentsOf: fileURL)
-        let digest = SHA256.hash(data: data)
-        return digest.map { String(format: "%02x", $0) }.joined()
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    nonisolated static let maxInstallerDMGBytes: Int64 = 1_073_741_824
+
+    nonisolated static func installerDMGSizeIsAllowed(_ byteCount: Int64) -> Bool {
+        byteCount > 0 && byteCount <= maxInstallerDMGBytes
     }
 
     func updateLocalClawFromDMG() {
@@ -3860,30 +4107,25 @@ final class InstallerViewModel: ObservableObject {
         }
         let expectedSHA256 = installerExpectedSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard expectedSHA256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else {
-            installerUpdateStatus = "Using Git update..."
-            append("DMG update unavailable: manifest is missing a valid SHA256 checksum.")
-            append("Falling back to Advanced Git Update.")
-            updateLocalClaw()
+            installerUpdateStatus = "Update blocked"
+            append("DMG update blocked: the release manifest is missing a valid SHA256 checksum.")
+            append("No app or source checkout was changed. Retry CHECK later or use the explicitly labeled developer update only after reviewing its repository path.")
+            return
+        }
+        let versionComparison = compareVersion(installerLatestVersion, installerCurrentVersion)
+        let buildComparison = compareVersion(installerLatestBuild, installerBuildNumber)
+        guard versionComparison > 0 || (versionComparison == 0 && buildComparison > 0) else {
+            installerUpdateStatus = "Up to date"
+            append("DMG update skipped: the verified manifest does not describe a newer LocalClaw build.")
             return
         }
 
-        _ = createRecoveryPoint(reason: "Before LocalClaw update")
-
         isRunning = true
         installerUpdateStatus = "Downloading update..."
-        append("Starting LocalClaw app update from DMG")
-
-        let runningBundlePath = Bundle.main.bundlePath
-        let runningAppPath = runningBundlePath.hasSuffix(".app") ? runningBundlePath : ""
-        let targetApp: String = {
-            if runningAppPath == "/Applications/LocalClaw.app" || runningAppPath == NSHomeDirectory() + "/Applications/LocalClaw.app" {
-                return runningAppPath
-            }
-            if FileManager.default.fileExists(atPath: "/Applications/LocalClaw.app") {
-                return "/Applications/LocalClaw.app"
-            }
-            return NSHomeDirectory() + "/Applications/LocalClaw.app"
-        }()
+        append("Downloading and authenticating the LocalClaw DMG. The current app will not be replaced automatically.")
+        let expectedVersion = installerLatestVersion
+        let expectedBuild = installerLatestBuild
+        let updateEngine = engine
 
         Task.detached {
             do {
@@ -3891,15 +4133,25 @@ final class InstallerViewModel: ObservableObject {
                 guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
                     throw NSError(domain: "LocalClawUpdate", code: 1, userInfo: [NSLocalizedDescriptionKey: "Download failed"])
                 }
+                if http.expectedContentLength > 0,
+                   !Self.installerDMGSizeIsAllowed(http.expectedContentLength) {
+                    throw NSError(domain: "LocalClawUpdate", code: 3, userInfo: [NSLocalizedDescriptionKey: "Downloaded DMG exceeds the 1 GiB safety limit."])
+                }
 
                 let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("localclaw-update-\(UUID().uuidString)", isDirectory: true)
                 try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
                 let dmgPath = tempDir.appendingPathComponent("localclaw.dmg")
                 try? FileManager.default.removeItem(at: dmgPath)
                 try FileManager.default.moveItem(at: downloadedURL, to: dmgPath)
+                let downloadedSize = ((try FileManager.default.attributesOfItem(atPath: dmgPath.path)[.size]) as? NSNumber)?.int64Value ?? 0
+                guard Self.installerDMGSizeIsAllowed(downloadedSize) else {
+                    try? FileManager.default.removeItem(at: tempDir)
+                    throw NSError(domain: "LocalClawUpdate", code: 4, userInfo: [NSLocalizedDescriptionKey: "Downloaded DMG is empty or exceeds the 1 GiB safety limit."])
+                }
 
                 let actualSHA256 = try InstallerViewModel.sha256Hex(for: dmgPath)
                 guard actualSHA256 == expectedSHA256 else {
+                    try? FileManager.default.removeItem(at: tempDir)
                     throw NSError(
                         domain: "LocalClawUpdate",
                         code: 2,
@@ -3907,65 +4159,70 @@ final class InstallerViewModel: ObservableObject {
                     )
                 }
 
-                let scriptPath = tempDir.appendingPathComponent("install-localclaw-update.sh")
-                let quotedDMG = await MainActor.run { self.shellSingleQuote(dmgPath.path) }
-                let quotedTarget = await MainActor.run { self.shellSingleQuote(targetApp) }
-                let script = """
-                #!/bin/zsh
+                let quotedDMG = Self.shellSingleQuote(dmgPath.path)
+                let quotedVersion = Self.shellSingleQuote(expectedVersion)
+                let quotedBuild = Self.shellSingleQuote(expectedBuild)
+                let mountPath = tempDir.appendingPathComponent("verified-mount", isDirectory: true).path
+                let quotedMount = Self.shellSingleQuote(mountPath)
+                let verificationCommand = """
                 set -euo pipefail
                 DMG=\(quotedDMG)
-                TARGET=\(quotedTarget)
-                MOUNT_DIR="$(dirname "$DMG")/mount"
-
+                MOUNT_DIR=\(quotedMount)
+                EXPECTED_VERSION=\(quotedVersion)
+                EXPECTED_BUILD=\(quotedBuild)
+                EXPECTED_TEAM='923MBLC4X4'
+                EXPECTED_BUNDLE='io.localclaw.installer'
                 cleanup() {
-                  hdiutil detach "$MOUNT_DIR" -quiet || true
+                  /usr/bin/hdiutil detach "$MOUNT_DIR" -quiet >/dev/null 2>&1 || true
                 }
                 trap cleanup EXIT
 
-                rm -rf "$MOUNT_DIR"
-                mkdir -p "$MOUNT_DIR"
-                hdiutil attach "$DMG" -nobrowse -quiet -mountpoint "$MOUNT_DIR"
+                /bin/rm -rf "$MOUNT_DIR"
+                /bin/mkdir -p "$MOUNT_DIR"
+                /usr/bin/codesign --verify --verbose=2 "$DMG"
+                DMG_TEAM="$(/usr/bin/codesign -dv --verbose=4 "$DMG" 2>&1 | /usr/bin/sed -n 's/^TeamIdentifier=//p' | /usr/bin/head -1)"
+                [ "$DMG_TEAM" = "$EXPECTED_TEAM" ] || { echo "Unexpected DMG signing team: ${DMG_TEAM:-none}"; exit 1; }
+                /usr/sbin/spctl -a -t open --context context:primary-signature -vv "$DMG"
+                /usr/bin/hdiutil attach "$DMG" -nobrowse -quiet -mountpoint "$MOUNT_DIR"
                 APP_SOURCE="$MOUNT_DIR/LocalClaw.app"
-                if [ ! -d "$APP_SOURCE" ]; then
-                  echo "LocalClaw.app not found in DMG"
-                  exit 1
+                [ -d "$APP_SOURCE" ] || { echo "LocalClaw.app not found in DMG"; exit 1; }
+                /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_SOURCE"
+                APP_TEAM="$(/usr/bin/codesign -dv --verbose=4 "$APP_SOURCE" 2>&1 | /usr/bin/sed -n 's/^TeamIdentifier=//p' | /usr/bin/head -1)"
+                [ "$APP_TEAM" = "$EXPECTED_TEAM" ] || { echo "Unexpected app signing team: ${APP_TEAM:-none}"; exit 1; }
+                BUNDLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_SOURCE/Contents/Info.plist")"
+                VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_SOURCE/Contents/Info.plist")"
+                BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_SOURCE/Contents/Info.plist")"
+                [ "$BUNDLE" = "$EXPECTED_BUNDLE" ] || { echo "Unexpected bundle identifier: $BUNDLE"; exit 1; }
+                [ "$VERSION" = "$EXPECTED_VERSION" ] || { echo "Manifest/app version mismatch: $VERSION"; exit 1; }
+                if [ -n "$EXPECTED_BUILD" ]; then
+                  [ "$BUILD" = "$EXPECTED_BUILD" ] || { echo "Manifest/app build mismatch: $BUILD"; exit 1; }
                 fi
-
-                if [[ "$TARGET" == /Applications/* ]]; then
-                  /usr/bin/osascript -e "do shell script \"rm -rf '$TARGET' && cp -R '$APP_SOURCE' '$TARGET'\" with administrator privileges"
-                else
-                  mkdir -p "$(dirname "$TARGET")"
-                  rm -rf "$TARGET"
-                  cp -R "$APP_SOURCE" "$TARGET"
-                fi
-
-                /usr/bin/osascript -e 'tell application "LocalClaw" to quit' >/dev/null 2>&1 || true
-                sleep 1
-                /usr/bin/open "$TARGET" || true
+                /usr/sbin/spctl -a -t exec -vv "$APP_SOURCE"
                 """
-                try script.write(to: scriptPath, atomically: true, encoding: .utf8)
-                _ = await MainActor.run { self.engine.shell("chmod +x \(self.shellSingleQuote(scriptPath.path))") }
-
                 await MainActor.run {
-                    self.append("Downloaded update DMG. SHA256 verified. Installing LocalClaw to \(targetApp)...")
-                    self.installerUpdateStatus = "Installing update..."
+                    self.append("Downloaded update DMG. SHA256 verified; checking Apple signatures, Team ID, bundle identity, version, build, and Gatekeeper...")
+                    self.installerUpdateStatus = "Verifying update..."
                 }
 
-                let result = await MainActor.run { self.engine.shell("nohup \(self.shellSingleQuote(scriptPath.path)) >/tmp/localclaw-update.log 2>&1 &") }
+                let result = updateEngine.shell(verificationCommand)
+                if result.0 != 0 { try? FileManager.default.removeItem(at: tempDir) }
                 await MainActor.run {
                     if result.0 == 0 {
-                        self.append("Installer started in background. LocalClaw will restart automatically.")
-                        self.installerUpdateStatus = "Restarting..."
+                        self.append("Verified LocalClaw \(expectedVersion) (\(expectedBuild)) from the mounted DMG.")
+                        self.append("The DMG will now open. Drag LocalClaw to Applications and approve macOS replacement. LocalClaw did not elevate privileges or replace the running app automatically.")
+                        NSWorkspace.shared.open(dmgPath)
+                        self.installerUpdateStatus = "Verified DMG ready"
                     } else {
-                        self.append("Failed to start background installer: \(result.1)")
-                        self.installerUpdateStatus = "Update failed"
-                        self.isRunning = false
+                        self.append("Update verification failed before installation: \(result.1)")
+                        self.append("The running LocalClaw app was not changed.")
+                        self.installerUpdateStatus = "Update blocked"
                     }
+                    self.isRunning = false
                 }
             } catch {
                 await MainActor.run {
                     self.append("LocalClaw DMG update failed: \(error.localizedDescription)")
-                    self.append("Fallback available: use ADVANCED GIT UPDATE.")
+                    self.append("The running LocalClaw app was not changed.")
                     self.installerUpdateStatus = "Update failed"
                     self.isRunning = false
                 }
@@ -3973,148 +4230,10 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
-    func updateLocalClaw() {
-        let defaultRepoDir = NSHomeDirectory() + "/LocalClaw"
-        let repoDir = ProcessInfo.processInfo.environment["LOCALCLAW_REPO_DIR"] ?? defaultRepoDir
-        let repoURL = ProcessInfo.processInfo.environment["LOCALCLAW_GITHUB_REPO"] ?? "https://github.com/CyrilDieumegard/LocalClaw.git"
-        let runningBundlePath = Bundle.main.bundlePath
-        let runningAppPath = runningBundlePath.hasSuffix(".app") ? runningBundlePath : ""
-
-        let script = """
-        #!/bin/zsh
-        clear
-        export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
-
-        REPO_DIR="\(repoDir)"
-        REPO_URL="\(repoURL)"
-
-        echo "=========================================="
-        echo "  LocalClaw Update"
-        echo "=========================================="
-        echo ""
-
-        if [ ! -d "$REPO_DIR/.git" ]; then
-          echo "Repo not found at: $REPO_DIR"
-          echo "Cloning from: $REPO_URL"
-          git clone "$REPO_URL" "$REPO_DIR" || exit 1
-        fi
-
-        cd "$REPO_DIR" || exit 1
-
-        echo "Fetching remote..."
-        git fetch origin main || exit 1
-
-        # Client-safe update path: always align local repo to origin/main
-        git checkout main >/dev/null 2>&1 || git checkout -B main origin/main || exit 1
-
-        LOCAL_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
-        REMOTE_SHA=$(git rev-parse origin/main 2>/dev/null || echo "")
-
-        if [ -n "$LOCAL_SHA" ] && [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
-          echo "Already up to date."
-        else
-          echo "Updating to latest main..."
-          git reset --hard origin/main || exit 1
-        fi
-
-        echo ""
-        echo "Building app bundle..."
-        bash scripts/build-dmg.sh || exit 1
-
-        APP_SOURCE="$REPO_DIR/dist/LocalClaw.app"
-        if [ ! -d "$APP_SOURCE" ]; then
-          echo "Build did not produce LocalClaw.app"
-          exit 1
-        fi
-
-        TARGET_APP=""
-        RUNNING_APP="\(runningAppPath)"
-
-        # Never target transient paths (DMG mount, AppTranslocation, tmp copies)
-        if [ -n "$RUNNING_APP" ] && [ -d "$RUNNING_APP" ]; then
-          case "$RUNNING_APP" in
-            /Applications/LocalClaw.app|$HOME/Applications/LocalClaw.app)
-              TARGET_APP="$RUNNING_APP"
-              ;;
-            *)
-              echo "Running app path is transient: $RUNNING_APP"
-              echo "Will install to a stable Applications location instead."
-              ;;
-          esac
-        fi
-
-        if [ -z "$TARGET_APP" ] && [ -d "/Applications/LocalClaw.app" ]; then
-          TARGET_APP="/Applications/LocalClaw.app"
-        fi
-        if [ -z "$TARGET_APP" ]; then
-          TARGET_APP="$HOME/Applications/LocalClaw.app"
-        fi
-
-        echo ""
-        echo "Installing updated app..."
-        INSTALLED_TO=""
-
-        if [[ "$TARGET_APP" == /Applications/* ]]; then
-          echo "Target: $TARGET_APP (admin)"
-          if sudo rm -rf "$TARGET_APP" && sudo cp -R "$APP_SOURCE" "$TARGET_APP"; then
-            INSTALLED_TO="$TARGET_APP"
-          else
-            echo "Could not write $TARGET_APP (permission denied or sudo cancelled)."
-          fi
-        else
-          echo "Target: $TARGET_APP (user)"
-          mkdir -p "$(dirname "$TARGET_APP")"
-          if rm -rf "$TARGET_APP" && cp -R "$APP_SOURCE" "$TARGET_APP"; then
-            INSTALLED_TO="$TARGET_APP"
-          fi
-        fi
-
-        if [ -z "$INSTALLED_TO" ] && [ "$TARGET_APP" != "$HOME/Applications/LocalClaw.app" ]; then
-          echo "Falling back to user install..."
-          mkdir -p "$HOME/Applications"
-          rm -rf "$HOME/Applications/LocalClaw.app"
-          cp -R "$APP_SOURCE" "$HOME/Applications/LocalClaw.app" || exit 1
-          INSTALLED_TO="$HOME/Applications/LocalClaw.app"
-        fi
-
-        if [ -z "$INSTALLED_TO" ] || [ ! -d "$INSTALLED_TO" ]; then
-          echo "Install failed: no destination app bundle found"
-          exit 1
-        fi
-
-        INSTALLED_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INSTALLED_TO/Contents/Info.plist" 2>/dev/null || echo "?")
-        INSTALLED_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INSTALLED_TO/Contents/Info.plist" 2>/dev/null || echo "?")
-
-        echo "Installed to: $INSTALLED_TO"
-        echo "Installed version: $INSTALLED_VERSION (build $INSTALLED_BUILD)"
-
-        echo ""
-        echo "Restarting LocalClaw..."
-        osascript -e 'tell application "LocalClaw" to quit' >/dev/null 2>&1 || true
-        sleep 1
-        open "$INSTALLED_TO" || true
-
-        echo ""
-        echo "Done. LocalClaw was rebuilt and reinstalled."
-        echo ""
-        read -r "REPLY?Press Enter to close..."
-        """
-
-        let scriptPath = "/tmp/localclaw_update.sh"
-        do {
-            try script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
-            _ = engine.shell("chmod +x \(scriptPath)")
-            _ = engine.shell("osascript -e 'tell application \"Terminal\" to do script \"\(scriptPath)\"'")
-            append("Opened Terminal for advanced Git update fallback")
-        } catch {
-            append("Failed to start GitHub update flow: \(error.localizedDescription)")
-        }
-    }
-
     func updateAll() {
         if isRunning || chatIsSending { return }
         if installerUpdateStatus == "Update available" {
-            append("LocalClaw app update available. Updating the app first; it will restart automatically.")
+            append("LocalClaw app update available. Verifying the signed DMG first; macOS will ask you to replace the app manually.")
             updateLocalClawFromDMG()
             return
         }
@@ -4234,7 +4353,6 @@ final class InstallerViewModel: ObservableObject {
         case .oauth:
             if Self.isOAuthRuntimeModelID(currentModel) { add(currentModel) }
             if Self.isOAuthRuntimeModelID(selectedChatModel) { add(selectedChatModel) }
-            for model in runtimeOAuthFallbackModels { add(model.id) }
             for model in oauthModelsLive { add(model.id) }
         }
         return values
@@ -4326,7 +4444,9 @@ final class InstallerViewModel: ObservableObject {
     }
 
     private func defaultAgentWorkspace(for agentID: String) -> String {
-        NSHomeDirectory() + "/.openclaw/workspaces/\(agentID)"
+        let state = (try? OpenClawRuntimeInstallation.selectedState())
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".openclaw", isDirectory: true)
+        return state.appendingPathComponent("workspaces/\(agentID)", isDirectory: true).path
     }
 
     private func currentModelForAgentSetup() -> String {
@@ -4373,6 +4493,13 @@ final class InstallerViewModel: ObservableObject {
         let workspace = Self.expandedHomePath(agentSetupWorkspace.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? defaultAgentWorkspace(for: id) : agentSetupWorkspace)
         let model = agentSetupModel.trimmingCharacters(in: .whitespacesAndNewlines)
         let agentDir = agents.first(where: { $0.id == id })?.agentDir
+        let selectedStatePath: String
+        do {
+            selectedStatePath = try OpenClawRuntimeInstallation.selectedState().path
+        } catch {
+            agentSetupStatus = "Select one OpenClaw profile before creating or editing an agent. Nothing was changed. \(error.localizedDescription)"
+            return
+        }
 
         agentSetupIsRunning = true
         agentSetupStatus = isEditing ? "Saving agent..." : "Creating agent..."
@@ -4402,7 +4529,12 @@ final class InstallerViewModel: ObservableObject {
                         messages.append("Model config failed: \(config.message)")
                     }
                 }
-                let write = Self.writeAgentModelSelection(agentID: id, model: model, agentDir: agentDir)
+                let write = Self.writeAgentModelSelection(
+                    agentID: id,
+                    model: model,
+                    agentDir: agentDir,
+                    selectedStatePath: selectedStatePath
+                )
                 if !write.ok {
                     ok = false
                     messages.append("Model save failed: \(write.message)")
@@ -4462,15 +4594,19 @@ final class InstallerViewModel: ObservableObject {
         return trimmed
     }
 
-    nonisolated private static func writeAgentModelSelection(agentID: String, model: String, agentDir: String?) -> (ok: Bool, message: String) {
+    nonisolated private static func writeAgentModelSelection(
+        agentID: String,
+        model: String,
+        agentDir: String?,
+        selectedStatePath: String
+    ) -> (ok: Bool, message: String) {
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return (true, "No model selected") }
         let stateDir: URL
         if let agentDir, !agentDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             stateDir = URL(fileURLWithPath: agentDir).deletingLastPathComponent()
         } else {
-            stateDir = URL(fileURLWithPath: NSHomeDirectory())
-                .appendingPathComponent(".openclaw", isDirectory: true)
+            stateDir = URL(fileURLWithPath: selectedStatePath, isDirectory: true)
                 .appendingPathComponent("agents", isDirectory: true)
                 .appendingPathComponent(agentID, isDirectory: true)
         }
@@ -4556,6 +4692,9 @@ final class InstallerViewModel: ObservableObject {
         Task.detached {
             let engine = InstallerEngine()
             let result = engine.shell(Self.cronListInventoryCommand + " 2>&1")
+            let kanbanBindings = result.0 == 0
+                ? Self.kanbanCronInventoryBindings(from: result.1)
+                : [:]
 
             await MainActor.run {
                 self.cronJobsIsLoading = false
@@ -4575,7 +4714,26 @@ final class InstallerViewModel: ObservableObject {
                         if $0.enabled != $1.enabled { return $0.enabled && !$1.enabled }
                         return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
                     }
-                self.reconcileKanbanCompletedAutomations(knownCronJobIDs: Set(self.cronJobs.map(\.id)))
+                let inventoryIsComplete = !hasMore && total <= jobs.count
+                if inventoryIsComplete {
+                    var recoveredBindings = 0
+                    for columnIndex in self.kanbanColumns.indices {
+                        for cardIndex in self.kanbanColumns[columnIndex].cards.indices {
+                            let card = self.kanbanColumns[columnIndex].cards[cardIndex]
+                            guard card.cronEnabled, card.cronJobID.isEmpty,
+                                  let jobID = kanbanBindings[card.id] else { continue }
+                            self.kanbanColumns[columnIndex].cards[cardIndex].cronJobID = jobID
+                            self.kanbanColumns[columnIndex].cards[cardIndex].updatedAt = Date()
+                            recoveredBindings += 1
+                        }
+                    }
+                    self.reconcileKanbanCompletedAutomations(knownCronJobIDs: Set(self.cronJobs.map(\.id)))
+                    if recoveredBindings > 0 {
+                        self.kanbanStatus = "Recovered \(recoveredBindings) exact Kanban Cron binding\(recoveredBindings == 1 ? "" : "s") from the complete OpenClaw inventory."
+                    }
+                } else {
+                    self.kanbanStatus = "Cron inventory is partial (\(jobs.count) of \(total)). LocalClaw kept every card binding until a complete inventory is available."
+                }
 
                 let activeCount = self.cronJobs.filter(\.enabled).count
                 self.cronJobsStatus = "\(activeCount) active · \(self.cronJobs.count) jobs"
@@ -4900,8 +5058,8 @@ final class InstallerViewModel: ObservableObject {
 
     nonisolated private static func knownTelegramDestinations() -> [CronDeliveryDestination] {
         var result: [String: CronDeliveryDestination] = [:]
-        let home = NSHomeDirectory()
-        let messagePath = "\(home)/.openclaw/agents/main/sessions/sessions.json.telegram-messages.json"
+        guard let statePath = try? OpenClawRuntimeInstallation.selectedState().path else { return [] }
+        let messagePath = "\(statePath)/agents/main/sessions/sessions.json.telegram-messages.json"
         if let text = try? String(contentsOfFile: messagePath, encoding: .utf8) {
             for line in text.split(whereSeparator: \.isNewline) {
                 guard let data = String(line).data(using: .utf8),
@@ -4926,7 +5084,7 @@ final class InstallerViewModel: ObservableObject {
             }
         }
 
-        let allowPath = "\(home)/.openclaw/credentials/telegram-default-allowFrom.json"
+        let allowPath = "\(statePath)/credentials/telegram-default-allowFrom.json"
         if let data = try? Data(contentsOf: URL(fileURLWithPath: allowPath)),
            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let allowFrom = root["allowFrom"] as? [Any] {
@@ -5015,8 +5173,7 @@ final class InstallerViewModel: ObservableObject {
         .joined(separator: " ")
 
         Task.detached {
-            let engine = InstallerEngine()
-            let result = engine.shell(command)
+            let result = Self.runKanbanCronCommand(command)
             await MainActor.run {
                 self.cronCreateIsRunning = false
                 let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5026,6 +5183,10 @@ final class InstallerViewModel: ObservableObject {
                     self.resetCronJobCreator()
                     self.cronJobLogs += "\n\(wasEditing ? "Updated" : "Created") cron job \(name)."
                     if !output.isEmpty { self.cronJobLogs += "\n\(output)" }
+                    self.refreshCronJobs()
+                } else if result.0 == 124 {
+                    self.cronCreateError = output
+                    self.cronJobLogs += "\nCron job \(isEditing ? "update" : "creation") state is unknown for \(name). No retry was started."
                     self.refreshCronJobs()
                 } else {
                     self.cronCreateError = output.isEmpty ? "Cron job \(isEditing ? "update" : "creation") failed." : output
@@ -5095,8 +5256,9 @@ final class InstallerViewModel: ObservableObject {
         let quotedID = Self.shellSingleQuote(job.id)
 
         Task.detached {
-            let engine = InstallerEngine()
-            let result = engine.shell("openclaw --no-color cron rm \(quotedID) --json 2>&1")
+            let result = Self.runKanbanCronCommand(
+                "openclaw --no-color cron rm \(quotedID) --json 2>&1"
+            )
             await MainActor.run {
                 self.cronDeleteIsRunning = false
                 let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5106,6 +5268,10 @@ final class InstallerViewModel: ObservableObject {
                     self.cronDeleteCandidate = nil
                     self.cronDeleteConfirmText = ""
                     self.refreshCronJobs()
+                } else if result.0 == 124 {
+                    self.cronDeleteError = output
+                    self.cronJobLogs += "\nCron deletion state is unknown for \(job.name). No retry was started."
+                    self.refreshCronJobs()
                 } else {
                     self.cronDeleteError = output.isEmpty ? "Cron job deletion failed." : output
                     self.cronJobLogs += "\nFailed to delete cron job \(job.name): \(self.cronDeleteError)"
@@ -5114,7 +5280,22 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    @discardableResult
+    func beginCronManualRun(_ jobID: String) -> Bool {
+        cronManualRunInFlightJobIDs.insert(jobID).inserted
+    }
+
+    func finishCronManualRun(_ jobID: String) {
+        cronManualRunInFlightJobIDs.remove(jobID)
+    }
+
     func runCronJobNow(_ jobID: String) {
+        guard beginCronManualRun(jobID) else {
+            cronJobLogs = cronJobLogs.isEmpty
+                ? "Cron job \(jobID) is already running manually. No duplicate run was started."
+                : cronJobLogs + "\nCron job \(jobID) is already running manually. No duplicate run was started."
+            return
+        }
         cronJobLogs = cronJobLogs.isEmpty ? "Running cron job \(jobID)..." : cronJobLogs + "\nRunning cron job \(jobID)..."
         let job = cronJobs.first { $0.id == jobID }
         let agentID = job?.agentID ?? "main"
@@ -5129,12 +5310,20 @@ final class InstallerViewModel: ObservableObject {
         )
         let quotedID = Self.shellSingleQuote(jobID)
         Task.detached {
-            let engine = InstallerEngine()
-            let result = engine.shell("openclaw --no-color cron run \(quotedID) 2>&1")
+            let result = Self.runKanbanCronCommand(
+                "openclaw --no-color cron run \(quotedID) 2>&1",
+                timeoutSeconds: 120
+            )
             await MainActor.run {
+                defer { self.finishCronManualRun(jobID) }
                 let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
                 self.cronJobLogs += "\n\(output)"
-                self.finishAutomationReceipt(receiptID, succeeded: result.0 == 0, output: output)
+                if result.0 == 124 {
+                    self.finishAutomationReceipt(receiptID, status: .unknown, output: output)
+                    self.cronJobLogs += "\nCron run completion is unknown. No retry was started; check run history first."
+                } else {
+                    self.finishAutomationReceipt(receiptID, succeeded: result.0 == 0, output: output)
+                }
                 self.refreshCronRunHistory(jobID: jobID)
                 self.refreshCronJobs()
             }
@@ -5146,11 +5335,14 @@ final class InstallerViewModel: ObservableObject {
         cronJobLogs = cronJobLogs.isEmpty ? "\(enabled ? "Starting" : "Stopping") cron job \(jobID)..." : cronJobLogs + "\n\(enabled ? "Starting" : "Stopping") cron job \(jobID)..."
         let quotedID = Self.shellSingleQuote(jobID)
         Task.detached {
-            let engine = InstallerEngine()
-            let result = engine.shell("openclaw --no-color cron \(action) \(quotedID) 2>&1")
+            let result = Self.runKanbanCronCommand(
+                "openclaw --no-color cron \(action) \(quotedID) 2>&1"
+            )
             await MainActor.run {
                 let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
-                if output.isEmpty {
+                if result.0 == 124 {
+                    self.cronJobLogs += "\nCron \(action) state is unknown. No retry was started; refreshing the authoritative inventory."
+                } else if output.isEmpty {
                     self.cronJobLogs += "\nCron job \(enabled ? "started" : "stopped")."
                 } else {
                     self.cronJobLogs += "\n\(output)"
@@ -5207,27 +5399,62 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    private func selectedOpenClawTerminalContext() throws -> (OpenClawRuntimeInstallation, String) {
+        let runtime = try OpenClawRuntimeMaintenance(run: engine.maintenanceShell).installation()
+        let profileExport = runtime.profile.map {
+            "export OPENCLAW_PROFILE=\(OpenClawRuntimeInstallation.quote($0))"
+        } ?? ""
+        let labelExport = runtime.serviceLabel.map {
+            "export OPENCLAW_LAUNCHD_LABEL=\(OpenClawRuntimeInstallation.quote($0))"
+        } ?? ""
+        let portExport = runtime.port.map { "export OPENCLAW_GATEWAY_PORT=\($0)" } ?? ""
+        let header = """
+        export PATH=\(OpenClawRuntimeInstallation.quote(runtime.node.deletingLastPathComponent().path + ":" + runtime.bin.path)):"$PATH"
+        export OPENCLAW_DIST_DIR=\(OpenClawRuntimeInstallation.quote(runtime.package.appendingPathComponent("dist").path))
+        export OPENCLAW_STATE_DIR=\(OpenClawRuntimeInstallation.quote(runtime.state.path))
+        export OPENCLAW_CONFIG_PATH=\(OpenClawRuntimeInstallation.quote(runtime.config.path))
+        \(profileExport)
+        \(labelExport)
+        \(portExport)
+        OPENCLAW_NODE=\(OpenClawRuntimeInstallation.quote(runtime.node.path))
+        OPENCLAW_CLI=\(OpenClawRuntimeInstallation.quote(runtime.cli.path))
+        OPENCLAW_CMD=("$OPENCLAW_NODE" "$OPENCLAW_CLI")
+        openclaw_selected() { "$OPENCLAW_NODE" "$OPENCLAW_CLI" "$@"; }
+        OPENCLAW_BIN=openclaw_selected
+        """
+        return (runtime, header)
+    }
+
     func openTerminalAgentCreate() {
+        let runtime: OpenClawRuntimeInstallation
+        let runtimeHeader: String
+        do {
+            (runtime, runtimeHeader) = try selectedOpenClawTerminalContext()
+        } catch {
+            agentLogs = "Agent creation blocked: LocalClaw could not select one OpenClaw runtime and profile. \(error.localizedDescription)"
+            return
+        }
         let script = """
         #!/bin/zsh
+        set -u
         clear
-        export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
-        OPENCLAW_BIN="$(command -v openclaw 2>/dev/null || true)"
+        \(runtimeHeader)
+        WORKSPACE_ROOT=\(OpenClawRuntimeInstallation.quote(runtime.state.appendingPathComponent("workspaces").path))
 
         echo "=========================================="
         echo "  LocalClaw Agent Setup"
         echo "=========================================="
         echo ""
 
-        if [ -z "$OPENCLAW_BIN" ]; then
-            echo "[ERROR] openclaw command not found in PATH"
+        if [ ! -x "$OPENCLAW_NODE" ] || [ ! -f "$OPENCLAW_CLI" ]; then
+            echo "[ERROR] Selected OpenClaw runtime is incomplete"
             echo "Try reinstalling OpenClaw from LocalClaw first."
         else
             read -r "AGENT_ID?Agent id, ex: sales, support, dev: "
             if [ -z "$AGENT_ID" ]; then
                 echo "[ERROR] No agent id provided. Setup canceled."
             else
-                DEFAULT_WORKSPACE="$HOME/.openclaw/workspaces/$AGENT_ID"
+                DEFAULT_WORKSPACE="$WORKSPACE_ROOT/$AGENT_ID"
                 read -r "WORKSPACE?Workspace path [$DEFAULT_WORKSPACE]: "
                 WORKSPACE="${WORKSPACE:-$DEFAULT_WORKSPACE}"
                 read -r "MODEL?Model id, optional: "
@@ -5235,11 +5462,11 @@ final class InstallerViewModel: ObservableObject {
                 mkdir -p "$WORKSPACE"
                 echo ""
                 if [ -n "$MODEL" ]; then
-                    echo "Running: $OPENCLAW_BIN agents add $AGENT_ID --workspace $WORKSPACE --model $MODEL --non-interactive"
-                    "$OPENCLAW_BIN" agents add "$AGENT_ID" --workspace "$WORKSPACE" --model "$MODEL" --non-interactive
+                    echo "Adding agent to the selected OpenClaw profile..."
+                    "$OPENCLAW_NODE" "$OPENCLAW_CLI" agents add "$AGENT_ID" --workspace "$WORKSPACE" --model "$MODEL" --non-interactive
                 else
-                    echo "Running: $OPENCLAW_BIN agents add $AGENT_ID --workspace $WORKSPACE --non-interactive"
-                    "$OPENCLAW_BIN" agents add "$AGENT_ID" --workspace "$WORKSPACE" --non-interactive
+                    echo "Adding agent to the selected OpenClaw profile..."
+                    "$OPENCLAW_NODE" "$OPENCLAW_CLI" agents add "$AGENT_ID" --workspace "$WORKSPACE" --non-interactive
                 fi
             fi
         fi
@@ -5248,40 +5475,58 @@ final class InstallerViewModel: ObservableObject {
         read -r "REPLY?Press Enter to close..."
         """
 
-        let path = "/tmp/localclaw_agent_create.sh"
-        try? script.write(toFile: path, atomically: true, encoding: .utf8)
-        _ = engine.shell("chmod +x \(path)")
-        _ = engine.shell("open -a Terminal \(path)")
+        let path = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("localclaw-agent-create-\(UUID().uuidString).sh").path
+        do {
+            try script.write(toFile: path, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path)
+        } catch {
+            agentLogs = "Could not prepare the selected-profile agent assistant: \(error.localizedDescription)"
+            return
+        }
+        _ = engine.shell("open -a Terminal \(shellSingleQuote(path))")
         agentLogs = agentLogs.isEmpty ? "Started agent creation in Terminal" : agentLogs + "\nStarted agent creation in Terminal"
     }
 
     func openTerminalAgentIdentity(_ agentID: String) {
+        guard agentID.range(of: #"^[A-Za-z0-9][A-Za-z0-9_-]*$"#, options: .regularExpression) != nil else {
+            agentLogs = "Identity edit blocked: invalid agent id."
+            return
+        }
+        let runtimeHeader: String
+        do {
+            (_, runtimeHeader) = try selectedOpenClawTerminalContext()
+        } catch {
+            agentLogs = "Identity edit blocked: LocalClaw could not select one OpenClaw runtime and profile. \(error.localizedDescription)"
+            return
+        }
         let script = """
         #!/bin/zsh
+        set -u
         clear
-        export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
-        OPENCLAW_BIN="$(command -v openclaw 2>/dev/null || true)"
+        \(runtimeHeader)
+        AGENT_ID=\(Self.shellSingleQuote(agentID))
 
         echo "=========================================="
         echo "  LocalClaw Agent Identity: \(agentID)"
         echo "=========================================="
         echo ""
 
-        if [ -z "$OPENCLAW_BIN" ]; then
-            echo "[ERROR] openclaw command not found in PATH"
+        if [ ! -x "$OPENCLAW_NODE" ] || [ ! -f "$OPENCLAW_CLI" ]; then
+            echo "[ERROR] selected OpenClaw runtime is incomplete"
         else
             read -r "NAME?Display name, optional: "
             read -r "EMOJI?Emoji, optional: "
 
-            ARGS=(agents set-identity --agent "\(agentID)")
+            ARGS=(agents set-identity --agent "$AGENT_ID")
             if [ -n "$NAME" ]; then ARGS+=(--name "$NAME"); fi
             if [ -n "$EMOJI" ]; then ARGS+=(--emoji "$EMOJI"); fi
 
             if [ -z "$NAME" ] && [ -z "$EMOJI" ]; then
                 echo "Nothing to update."
             else
-                echo "Running: $OPENCLAW_BIN ${ARGS[*]}"
-                "$OPENCLAW_BIN" "${ARGS[@]}"
+                echo "Running the selected profile: ${ARGS[*]}"
+                "${OPENCLAW_CMD[@]}" "${ARGS[@]}"
             fi
         fi
 
@@ -5289,11 +5534,16 @@ final class InstallerViewModel: ObservableObject {
         read -r "REPLY?Press Enter to close..."
         """
 
-        let safeID = agentID.replacingOccurrences(of: "/", with: "_")
-        let path = "/tmp/localclaw_agent_identity_\(safeID).sh"
-        try? script.write(toFile: path, atomically: true, encoding: .utf8)
-        _ = engine.shell("chmod +x \(path)")
-        _ = engine.shell("open -a Terminal \(path)")
+        let path = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("localclaw-agent-identity-\(UUID().uuidString).sh").path
+        do {
+            try script.write(toFile: path, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path)
+        } catch {
+            agentLogs = "Could not prepare the selected-profile identity assistant: \(error.localizedDescription)"
+            return
+        }
+        _ = engine.shell("open -a Terminal \(shellSingleQuote(path))")
         agentLogs = agentLogs.isEmpty ? "Started identity edit for \(agentID)" : agentLogs + "\nStarted identity edit for \(agentID)"
     }
 
@@ -5728,7 +5978,15 @@ final class InstallerViewModel: ObservableObject {
 
         Task.detached {
             let engine = InstallerEngine()
-            let tokenURL = URL(fileURLWithPath: Self.persistentTelegramTokenFilePath())
+            guard let tokenPath = Self.persistentTelegramTokenFilePath() else {
+                await MainActor.run {
+                    self.telegramSetupIsRunning = false
+                    self.telegramSetupStatus = "Select one OpenClaw profile before saving the Telegram token."
+                    self.channelSetupLogs += "\nTelegram token setup stopped: OpenClaw profile is ambiguous."
+                }
+                return
+            }
+            let tokenURL = URL(fileURLWithPath: tokenPath)
             let tokenDirectory = tokenURL.deletingLastPathComponent()
             do {
                 try FileManager.default.createDirectory(at: tokenDirectory, withIntermediateDirectories: true)
@@ -5745,27 +6003,36 @@ final class InstallerViewModel: ObservableObject {
             _ = engine.shell("chmod 600 \(Self.shellSingleQuote(tokenURL.path))")
 
             let tokenFile = Self.shellSingleQuote(tokenURL.path)
-            let command = [
-                "openclaw --no-color plugins enable telegram >/dev/null 2>&1 || openclaw --no-color plugins enable @openclaw/telegram >/dev/null 2>&1 || true",
-                "openclaw --no-color channels add --channel telegram --account default --token-file \(tokenFile) --name Telegram 2>&1"
-            ].joined(separator: " && ")
-            let result = engine.shell(command)
-            Self.ensureTelegramDefaultAccountToken()
+            var enable = engine.shell("openclaw --no-color plugins enable telegram 2>&1")
+            if enable.0 != 0 {
+                let fallback = engine.shell("openclaw --no-color plugins enable @openclaw/telegram 2>&1")
+                if fallback.0 == 0 || !fallback.1.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    enable = fallback
+                }
+            }
+            let result = enable.0 == 0
+                ? engine.shell("openclaw --no-color channels add --channel telegram --account default --token-file \(tokenFile) --name Telegram 2>&1")
+                : enable
 
             var messages: [String] = []
             let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
             if result.0 == 0 {
-                messages.append("Telegram token saved.")
-                messages.append("Token stored in a persistent private file.")
+                Self.ensureTelegramDefaultAccountToken()
+                messages.append("Telegram token stored in a persistent private file.")
                 if !output.isEmpty { messages.append(output) }
-                let restart = engine.shell("openclaw --no-color gateway restart 2>&1 || true")
+                let restart = engine.shell("openclaw --no-color gateway restart 2>&1")
                 let restartOutput = restart.1.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !restartOutput.isEmpty { messages.append(restartOutput) }
-                let status = engine.shell("openclaw --no-color channels status --channel telegram --probe --timeout 5000 2>&1 || true")
+                let status = restart.0 == 0
+                    ? engine.shell("openclaw --no-color channels status --channel telegram --probe --timeout 5000 2>&1")
+                    : restart
                 let statusOutput = status.1.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !statusOutput.isEmpty { messages.append(statusOutput) }
+                messages.append(restart.0 == 0 && status.0 == 0
+                    ? "Telegram connection verified."
+                    : "Telegram credentials were saved, but restart/probe did not verify the connection. Use Repair and review the diagnostic before retrying.")
             } else {
-                messages.append("Telegram token setup failed.")
+                messages.append("Telegram setup stopped before channel configuration. Review and approve any requested plugin capabilities, then retry.")
                 if !output.isEmpty { messages.append(output) }
             }
 
@@ -5852,6 +6119,17 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func openTerminalChannelLogin(_ channel: String) {
+        guard channel.range(of: #"^[a-z0-9][a-z0-9_-]*$"#, options: .regularExpression) != nil else {
+            channelSetupLogs = "Channel setup blocked: invalid channel id."
+            return
+        }
+        let runtimeHeader: String
+        do {
+            (_, runtimeHeader) = try selectedOpenClawTerminalContext()
+        } catch {
+            channelSetupLogs = "Channel setup blocked: LocalClaw could not select one OpenClaw runtime and profile. \(error.localizedDescription)"
+            return
+        }
         let setupFlow: String
 
         if channel == "telegram" {
@@ -5950,12 +6228,6 @@ final class InstallerViewModel: ObservableObject {
             echo "In WhatsApp mobile: Settings > Linked Devices > Link a Device."
             echo ""
 
-            WHATSAPP_PLUGIN_PATH="/opt/homebrew/lib/node_modules/openclaw/dist/extensions/whatsapp"
-            if [ -d "$WHATSAPP_PLUGIN_PATH" ]; then
-                echo "Installing WhatsApp plugin from local path (non-interactive)..."
-                "$OPENCLAW_BIN" plugins install "$WHATSAPP_PLUGIN_PATH" >/dev/null 2>&1 || true
-                echo ""
-            fi
             "$OPENCLAW_BIN" plugins enable whatsapp >/dev/null 2>&1 || "$OPENCLAW_BIN" plugins enable @openclaw/whatsapp >/dev/null 2>&1 || true
 
             echo "Running: $OPENCLAW_BIN channels add --channel whatsapp"
@@ -6000,20 +6272,17 @@ final class InstallerViewModel: ObservableObject {
 
         let script = """
         #!/bin/zsh
+        set -u
         clear
-
-        # Ensure common Homebrew + user paths are available in non-login shells
-        export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
-
-        OPENCLAW_BIN="$(command -v openclaw 2>/dev/null || true)"
+        \(runtimeHeader)
 
         echo "=========================================="
         echo "  LocalClaw Channel Setup: \(channel.capitalized)"
         echo "=========================================="
         echo ""
 
-        if [ -z "$OPENCLAW_BIN" ]; then
-            echo "[ERROR] openclaw command not found in PATH"
+        if [ ! -x "$OPENCLAW_NODE" ] || [ ! -f "$OPENCLAW_CLI" ]; then
+            echo "[ERROR] selected OpenClaw runtime is incomplete"
             echo "Try restarting Terminal or reinstalling OpenClaw from Install tab."
             echo ""
         else
@@ -6027,10 +6296,16 @@ final class InstallerViewModel: ObservableObject {
         read -r "REPLY?Press Enter to close..."
         """
 
-        let path = "/tmp/localclaw_channel_\(channel).sh"
-        try? script.write(toFile: path, atomically: true, encoding: .utf8)
-        _ = engine.shell("chmod +x \(path)")
-        _ = engine.shell("open -a Terminal \(path)")
+        let path = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("localclaw-channel-\(channel)-\(UUID().uuidString).sh").path
+        do {
+            try script.write(toFile: path, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path)
+        } catch {
+            channelSetupLogs = "Could not prepare the selected-profile channel assistant: \(error.localizedDescription)"
+            return
+        }
+        _ = engine.shell("open -a Terminal \(shellSingleQuote(path))")
 
         channelSetupLogs = channelSetupLogs.isEmpty ? "Started \(channel) setup in Terminal" : channelSetupLogs + "\nStarted \(channel) setup in Terminal"
     }
@@ -6046,15 +6321,15 @@ final class InstallerViewModel: ObservableObject {
         case "support":
             inferenceMode = .cloud
             selectedProvider = .openRouter
-            selectedOpenRouterModel = "openrouter/google/gemini-2.5-flash-preview"
+            selectedOpenRouterModel = "openrouter/google/gemini-3.7-flash"
             _ = engine.writeModelToConfig(modelIdentifier: selectedOpenRouterModel)
-            agentLogs = "Applied legacy Support preset: Gemini 2.5 Flash + Cloud LLM"
+            agentLogs = "Applied Support preset: Gemini 3.7 Flash + Cloud LLM"
         case "growth":
             inferenceMode = .cloud
             selectedProvider = .openRouter
-            selectedOpenRouterModel = "openrouter/openai/gpt-4o-mini"
+            selectedOpenRouterModel = "openrouter/qwen/qwen3.8-flash"
             _ = engine.writeModelToConfig(modelIdentifier: selectedOpenRouterModel)
-            agentLogs = "Applied legacy Growth preset: GPT-4o Mini + Cloud LLM"
+            agentLogs = "Applied Growth preset: Qwen 3.8 Flash + Cloud LLM"
         case "dev":
             inferenceMode = .local
             selectedModel = !recommendation.isEmpty ? recommendation : (modelOptions.first ?? "")
@@ -6074,7 +6349,11 @@ final class InstallerViewModel: ObservableObject {
         // Modern runtimes resolve the local provider key from models.providers;
         // writing the retired JSON credential store would not update SQLite.
         if OpenClawCompatibility.usesUnifiedOpenAIRoutes(version: openclawInstalledVersion) { return }
-        let path = NSHomeDirectory() + "/.openclaw/agents/main/agent/auth-profiles.json"
+        guard let statePath = try? OpenClawRuntimeInstallation.selectedState().path else {
+            controlCenterLogs += "[FAIL] Select one OpenClaw profile before updating local credentials\n"
+            return
+        }
+        let path = statePath + "/agents/main/agent/auth-profiles.json"
         let dir = (path as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
 
@@ -6091,6 +6370,7 @@ final class InstallerViewModel: ObservableObject {
 
         if let out = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]) {
             try? out.write(to: URL(fileURLWithPath: path), options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
         }
     }
 
@@ -6144,13 +6424,20 @@ final class InstallerViewModel: ObservableObject {
             controlCenterLogs += "[OK] Model switch preserves OpenClaw sessions; new requests use model-scoped context\n"
             return
         }
-        let sessionsPath = NSHomeDirectory() + "/.openclaw/agents/main/sessions"
+        guard let statePath = try? OpenClawRuntimeInstallation.selectedState().path else {
+            controlCenterLogs += "[FAIL] Select one OpenClaw profile before resetting legacy sessions\n"
+            return
+        }
+        let sessionsPath = statePath + "/agents/main/sessions"
         _ = engine.shell("mkdir -p '\(sessionsPath)' && find '\(sessionsPath)' -name '*.jsonl' -type f -delete 2>/dev/null || true")
         controlCenterLogs += "[OK] Reset main agent sessions after mode switch\n"
     }
 
     private func writePrimaryAndSecondaryModel(primary: String, secondary: String?) {
-        let path = NSHomeDirectory() + "/.openclaw/openclaw.json"
+        guard let path = try? OpenClawRuntimeInstallation.selectedConfig().path else {
+            controlCenterLogs += "[FAIL] Select one OpenClaw profile before changing models\n"
+            return
+        }
         guard let data = FileManager.default.contents(atPath: path),
               var json = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) else {
             _ = engine.writeModelToConfig(modelIdentifier: primary)
@@ -6357,16 +6644,18 @@ final class InstallerViewModel: ObservableObject {
         }
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Restore this recovery point?"
-        alert.informativeText = "LocalClaw will replace the saved OpenClaw configuration and authentication profile with the snapshot from \(Self.shortDateTime(point.createdAt))."
-        alert.addButton(withTitle: "Restore")
+        alert.messageText = "Restore this config snapshot?"
+        alert.informativeText = "This restores only the selected OpenClaw profile's configuration, legacy main-agent authentication profile and LocalClaw preferences from \(Self.shortDateTime(point.createdAt)). It is not a full OpenClaw database or workspace restore."
+        alert.addButton(withTitle: "Restore Config")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         do {
             try recoveryService.restore(point)
-            _ = engine.restartGateway()
-            recoveryStatus = "Recovery point restored"
+            let restart = engine.restartGateway()
+            recoveryStatus = restart.state == .fail
+                ? "Config snapshot restored; Gateway restart failed: \(restart.message)"
+                : "Config snapshot restored and Gateway restart requested"
             refreshRuntimeSnapshot()
         } catch {
             recoveryStatus = "Restore failed: \(error.localizedDescription)"
@@ -6554,7 +6843,19 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func restoreKanbanBoard() {
-        guard let data = UserDefaults.standard.data(forKey: Self.kanbanDefaultsKey),
+        guard let storage = kanbanStorageIdentity() else {
+            kanbanColumns = KanbanColumn.defaults
+            kanbanStatus = "Select one OpenClaw profile to load its LocalClaw Board."
+            return
+        }
+        let key = "localclaw.kanban.board.v2.\(storage.keySuffix)"
+        var storedData = UserDefaults.standard.data(forKey: key)
+        if storedData == nil, storage.isDefaultProfile,
+           let legacy = UserDefaults.standard.data(forKey: Self.legacyKanbanDefaultsKey) {
+            storedData = legacy
+            UserDefaults.standard.set(legacy, forKey: key)
+        }
+        guard let data = storedData,
               let decoded = try? JSONDecoder().decode([KanbanColumn].self, from: data),
               !decoded.isEmpty else {
             kanbanColumns = KanbanColumn.defaults
@@ -6567,8 +6868,27 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func persistKanbanBoard() {
+        guard let storage = kanbanStorageIdentity() else { return }
         guard let data = try? JSONEncoder().encode(kanbanColumns) else { return }
-        UserDefaults.standard.set(data, forKey: Self.kanbanDefaultsKey)
+        UserDefaults.standard.set(data, forKey: "localclaw.kanban.board.v2.\(storage.keySuffix)")
+    }
+
+    private func kanbanStorageIdentity() -> (keySuffix: String, isDefaultProfile: Bool)? {
+        do {
+            let home = FileManager.default.homeDirectoryForCurrentUser
+            let state = try OpenClawRuntimeInstallation.selectedState().standardizedFileURL.resolvingSymlinksInPath()
+            let config = try OpenClawRuntimeInstallation.selectedConfig().standardizedFileURL.resolvingSymlinksInPath()
+            let identity = state.path + "\n" + config.path
+            let digest = SHA256.hash(data: Data(identity.utf8))
+                .prefix(12)
+                .map { String(format: "%02x", $0) }
+                .joined()
+            let defaultState = home.appendingPathComponent(".openclaw", isDirectory: true)
+                .standardizedFileURL.resolvingSymlinksInPath()
+            return (digest, state == defaultState)
+        } catch {
+            return nil
+        }
     }
 
     var kanbanCards: [KanbanCard] {
@@ -6665,12 +6985,14 @@ final class InstallerViewModel: ObservableObject {
         let deliveryChannel = kanbanEditorDeliveryMode == "channel" ? kanbanEditorDeliveryChannel : kanbanEditorDeliveryMode
         let now = Date()
         var savedCardID = ""
+        var cronRollback: KanbanCronRollback?
 
         if kanbanEditorIsEditing {
             guard let location = kanbanCardLocation(kanbanEditingCardID) else {
                 kanbanEditorError = "This task could not be found anymore."
                 return
             }
+            let previousCard = kanbanColumns[location.columnIndex].cards[location.cardIndex]
             kanbanColumns[location.columnIndex].cards[location.cardIndex].title = title
             kanbanColumns[location.columnIndex].cards[location.cardIndex].detail = kanbanEditorDetail.trimmingCharacters(in: .whitespacesAndNewlines)
             kanbanColumns[location.columnIndex].cards[location.cardIndex].priority = kanbanEditorPriority
@@ -6684,7 +7006,13 @@ final class InstallerViewModel: ObservableObject {
             kanbanColumns[location.columnIndex].cards[location.cardIndex].deliveryAccount = kanbanEditorDeliveryAccount.trimmingCharacters(in: .whitespacesAndNewlines)
             kanbanColumns[location.columnIndex].cards[location.cardIndex].deliveryTo = kanbanEditorDeliveryTo.trimmingCharacters(in: .whitespacesAndNewlines)
             kanbanColumns[location.columnIndex].cards[location.cardIndex].updatedAt = now
-            savedCardID = kanbanColumns[location.columnIndex].cards[location.cardIndex].id
+            let attemptedCard = kanbanColumns[location.columnIndex].cards[location.cardIndex]
+            savedCardID = attemptedCard.id
+            let previousCron = KanbanCronFields(card: previousCard)
+            let attemptedCron = KanbanCronFields(card: attemptedCard)
+            if previousCron != attemptedCron {
+                cronRollback = KanbanCronRollback(previous: previousCron, attempted: attemptedCron)
+            }
             kanbanStatus = "Task updated."
         } else {
             let card = KanbanCard.fresh(
@@ -6705,13 +7033,22 @@ final class InstallerViewModel: ObservableObject {
             guard let index = targetColumn else { return }
             kanbanColumns[index].cards.insert(card, at: 0)
             savedCardID = card.id
+            if card.cronEnabled {
+                var inactiveCron = KanbanCronFields(card: card)
+                inactiveCron.cronEnabled = false
+                inactiveCron.cronJobID = ""
+                cronRollback = KanbanCronRollback(
+                    previous: inactiveCron,
+                    attempted: KanbanCronFields(card: card)
+                )
+            }
             kanbanStatus = "Task added to \(kanbanColumns[index].title). It has not started yet."
         }
 
         showKanbanTaskEditor = false
         kanbanEditingCardID = ""
         kanbanEditorError = ""
-        syncKanbanAutomation(cardID: savedCardID)
+        syncKanbanAutomation(cardID: savedCardID, rollback: cronRollback)
     }
 
     func addKanbanCard() {
@@ -6787,16 +7124,25 @@ final class InstallerViewModel: ObservableObject {
         )
 
         Task.detached {
-            let engine = InstallerEngine()
-            let result = engine.shell(command)
+            var result = Self.shellCancellable(command, timeoutSeconds: 660) { _ in }
+            if result.0 == 124 {
+                result = (
+                    124,
+                    "LocalClaw stopped waiting after 660s. The OpenClaw automation may still be running; no retry was started. Check the session and Gateway before retrying."
+                )
+            }
             let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
             await MainActor.run {
                 self.kanbanRunningCardIDs.remove(cardID)
-                self.finishAutomationReceipt(receiptID, succeeded: result.0 == 0, output: output)
-                if result.0 == 0 {
+                if result.0 == 124 {
+                    self.finishAutomationReceipt(receiptID, status: .unknown, output: output)
+                    self.kanbanStatus = "Run outcome is unknown. The card remains In Progress; check the OpenClaw session before retrying."
+                } else if result.0 == 0 {
+                    self.finishAutomationReceipt(receiptID, succeeded: true, output: output)
                     self.moveKanbanCardToReviewIfPossible(cardID)
                     self.kanbanStatus = "Run finished. Review the result."
                 } else {
+                    self.finishAutomationReceipt(receiptID, succeeded: false, output: output)
                     self.kanbanStatus = output.isEmpty ? "Run failed." : "Run failed: \(output)"
                 }
             }
@@ -6833,14 +7179,25 @@ final class InstallerViewModel: ObservableObject {
     }
 
     private func finishAutomationReceipt(_ id: UUID, succeeded: Bool, output: String) {
+        finishAutomationReceipt(id, status: succeeded ? .succeeded : .failed, output: output)
+    }
+
+    private func finishAutomationReceipt(_ id: UUID, status: AutomationReceipt.Status, output: String) {
         guard let index = automationReceipts.firstIndex(where: { $0.id == id }) else { return }
         let cleanOutput = SecretRedactor.redactConfigText(output)
         automationReceipts[index].finishedAt = Date()
-        automationReceipts[index].status = succeeded ? .succeeded : .failed
-        if succeeded {
+        automationReceipts[index].status = status
+        automationReceipts[index].summary = nil
+        automationReceipts[index].error = nil
+        switch status {
+        case .succeeded:
             automationReceipts[index].summary = cleanOutput.isEmpty ? "Completed without console output" : String(cleanOutput.prefix(600))
-        } else {
+        case .failed:
             automationReceipts[index].error = cleanOutput.isEmpty ? "OpenClaw returned an error without details" : String(cleanOutput.prefix(600))
+        case .unknown:
+            automationReceipts[index].summary = cleanOutput.isEmpty ? "Completion was not proven; check OpenClaw history before retrying" : String(cleanOutput.prefix(600))
+        case .running:
+            automationReceipts[index].finishedAt = nil
         }
     }
 
@@ -6896,12 +7253,9 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func reconcileKanbanCompletedAutomations(knownCronJobIDs: Set<String>, now: Date = Date()) {
-        guard let doneIndex = kanbanColumns.firstIndex(where: { $0.id == "done" }) else { return }
-        var completedCards: [KanbanCard] = []
-
-        for columnIndex in kanbanColumns.indices.reversed() {
-            for cardIndex in kanbanColumns[columnIndex].cards.indices.reversed() {
-                let card = kanbanColumns[columnIndex].cards[cardIndex]
+        var missingCards: [KanbanCard] = []
+        for column in kanbanColumns {
+            for card in column.cards {
                 guard card.cronEnabled,
                       card.scheduleKind == "at",
                       !card.cronJobID.isEmpty,
@@ -6910,21 +7264,25 @@ final class InstallerViewModel: ObservableObject {
                       runAt <= now else {
                     continue
                 }
-
-                var completed = kanbanColumns[columnIndex].cards.remove(at: cardIndex)
-                completed.cronJobID = ""
-                completed.updatedAt = now
-                completedCards.append(completed)
+                missingCards.append(card)
             }
         }
-
-        guard !completedCards.isEmpty else { return }
-        for card in completedCards.reversed() {
-            kanbanColumns[doneIndex].cards.insert(card, at: 0)
+        guard !missingCards.isEmpty else { return }
+        // A successful full Cron inventory is authoritative. One-shot jobs use
+        // --delete-after-run, so once their due time has passed and they are no
+        // longer listed, keeping the old id makes Disable/Delete impossible.
+        // Clear the stale binding, but leave the card in Review until a real
+        // LocalClaw execution receipt proves success.
+        for missing in missingCards {
+            updateKanbanCard(missing.id) { card in
+                card.cronJobID = ""
+                card.cronEnabled = false
+                card.updatedAt = now
+            }
         }
-        kanbanStatus = completedCards.count == 1
-            ? "\(completedCards[0].title) completed and moved to Done."
-            : "\(completedCards.count) scheduled tasks completed and moved to Done."
+        kanbanStatus = missingCards.count == 1
+            ? "The Cron job for \(missingCards[0].title) is no longer listed. No LocalClaw execution receipt proves completion; check OpenClaw Cron run history before marking the card Done."
+            : "\(missingCards.count) one-shot Cron jobs are no longer listed. No LocalClaw execution receipt proves completion; check OpenClaw Cron run history before marking cards Done."
     }
 
     func moveKanbanCard(_ cardID: String, direction: Int) {
@@ -6936,9 +7294,9 @@ final class InstallerViewModel: ObservableObject {
         kanbanColumns[nextColumnIndex].cards.insert(card, at: 0)
         let targetID = kanbanColumns[nextColumnIndex].id
         if targetID == "doing" {
-            kanbanStatus = "Moved to In Progress. Work starts now."
+            kanbanStatus = "Moved to In Progress. This board move does not itself start an OpenClaw run; use Run Now or a verified Cron schedule."
         } else if targetID == "done" {
-            kanbanStatus = "Moved to Done. Task is complete."
+            kanbanStatus = "Moved to Done manually. LocalClaw did not infer or verify task completion from the board move."
         } else {
             kanbanStatus = "Moved to \(kanbanColumns[nextColumnIndex].title). It is not running."
         }
@@ -6980,15 +7338,38 @@ final class InstallerViewModel: ObservableObject {
 
     func deleteKanbanCard(_ cardID: String) {
         guard let location = kanbanCardLocation(cardID) else { return }
+        guard !kanbanSchedulingCardIDs.contains(cardID) else {
+            kanbanStatus = "A Cron change is already running for this task."
+            return
+        }
         let cronJobID = kanbanColumns[location.columnIndex].cards[location.cardIndex].cronJobID
-        kanbanColumns[location.columnIndex].cards.remove(at: location.cardIndex)
-        if !cronJobID.isEmpty {
-            Task.detached {
-                let engine = InstallerEngine()
-                _ = engine.shell("openclaw --no-color cron rm \(Self.shellSingleQuote(cronJobID)) --json 2>&1")
+        guard !cronJobID.isEmpty else {
+            kanbanColumns[location.columnIndex].cards.remove(at: location.cardIndex)
+            kanbanStatus = "Task removed."
+            return
+        }
+        kanbanSchedulingCardIDs.insert(cardID)
+        kanbanStatus = "Removing the linked Cron job before deleting the card..."
+        Task.detached {
+            let result = Self.runKanbanCronCommand(
+                "openclaw --no-color cron rm \(Self.shellSingleQuote(cronJobID)) --json 2>&1"
+            )
+            await MainActor.run {
+                self.kanbanSchedulingCardIDs.remove(cardID)
+                if result.0 == 124 {
+                    self.kanbanStatus = "Cron removal state is unknown; the card was preserved and no retry was started. \(result.1)"
+                    self.refreshCronJobs()
+                    return
+                }
+                guard (result.0 == 0 || Self.cronRemovalAlreadyComplete(output: result.1)),
+                      let current = self.kanbanCardLocation(cardID) else {
+                    self.kanbanStatus = result.1.isEmpty ? "Cron removal failed; the card was preserved." : "Cron removal failed; the card was preserved. \(result.1)"
+                    return
+                }
+                self.kanbanColumns[current.columnIndex].cards.remove(at: current.cardIndex)
+                self.kanbanStatus = "Cron job and task removed."
             }
         }
-        kanbanStatus = "Task removed."
     }
 
     func prepareCronFromKanbanCard(_ card: KanbanCard) {
@@ -7017,38 +7398,56 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func syncKanbanAutomation(cardID: String) {
+        syncKanbanAutomation(cardID: cardID, rollback: nil)
+    }
+
+    private func syncKanbanAutomation(cardID: String, rollback: KanbanCronRollback?) {
         guard kanbanAutomationSyncEnabled else { return }
+        guard !kanbanSchedulingCardIDs.contains(cardID) else {
+            handleKanbanAutomationFailure(
+                cardID: cardID,
+                message: "A Cron change is already running for this task.",
+                rollback: rollback
+            )
+            return
+        }
         guard let location = kanbanCardLocation(cardID) else { return }
         let card = kanbanColumns[location.columnIndex].cards[location.cardIndex]
         guard card.cronEnabled else {
             if !card.cronJobID.isEmpty {
-                deleteKanbanAutomationJob(cardID: cardID, jobID: card.cronJobID)
+                deleteKanbanAutomationJob(cardID: cardID, jobID: card.cronJobID, rollback: rollback)
             }
             return
         }
         guard !card.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard !card.reviewSchedule.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            kanbanStatus = "Automation needs a schedule."
+            handleKanbanAutomationFailure(
+                cardID: cardID,
+                message: "Automation needs a schedule.",
+                rollback: rollback
+            )
             return
         }
         if card.deliveryMode == "channel", card.deliveryTo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            kanbanStatus = "Automation needs a destination for the selected channel."
+            handleKanbanAutomationFailure(
+                cardID: cardID,
+                message: "Automation needs a destination for the selected channel.",
+                rollback: rollback
+            )
             return
         }
 
         kanbanSchedulingCardIDs.insert(cardID)
         kanbanStatus = card.cronJobID.isEmpty ? "Scheduling automation..." : "Updating automation..."
-        let command = Self.kanbanCronAddCommand(card: card)
         let previousJobID = card.cronJobID
+        let command = previousJobID.isEmpty
+            ? Self.kanbanCronAddCommand(card: card)
+            : Self.kanbanCronEditCommand(card: card, jobID: previousJobID)
 
         Task.detached {
-            let engine = InstallerEngine()
-            if !previousJobID.isEmpty {
-                _ = engine.shell("openclaw --no-color cron rm \(Self.shellSingleQuote(previousJobID)) --json 2>&1")
-            }
-            let result = engine.shell(command)
+            let result = Self.runKanbanCronCommand(command)
             let output = result.1.trimmingCharacters(in: .whitespacesAndNewlines)
-            let jobID = Self.extractCronJobID(from: output)
+            let jobID = previousJobID.isEmpty ? Self.extractCronJobID(from: output) : previousJobID
             await MainActor.run {
                 self.kanbanSchedulingCardIDs.remove(cardID)
                 if result.0 == 0, let jobID {
@@ -7058,31 +7457,71 @@ final class InstallerViewModel: ObservableObject {
                     }
                     self.kanbanStatus = "Automation scheduled. It will run at the configured time."
                     self.refreshCronJobs()
-                } else if result.0 == 0 {
-                    self.kanbanStatus = "Automation scheduled, but LocalClaw could not read the job id."
+                } else if Self.kanbanCronMutationStateIsUnknown(
+                    exitCode: result.0,
+                    expectsNewJobID: previousJobID.isEmpty,
+                    confirmedJobID: jobID
+                ) {
+                    self.kanbanStatus = result.0 == 124
+                        ? "Automation change state is unknown. No rollback or retry was started. \(output)"
+                        : "OpenClaw accepted the automation, but its job id is still unknown. No rollback or retry was started; LocalClaw is checking the exact declaration in Cron Jobs."
                     self.refreshCronJobs()
                 } else {
-                    self.kanbanStatus = output.isEmpty ? "Automation scheduling failed." : "Automation scheduling failed: \(output)"
+                    self.handleKanbanAutomationFailure(
+                        cardID: cardID,
+                        message: output.isEmpty ? "Automation scheduling failed." : "Automation scheduling failed: \(output)",
+                        rollback: rollback
+                    )
                 }
             }
         }
     }
 
-    private func deleteKanbanAutomationJob(cardID: String, jobID: String) {
+    private func deleteKanbanAutomationJob(cardID: String, jobID: String, rollback: KanbanCronRollback?) {
+        guard !kanbanSchedulingCardIDs.contains(cardID) else {
+            kanbanStatus = "A Cron change is already running for this task."
+            return
+        }
         kanbanSchedulingCardIDs.insert(cardID)
         Task.detached {
-            let engine = InstallerEngine()
-            _ = engine.shell("openclaw --no-color cron rm \(Self.shellSingleQuote(jobID)) --json 2>&1")
+            let result = Self.runKanbanCronCommand(
+                "openclaw --no-color cron rm \(Self.shellSingleQuote(jobID)) --json 2>&1"
+            )
             await MainActor.run {
                 self.kanbanSchedulingCardIDs.remove(cardID)
-                self.updateKanbanCard(cardID) { card in
-                    card.cronJobID = ""
-                    card.updatedAt = Date()
+                if result.0 == 0 || Self.cronRemovalAlreadyComplete(output: result.1) {
+                    self.updateKanbanCard(cardID) { card in
+                        card.cronJobID = ""
+                        card.updatedAt = Date()
+                    }
+                    self.kanbanStatus = "Automation disabled."
+                    self.refreshCronJobs()
+                } else if result.0 == 124 {
+                    self.kanbanStatus = "Automation removal state is unknown. No rollback or retry was started. \(result.1)"
+                    self.refreshCronJobs()
+                } else {
+                    let message = result.1.isEmpty
+                        ? "Automation could not be disabled; the linked job id was preserved."
+                        : "Automation could not be disabled; the linked job id was preserved. \(result.1)"
+                    self.handleKanbanAutomationFailure(cardID: cardID, message: message, rollback: rollback)
                 }
-                self.kanbanStatus = "Automation disabled."
-                self.refreshCronJobs()
             }
         }
+    }
+
+    private func handleKanbanAutomationFailure(cardID: String, message: String, rollback: KanbanCronRollback?) {
+        guard let rollback,
+              let location = kanbanCardLocation(cardID),
+              let restored = Self.kanbanCardRestoringCronFields(
+                current: kanbanColumns[location.columnIndex].cards[location.cardIndex],
+                attempted: rollback.attempted,
+                previous: rollback.previous
+              ) else {
+            kanbanStatus = message
+            return
+        }
+        kanbanColumns[location.columnIndex].cards[location.cardIndex] = restored
+        kanbanStatus = "\(message) The previous schedule was restored; other task changes were kept."
     }
 
     nonisolated static func kanbanCronAddCommand(card: KanbanCard) -> String {
@@ -7102,6 +7541,8 @@ final class InstallerViewModel: ObservableObject {
             "--name \(shellSingleQuote(card.title))",
             "--agent \(shellSingleQuote(card.agentID.isEmpty ? "main" : card.agentID))",
             "--message \(shellSingleQuote(message))",
+            "--description \(shellSingleQuote("Managed by LocalClaw card \(card.id)"))",
+            "--declaration-key \(shellSingleQuote("localclaw-kanban-\(card.id)"))",
             "--session isolated",
             "\(scheduleFlag) \(shellSingleQuote(scheduleValue))",
             card.scheduleKind == "cron" ? "--tz \(shellSingleQuote(card.scheduleTimeZoneID.isEmpty ? TimeZone.current.identifier : card.scheduleTimeZoneID))" : "",
@@ -7112,6 +7553,105 @@ final class InstallerViewModel: ObservableObject {
         ]
         .filter { !$0.isEmpty }
         .joined(separator: " ")
+    }
+
+    nonisolated static func kanbanCronEditCommand(card: KanbanCard, jobID: String) -> String {
+        var command = kanbanCronAddCommand(card: card).replacingOccurrences(
+            of: "openclaw --no-color cron add",
+            with: "openclaw --no-color cron edit \(shellSingleQuote(jobID))"
+        )
+        command = command.replacingOccurrences(
+            of: " --declaration-key \(shellSingleQuote("localclaw-kanban-\(card.id)"))",
+            with: ""
+        )
+        if card.scheduleKind != "at" {
+            command = command.replacingOccurrences(of: " --json 2>&1", with: " --keep-after-run --json 2>&1")
+        }
+        return command
+    }
+
+    nonisolated static func cronRemovalAlreadyComplete(output: String) -> Bool {
+        let lower = output.lowercased()
+        return lower.contains("cron job not found") ||
+            lower.contains("automation not found") ||
+            lower.contains("unknown cron job") ||
+            lower.contains("no such cron job")
+    }
+
+    nonisolated static func kanbanCronMutationStateIsUnknown(
+        exitCode: Int32,
+        expectsNewJobID: Bool,
+        confirmedJobID: String?
+    ) -> Bool {
+        exitCode == 124 || (exitCode == 0 && expectsNewJobID && confirmedJobID == nil)
+    }
+
+    nonisolated static func kanbanCronInventoryBindings(from output: String) -> [String: String] {
+        guard let root = InstallerEngine.firstJSONObject(in: output),
+              let jobs = root["jobs"] as? [[String: Any]] else { return [:] }
+        let descriptionPrefix = "Managed by LocalClaw card "
+        let declarationPrefix = "localclaw-kanban-"
+        var matches: [String: Set<String>] = [:]
+
+        for job in jobs {
+            guard let jobID = (job["id"] as? String) ?? (job["jobId"] as? String),
+                  !jobID.isEmpty else { continue }
+            var cardIDs = Set<String>()
+            if let description = job["description"] as? String,
+               description.hasPrefix(descriptionPrefix) {
+                let cardID = String(description.dropFirst(descriptionPrefix.count))
+                if !cardID.isEmpty, description == descriptionPrefix + cardID {
+                    cardIDs.insert(cardID)
+                }
+            }
+            if let declaration = (job["declarationKey"] as? String) ?? (job["declaration_key"] as? String),
+               declaration.hasPrefix(declarationPrefix) {
+                let cardID = String(declaration.dropFirst(declarationPrefix.count))
+                if !cardID.isEmpty, declaration == declarationPrefix + cardID {
+                    cardIDs.insert(cardID)
+                }
+            }
+            guard cardIDs.count == 1, let cardID = cardIDs.first else { continue }
+            matches[cardID, default: []].insert(jobID)
+        }
+
+        return matches.reduce(into: [:]) { bindings, entry in
+            guard entry.value.count == 1, let jobID = entry.value.first else { return }
+            bindings[entry.key] = jobID
+        }
+    }
+
+    nonisolated static func runKanbanCronCommand(
+        _ command: String,
+        timeoutSeconds: Int = 45
+    ) -> (Int32, String) {
+        let result = shellCancellable(command, timeoutSeconds: max(timeoutSeconds, 1)) { _ in }
+        guard result.0 == 124 else { return result }
+        return (
+            124,
+            "OpenClaw Cron command timed out after \(max(timeoutSeconds, 1))s. Its remote state is unknown; no retry was started. Check Cron Jobs before any manual retry."
+        )
+    }
+
+    nonisolated static func kanbanCardRestoringCronFields(
+        current: KanbanCard,
+        attempted: KanbanCard,
+        previous: KanbanCard
+    ) -> KanbanCard? {
+        kanbanCardRestoringCronFields(
+            current: current,
+            attempted: KanbanCronFields(card: attempted),
+            previous: KanbanCronFields(card: previous)
+        )
+    }
+
+    nonisolated private static func kanbanCardRestoringCronFields(
+        current: KanbanCard,
+        attempted: KanbanCronFields,
+        previous: KanbanCronFields
+    ) -> KanbanCard? {
+        guard KanbanCronFields(card: current) == attempted else { return nil }
+        return previous.applying(to: current)
     }
 
     nonisolated private static func kanbanCronDeliveryArguments(card: KanbanCard) -> String {
@@ -7950,7 +8490,8 @@ final class InstallerViewModel: ObservableObject {
             inputOverride: GoalWorkPrompt.make(plan: plan, starting: starting),
             appendVisibleUserMessage: false,
             runtimeSessionIDOverride: runtimeSessionID,
-            agentTimeoutOverride: Self.goalAgentTimeoutSeconds
+            agentTimeoutOverride: Self.goalAgentTimeoutSeconds,
+            agentIDOverride: plan.nativeAgentID
         )
     }
 
@@ -7997,7 +8538,8 @@ final class InstallerViewModel: ObservableObject {
         imagePathOverride: String? = nil,
         appendVisibleUserMessage: Bool = true,
         runtimeSessionIDOverride: String? = nil,
-        agentTimeoutOverride: Int? = nil
+        agentTimeoutOverride: Int? = nil,
+        agentIDOverride: String? = nil
     ) {
         let rawInput = inputOverride ?? (useDeveloperSession ? developerInput : chatInput)
         let rawImagePath = imagePathOverride ?? (useDeveloperSession ? developerImagePath : chatImagePath)
@@ -8262,7 +8804,8 @@ final class InstallerViewModel: ObservableObject {
                 thinking: effectiveThinking,
                 agentTimeout: agentTimeout,
                 currentDirectory: useDeveloperSession ? developerWorkdir : nil,
-                timeoutSeconds: wallClockTimeout
+                timeoutSeconds: wallClockTimeout,
+                agentIDOverride: agentIDOverride
             ) { process in
                 Task { @MainActor in
                     if self.activeChatRequestID == requestID {
@@ -8285,7 +8828,8 @@ final class InstallerViewModel: ObservableObject {
                     thinking: effectiveThinking,
                     agentTimeout: agentTimeout,
                     currentDirectory: useDeveloperSession ? developerWorkdir : nil,
-                    timeoutSeconds: wallClockTimeout
+                    timeoutSeconds: wallClockTimeout,
+                    agentIDOverride: agentIDOverride
                 ) { process in
                     Task { @MainActor in
                         if self.activeChatRequestID == requestID {
@@ -8308,7 +8852,8 @@ final class InstallerViewModel: ObservableObject {
                     thinking: effectiveThinking,
                     agentTimeout: agentTimeout,
                     currentDirectory: useDeveloperSession ? developerWorkdir : nil,
-                    timeoutSeconds: wallClockTimeout
+                    timeoutSeconds: wallClockTimeout,
+                    agentIDOverride: agentIDOverride
                 ) { process in
                     Task { @MainActor in
                         if self.activeChatRequestID == requestID {
@@ -8336,7 +8881,8 @@ final class InstallerViewModel: ObservableObject {
                         thinking: effectiveThinking,
                         agentTimeout: agentTimeout,
                         currentDirectory: useDeveloperSession ? developerWorkdir : nil,
-                        timeoutSeconds: wallClockTimeout
+                        timeoutSeconds: wallClockTimeout,
+                        agentIDOverride: agentIDOverride
                     ) { process in
                         Task { @MainActor in
                             if self.activeChatRequestID == requestID {
@@ -8386,7 +8932,8 @@ final class InstallerViewModel: ObservableObject {
                             thinking: effectiveThinking,
                             agentTimeout: agentTimeout,
                             currentDirectory: useDeveloperSession ? developerWorkdir : nil,
-                            timeoutSeconds: wallClockTimeout
+                            timeoutSeconds: wallClockTimeout,
+                            agentIDOverride: agentIDOverride
                         ) { process in
                             Task { @MainActor in
                                 if self.activeChatRequestID == requestID {
@@ -8424,7 +8971,8 @@ final class InstallerViewModel: ObservableObject {
                                 thinking: effectiveThinking,
                                 agentTimeout: agentTimeout,
                                 currentDirectory: useDeveloperSession ? developerWorkdir : nil,
-                                timeoutSeconds: wallClockTimeout
+                                timeoutSeconds: wallClockTimeout,
+                                agentIDOverride: agentIDOverride
                             ) { process in
                                 Task { @MainActor in
                                     if self.activeChatRequestID == requestID {
@@ -8676,7 +9224,6 @@ final class InstallerViewModel: ObservableObject {
         }
 
         if showingOAuthModels {
-            models.append(contentsOf: runtimeOAuthFallbackModels)
             models.append(contentsOf: oauthModelsLive)
         } else if showingLocalModels {
             for local in localLMStudioModels {
@@ -9987,7 +10534,7 @@ final class InstallerViewModel: ObservableObject {
     nonisolated private static func shellCancellable(_ command: String, timeoutSeconds: Int? = nil, onStart: @escaping (Process) -> Void) -> (Int32, String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lc", InstallerEngine.shellPathPrefix + command]
+        process.arguments = ["-lc", InstallerEngine.shellPathPrefix(for: command) + command]
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -10089,9 +10636,10 @@ final class InstallerViewModel: ObservableObject {
         agentTimeout: Int,
         currentDirectory: String?,
         timeoutSeconds: Int? = nil,
+        agentIDOverride: String? = nil,
         onStart: @escaping (Process) -> Void
     ) -> (Int32, String) {
-        guard let agentID = InstallerEngine().resolvedChatAgentID() else {
+        guard let agentID = agentIDOverride ?? InstallerEngine().resolvedChatAgentID() else {
             return (1, "LocalClaw cannot determine the owning OpenClaw agent. Select or configure an agent in Agents; no request was sent.")
         }
         var arguments = openClawAgentArguments(
@@ -10706,26 +11254,34 @@ final class InstallerViewModel: ObservableObject {
     func openTerminalOpenAIOAuth() {
         let provider = selectedOAuthProviderOption.authProvider
         let model = selectedOAuthProviderOption.modelIdentifier
-        let agentArgument = engine.resolvedChatAgentID().map { " --agent '\($0)'" } ?? ""
+        let runtimeHeader: String
+        do {
+            (_, runtimeHeader) = try selectedOpenClawTerminalContext()
+        } catch {
+            append("OAuth login blocked: LocalClaw could not select one OpenClaw runtime and profile. \(error.localizedDescription)")
+            return
+        }
+        let agentArgument = engine.resolvedChatAgentID().map {
+            " --agent \(Self.shellSingleQuote($0))"
+        } ?? ""
         let script = """
         #!/bin/zsh
+        set -u
         clear
-        export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
-
-        OPENCLAW_BIN="$(command -v openclaw 2>/dev/null || true)"
+        \(runtimeHeader)
         echo "=========================================="
         echo "  OpenAI OAuth Setup (Codex / ChatGPT)"
         echo "=========================================="
         echo ""
 
-        if [ -z "$OPENCLAW_BIN" ]; then
-            echo "[ERROR] openclaw command not found in PATH"
+        if [ ! -x "$OPENCLAW_NODE" ] || [ ! -f "$OPENCLAW_CLI" ]; then
+            echo "[ERROR] selected OpenClaw runtime is incomplete"
             echo "Install OpenClaw first from Install tab."
             echo ""
         else
-            echo "Running: $OPENCLAW_BIN models auth login --provider \(provider)"
+            echo "Running the selected profile: models auth login --provider \(provider)"
             echo ""
-            "$OPENCLAW_BIN" models auth login --provider \(provider)\(agentArgument)
+            "${OPENCLAW_CMD[@]}" models auth login --provider \(provider)\(agentArgument)
             echo ""
             echo "If login succeeded, use model: \(model)"
         fi
@@ -10734,18 +11290,20 @@ final class InstallerViewModel: ObservableObject {
         read -r "REPLY?Press Enter to close..."
         """
 
-        let scriptPath = "/tmp/localclaw_openai_oauth.sh"
+        let scriptPath = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("localclaw-openai-oauth-\(UUID().uuidString).sh").path
         do {
             try script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
-            _ = engine.shell("chmod +x \(scriptPath)")
-            _ = engine.shell("osascript -e 'tell application \"Terminal\" to do script \"\(scriptPath)\"'")
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptPath)
+            _ = engine.shell("open -a Terminal \(shellSingleQuote(scriptPath))")
             append("Opened Terminal for OpenAI OAuth login")
         } catch {
             append("Failed to open OAuth terminal: \(error.localizedDescription)")
         }
     }
 
-    func openTerminalAndInstall() {
+    @available(*, unavailable, message: "Use runOpenClawGuidedSetup; this fixed-path Terminal installer is intentionally retired.")
+    private func retiredTerminalInstall() {
         let script = """
         #!/bin/zsh
         clear
@@ -10854,6 +11412,11 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func openTerminalAndInstallFull() {
+        runOpenClawGuidedSetup()
+    }
+
+    @available(*, unavailable, message: "Use the verified guided setup; this fixed-path Terminal installer is intentionally retired.")
+    private func retiredTerminalInstallFull() {
         let validationErrors = setupValidationErrors
         if !validationErrors.isEmpty {
             append("Cannot start installation until setup errors are fixed:")
@@ -11279,7 +11842,7 @@ final class InstallerViewModel: ObservableObject {
 
                     self.loadTokenFromConfig()
                     if !self.gatewayToken.isEmpty {
-                        self.append("✓ Token synced from config: \(self.gatewayToken.prefix(16))...")
+                        self.append("✓ Gateway token synced from the selected config (value hidden)")
                     }
 
                     self.isRunning = false
@@ -11302,16 +11865,34 @@ final class InstallerViewModel: ObservableObject {
             errors.forEach { append("  ↳ \($0)") }
             return
         }
+        guard let modelPlan = Self.guidedSetupModelPlan(
+            localInference: inferenceMode == .local,
+            selectedLocalModel: selectedModel,
+            recommendation: recommendation,
+            modelQueries: modelQueries,
+            localProviderModelIDs: localProviderModelIds,
+            cloudModelIdentifier: effectiveModelIdentifier()
+        ) else {
+            append("Setup validation failed")
+            append("  ↳ The selected local model has no verified LM Studio download or provider identifier.")
+            return
+        }
         isRunning = true
 
         let engine = self.engine
         let token = self.gatewayToken
-        let modelId = self.effectiveModelIdentifier()
+        let modelId = modelPlan.modelIdentifier
         let authProvider = self.effectiveAuthProvider()
-        let apiKey = self.requiredProviderKey()
+        let apiKey = modelPlan.requiresLMStudio ? "" : self.requiredProviderKey()
 
         Task.detached {
-            let clt = engine.ensureXcodeCLITools()
+            var configuredModelId = modelId
+            let nodeAlreadySupported = engine.isInstalledNodeSupported()
+            let needsLMStudioInstall = modelPlan.requiresLMStudio && !engine.hasLMStudioApp()
+            let needsBrew = !nodeAlreadySupported || needsLMStudioInstall
+            let clt = needsBrew && !engine.hasCommand("brew")
+                ? engine.ensureXcodeCLITools()
+                : StepResult(state: .skip, message: "Selected dependencies do not require Xcode CLI Tools")
             if clt.state == .fail {
                 await MainActor.run {
                     self.ocStepNode = clt.state.rawValue
@@ -11324,7 +11905,9 @@ final class InstallerViewModel: ObservableObject {
                 return
             }
 
-            let brew = engine.installHomebrewIfNeeded()
+            let brew = needsBrew
+                ? engine.installHomebrewIfNeeded()
+                : StepResult(state: .skip, message: "Supported Node and selected inference runtime do not require Homebrew")
             if brew.state == .fail {
                 await MainActor.run {
                     self.ocStepNode = brew.state.rawValue
@@ -11339,21 +11922,75 @@ final class InstallerViewModel: ObservableObject {
                 return
             }
 
-            let brewDoctor = engine.runBrewDoctorCheck()
-            if brewDoctor.state == .fail {
-                await MainActor.run {
-                    self.ocStepNode = brewDoctor.state.rawValue
-                    self.statusNode = brewDoctor.state.rawValue
-                    self.append("[\(clt.state.rawValue)] Preflight - Xcode CLI Tools")
-                    self.append("  \(clt.message)")
-                    self.append("[\(brew.state.rawValue)] Preflight - Homebrew")
-                    self.append("  \(brew.message)")
-                    self.append("[\(brewDoctor.state.rawValue)] Preflight - Brew Doctor")
-                    self.append("  \(brewDoctor.message)")
-                    self.append("Setup blocked: fix Homebrew health before installing OpenClaw.")
-                    self.isRunning = false
+            let brewDoctor = needsBrew
+                ? engine.runBrewDoctorCheck()
+                : StepResult(state: .skip, message: "Brew Doctor not required")
+
+            let lmStudio: StepResult
+            let localRuntime: StepResult
+            if modelPlan.requiresLMStudio {
+                lmStudio = await self.runStep(name: "LM Studio") {
+                    engine.installLMStudioIfNeeded()
                 }
-                return
+                if lmStudio.state == .fail {
+                    await MainActor.run {
+                        self.statusModel = InstallState.skip.rawValue
+                        self.append("Setup stopped before OpenClaw configuration because LM Studio could not be installed.")
+                        self.isRunning = false
+                        self.screen = .install
+                    }
+                    return
+                }
+                let modelDownload = await self.runModelStep(
+                    engine: engine,
+                    query: modelPlan.modelQuery ?? ""
+                )
+                if modelDownload.state == .fail {
+                    await MainActor.run {
+                        self.append("Setup stopped before OpenClaw configuration because the selected local model could not be downloaded.")
+                        self.isRunning = false
+                        self.screen = .install
+                    }
+                    return
+                }
+                let preferredModelID = modelPlan.modelIdentifier.hasPrefix("lmstudio/")
+                    ? String(modelPlan.modelIdentifier.dropFirst("lmstudio/".count))
+                    : modelPlan.modelIdentifier
+                localRuntime = engine.autoSetupLMStudioModel(
+                    modelId: preferredModelID,
+                    contextLength: 32_768,
+                    configureOpenClaw: false
+                ) { message in
+                    Task { @MainActor in self.append("  ↳ \(message)") }
+                }
+                let loadedLocalModel = engine.loadedLMStudioModelInfo()
+                if localRuntime.state == .ok, let active = loadedLocalModel?.model {
+                    configuredModelId = "lmstudio/\(active)"
+                }
+                await MainActor.run {
+                    self.statusModel = localRuntime.state.rawValue
+                    self.append("[\(localRuntime.state.rawValue)] LM Studio provider readiness")
+                    self.append("  ↳ \(localRuntime.message)")
+                }
+                if !Self.guidedSetupLocalRuntimeIsReady(
+                    plan: modelPlan,
+                    lmStudioState: lmStudio.state,
+                    modelState: localRuntime.state
+                ) {
+                    await MainActor.run {
+                        self.append("Setup stopped before OpenClaw configuration because LM Studio did not prove a loaded model, 16K+ context, and provider response.")
+                        self.isRunning = false
+                        self.screen = .install
+                    }
+                    return
+                }
+            } else {
+                lmStudio = StepResult(state: .skip, message: "Cloud/OAuth inference does not require LM Studio")
+                localRuntime = StepResult(state: .skip, message: "Cloud/OAuth inference does not require a local model")
+                await MainActor.run {
+                    self.statusLMStudio = lmStudio.state.rawValue
+                    self.statusModel = localRuntime.state.rawValue
+                }
             }
 
             let node = engine.installNodeIfNeeded()
@@ -11361,18 +11998,44 @@ final class InstallerViewModel: ObservableObject {
             let cli = existing
                 ? StepResult(state: .skip, message: "OpenClaw already installed, switching to modify mode")
                 : engine.installOpenClawIfNeeded()
+            var preflightRuntime = StepResult(state: .skip, message: existing ? "Existing Gateway has not been changed" : "Fresh install")
+            var configResult = StepResult(state: .skip, message: "Not attempted")
+            var modelResult = StepResult(state: .skip, message: "Not attempted")
+            var agentResult = StepResult(state: .skip, message: "Not attempted")
+            var keyResult = StepResult(state: .skip, message: "Not attempted")
+            var runtime = StepResult(state: .fail, message: "Setup stopped before Gateway verification")
 
-            // Bug 5: Write gateway.mode=local and token BEFORE verify
-            let configResult = engine.writeOpenClawConfig(gatewayToken: token)
+            if node.state == .fail {
+                runtime = StepResult(state: .fail, message: "Node setup failed; OpenClaw configuration was left unchanged.")
+            } else if cli.state == .fail {
+                runtime = StepResult(state: .fail, message: "OpenClaw installation failed; configuration was left unchanged.")
+            } else {
+                if existing {
+                    // The existing-user path must enter the verified, backup-first transaction
+                    // before any LocalClaw preference is written.
+                    preflightRuntime = engine.finalizeOpenClawRuntime()
+                }
+                if preflightRuntime.state != .fail {
+                    configResult = engine.writeOpenClawConfig(gatewayToken: token)
+                }
+                if configResult.state != .fail {
+                    modelResult = engine.writeModelToConfig(modelIdentifier: configuredModelId)
+                }
+                if modelResult.state != .fail {
+                    agentResult = engine.createDefaultAgent()
+                }
+                if agentResult.state != .fail {
+                    keyResult = engine.writeApiKeyToConfig(provider: authProvider, apiKey: apiKey == "kimi-free" ? "" : apiKey)
+                }
 
-            // Bug 6: Write selected model to config
-            let modelResult = engine.writeModelToConfig(modelIdentifier: modelId)
-
-            // Bug 6: Write API key if provided
-            let keyResult = engine.writeApiKeyToConfig(provider: authProvider, apiKey: apiKey == "kimi-free" ? "" : apiKey)
-
-            let agentResult = engine.createDefaultAgent()
-            let runtime = engine.finalizeOpenClawRuntime()
+                if [preflightRuntime, configResult, modelResult, agentResult, keyResult].contains(where: { $0.state == .fail }) {
+                    let firstFailure = [preflightRuntime, configResult, modelResult, agentResult, keyResult]
+                        .first(where: { $0.state == .fail })
+                    runtime = StepResult(state: .fail, message: firstFailure?.message ?? "Setup stopped safely")
+                } else {
+                    runtime = engine.finalizeOpenClawRuntime()
+                }
+            }
 
             await MainActor.run {
                 self.hasExistingOpenClawSetup = existing || cli.state == .ok
@@ -11395,6 +12058,10 @@ final class InstallerViewModel: ObservableObject {
                 self.append("  \(node.message)")
                 self.append("[\(cli.state.rawValue)] Step 2 - OpenClaw CLI")
                 self.append("  \(cli.message)")
+                if existing {
+                    self.append("[\(preflightRuntime.state.rawValue)] Step 2a - Backup, migrate, and verify existing Gateway")
+                    self.append("  \(preflightRuntime.message)")
+                }
                 self.append("[\(configResult.state.rawValue)] Step 2b - Write gateway config")
                 self.append("  \(configResult.message)")
                 self.append("[\(modelResult.state.rawValue)] Step 2c - Write model config")
@@ -11414,8 +12081,13 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
-    private func runStep(name: String, action: @escaping () -> StepResult) async -> StepResult {
-        let result = action()
+    nonisolated func runStep(
+        name: String,
+        action: @escaping @Sendable () -> StepResult
+    ) async -> StepResult {
+        let result = await Task.detached(priority: .userInitiated) {
+            action()
+        }.value
         await MainActor.run {
             switch name {
             case "Homebrew": self.statusHomebrew = result.state.rawValue
@@ -11434,17 +12106,19 @@ final class InstallerViewModel: ObservableObject {
         return result
     }
 
-    private func runModelStep(engine: InstallerEngine, query: String) async {
+    nonisolated private func runModelStep(engine: InstallerEngine, query: String) async -> StepResult {
         await MainActor.run {
             self.statusModel = "PENDING"
             self.currentDownloadFile = query
             self.downloadProgress = 0
         }
-        let result = engine.installModelStreaming(query) { line in
-            Task { @MainActor in
-                self.append(line)
+        let result = await Task.detached(priority: .userInitiated) {
+            engine.installModelStreaming(query) { line in
+                Task { @MainActor in
+                    self.append(line)
+                }
             }
-        }
+        }.value
         await MainActor.run {
             self.statusModel = result.state.rawValue
             if result.state == .ok || result.state == .skip {
@@ -11452,6 +12126,7 @@ final class InstallerViewModel: ObservableObject {
             }
             self.append("[\(result.state.rawValue)] Model")
         }
+        return result
     }
 
     func refreshUninstallInventory() {
@@ -12261,7 +12936,7 @@ struct ContentView: View {
             Button("Install Homebrew", role: .none) { vm.installHomebrewWithUserConsent() }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("Homebrew is needed to install LM Studio, Node.js and OpenClaw. Click 'Install Homebrew' and enter your Mac password when prompted.")
+            Text("This Mac does not have a supported Node.js runtime. Homebrew can install the Node version required by OpenClaw. It is not required when a compatible Node is already present.")
         }
         .alert("Delete this agent?", isPresented: $vm.showAgentDeleteConfirmation) {
             Button("Delete Agent", role: .destructive) { vm.deletePendingAgent() }
@@ -12478,7 +13153,7 @@ struct ContentView: View {
 
                     sidebarSectionLabel("Automate")
                     sidebarButton("Cron Jobs", icon: "calendar.badge.clock", isActive: vm.screen == .cronJobs) { vm.screen = .cronJobs }
-                    sidebarButton("Kanban", icon: "rectangle.3.group", isActive: vm.screen == .kanban) { vm.screen = .kanban }
+                    sidebarButton("LocalClaw Board", icon: "rectangle.3.group", isActive: vm.screen == .kanban) { vm.screen = .kanban }
 
                     if advancedNavigation {
                         sidebarSectionLabel("Advanced")
@@ -15690,8 +16365,8 @@ struct ContentView: View {
                     Button("Back") { vm.screen = .home }
                         .buttonStyle(CTAButton(primary: false))
 
-                    Button(vm.isRunning ? "Installing in Terminal..." : (installBlockingPreflightCount > 0 ? "Fix preflight first" : "Install Everything")) {
-                        vm.openTerminalAndInstallFull()
+                    Button(vm.isRunning ? "Installing and verifying..." : (installBlockingPreflightCount > 0 ? "Fix preflight first" : "Install Everything")) {
+                        vm.runOpenClawGuidedSetup()
                     }
                     .buttonStyle(CTAButton(primary: true))
                     .disabled(!vm.canStartInstall || installBlockingPreflightCount > 0)
@@ -16350,7 +17025,7 @@ struct ContentView: View {
                     Button("Back to setup") { vm.screen = .options }
                         .buttonStyle(CTAButton(primary: false))
                     if installHasFailedStep {
-                        Button("Retry failed step") { vm.openTerminalAndInstallFull() }
+                        Button("Retry failed step") { vm.runOpenClawGuidedSetup() }
                             .buttonStyle(CTAButton(primary: true))
                     }
                 }
@@ -16603,7 +17278,7 @@ struct ContentView: View {
         HStack(spacing: 10) {
             updateGroupCard(
                 title: "App update",
-                detail: "Update LocalClaw only.",
+                detail: "Verify and open the signed DMG; installation remains under your control.",
                 status: vm.installerUpdateStatus,
                 icon: "app.badge",
                 primary: vm.installerUpdateStatus == "Update available"
@@ -16682,7 +17357,8 @@ struct ContentView: View {
     }
 
     private var updateConfigExists: Bool {
-        FileManager.default.fileExists(atPath: NSHomeDirectory() + "/.openclaw/openclaw.json")
+        guard let path = try? OpenClawRuntimeInstallation.selectedConfig().path else { return false }
+        return FileManager.default.fileExists(atPath: path)
     }
 
     private var updateAppInApplications: Bool {
@@ -16695,17 +17371,17 @@ struct ContentView: View {
     }
 
     private var updateRiskLabel: String {
-        if updateHasValidChecksum && updateAppInApplications && updateConfigExists { return "Safe" }
-        if updateConfigExists || updateHasValidChecksum { return "Caution" }
-        return "Risky"
+        if updateHasValidChecksum && updateAppInApplications && updateConfigExists { return "Prechecks ready" }
+        if updateHasValidChecksum { return "Manual review" }
+        return "Blocked"
     }
 
     private var updateRiskIcon: String {
-        updateRiskLabel == "Safe" ? "checkmark.seal.fill" : (updateRiskLabel == "Caution" ? "exclamationmark.triangle.fill" : "xmark.octagon.fill")
+        updateRiskLabel == "Prechecks ready" ? "checkmark.seal.fill" : (updateRiskLabel == "Manual review" ? "exclamationmark.triangle.fill" : "xmark.octagon.fill")
     }
 
     private var updateRiskTint: Color {
-        updateRiskLabel == "Safe" ? Color(NSColor.systemGreen) : (updateRiskLabel == "Caution" ? Color(NSColor.systemOrange) : Color(NSColor.systemRed))
+        updateRiskLabel == "Prechecks ready" ? Color(NSColor.systemGreen) : (updateRiskLabel == "Manual review" ? Color(NSColor.systemOrange) : Color(NSColor.systemRed))
     }
 
     private var updateDependenciesStatus: String {
@@ -17437,6 +18113,7 @@ struct ContentView: View {
         case .running: return Color(NSColor.systemBlue)
         case .succeeded: return Color(NSColor.systemGreen)
         case .failed: return Color(NSColor.systemRed)
+        case .unknown: return Color(NSColor.systemOrange)
         }
     }
 
@@ -17445,6 +18122,7 @@ struct ContentView: View {
         case .running: return "hourglass"
         case .succeeded: return "checkmark.seal.fill"
         case .failed: return "xmark.octagon.fill"
+        case .unknown: return "questionmark.diamond.fill"
         }
     }
 
@@ -17955,8 +18633,11 @@ struct ContentView: View {
 
                 Spacer(minLength: 8)
 
-                Button("Run") { vm.runCronJobNow(job.id) }
+                Button(vm.cronManualRunInFlightJobIDs.contains(job.id) ? "Running..." : "Run") {
+                    vm.runCronJobNow(job.id)
+                }
                     .buttonStyle(CTAButton(primary: false))
+                    .disabled(vm.cronManualRunInFlightJobIDs.contains(job.id))
                 Button("Edit") { vm.prepareCronJobEditor(job) }
                     .buttonStyle(CTAButton(primary: false))
                 Button(job.enabled ? "Stop" : "Start") {
@@ -18122,10 +18803,10 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("KANBAN")
+                    Text("LOCALCLAW BOARD")
                         .font(AppFont.heading(28))
                         .foregroundStyle(UI.text)
-                    Text("Plan work in classic Kanban stages. A card does not run until you start it or create a Cron Job.")
+                    Text("A local planning board backed by LocalClaw preferences and optional OpenClaw Cron jobs. It is separate from OpenClaw Workboard; cards are not synchronized.")
                         .font(AppFont.body(13))
                         .foregroundStyle(UI.muted)
                 }
@@ -19168,10 +19849,10 @@ struct ContentView: View {
                             }
 
                             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 10) {
-                                helpCommandButton("Create Restore Point", icon: "externaldrive.badge.plus", primary: false) {
-                                    vm.createRecoveryPoint(reason: "Manual restore point")
+                                helpCommandButton("Create Config Snapshot", icon: "externaldrive.badge.plus", primary: false) {
+                                    vm.createRecoveryPoint(reason: "Manual config snapshot")
                                 }
-                                helpCommandButton("Restore Latest", icon: "arrow.counterclockwise", primary: false) {
+                                helpCommandButton("Restore Latest Config", icon: "arrow.counterclockwise", primary: false) {
                                     vm.restoreLatestRecoveryPoint()
                                 }
                                 helpCommandButton("Export Support Report", icon: "doc.text.magnifyingglass", primary: true) {
@@ -19185,7 +19866,7 @@ struct ContentView: View {
                                 }
                             }
 
-                            Text("Restore points stay private on this Mac. Support reports redact tokens and credentials before export.")
+                            Text("Config snapshots stay private on this Mac and are not full OpenClaw backups. Runtime update/repair creates a separate verified state backup. Support reports redact tokens and credentials before export.")
                                 .font(AppFont.body(11))
                                 .foregroundStyle(UI.muted)
                         }

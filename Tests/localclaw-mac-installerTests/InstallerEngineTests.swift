@@ -43,7 +43,7 @@ struct InstallerEngineTests {
         let reco = engine.recommend(for: profile)
 
         #expect(reco.tier == "Ultra")
-        #expect(reco.model == "Qwen 3.5 9B")
+        #expect(reco.model == "Qwen 3.8 27B")
         #expect(reco.quant == "Q4_K_M")
     }
 
@@ -433,6 +433,12 @@ struct InstallerEngineTests {
         #expect(hash == "a1c2aaf18a271d28ac8433e25331c5ae53b09ff48b1db8b960c65e243545aea0")
     }
 
+    @Test func installerDMGSizeHasABoundedSafetyEnvelope() {
+        #expect(!InstallerViewModel.installerDMGSizeIsAllowed(0))
+        #expect(InstallerViewModel.installerDMGSizeIsAllowed(InstallerViewModel.maxInstallerDMGBytes))
+        #expect(!InstallerViewModel.installerDMGSizeIsAllowed(InstallerViewModel.maxInstallerDMGBytes + 1))
+    }
+
     @Test func shellSingleQuoteEscapesApostrophes() {
         let quoted = InstallerViewModel.shellSingleQuote("/Users/cyril/LocalClaw's update/localclaw.dmg")
 
@@ -679,6 +685,12 @@ struct InstallerEngineTests {
         let cloud = byProvider?["openrouter"] as? [String: Any]
 
         #expect(local?["allow"] as? [String] == InstallerEngine.localModelCompatibleTools)
+        // This policy is shared by every OpenClaw session using the model. Keep
+        // native Goal tools available globally; LocalClaw's scoped Goal prompt
+        // and post-turn guards must not disable native OpenClaw workflows.
+        #expect(InstallerEngine.localModelCompatibleTools.contains("create_goal"))
+        #expect(InstallerEngine.localModelCompatibleTools.contains("update_goal"))
+        #expect(InstallerEngine.localModelCompatibleTools.contains("get_goal"))
         #expect(local?["profile"] == nil)
         #expect(local?["alsoAllow"] == nil)
         #expect(local?["deny"] as? [String] == ["exec"])
@@ -1082,6 +1094,116 @@ struct InstallerEngineTests {
         #expect(vm.selectedChatModel == "openrouter/openai/gpt-5.4-mini")
     }
 
+    @Test func guidedSetupFreshLocalPlanRequiresLMStudioAndModelDownload() throws {
+        let plan = try #require(InstallerViewModel.guidedSetupModelPlan(
+            localInference: true,
+            selectedLocalModel: "Qwen Local",
+            recommendation: "",
+            modelQueries: ["Qwen Local": "qwen-local@q4_k_m"],
+            localProviderModelIDs: ["Qwen Local": "qwen/qwen-local"],
+            cloudModelIdentifier: "openrouter/auto"
+        ))
+
+        #expect(plan.requiresLMStudio)
+        #expect(plan.modelQuery == "qwen-local@q4_k_m")
+        #expect(plan.modelIdentifier == "lmstudio/qwen/qwen-local")
+        #expect(InstallerViewModel.guidedSetupLocalRuntimeIsReady(
+            plan: plan,
+            lmStudioState: .ok,
+            modelState: .skip
+        ))
+        #expect(!InstallerViewModel.guidedSetupLocalRuntimeIsReady(
+            plan: plan,
+            lmStudioState: .fail,
+            modelState: .skip
+        ))
+        #expect(!InstallerViewModel.guidedSetupLocalRuntimeIsReady(
+            plan: plan,
+            lmStudioState: .ok,
+            modelState: .fail
+        ))
+        #expect(InstallerViewModel.guidedSetupModelPlan(
+            localInference: true,
+            selectedLocalModel: "Unknown",
+            recommendation: "",
+            modelQueries: [:],
+            localProviderModelIDs: [:],
+            cloudModelIdentifier: "openrouter/auto"
+        ) == nil)
+    }
+
+    @Test func lmStudioReadinessRequiresSelectedProviderAndAtLeast16KContext() {
+        let response = #"{"data":[{"id":"qwen/qwen-local","object":"model"}]}"#
+
+        #expect(InstallerEngine.lmStudioReadinessIsVerified(
+            expectedModelID: "qwen/qwen-local",
+            loadedIdentifier: "qwen/qwen-local",
+            loadedModel: "qwen/qwen-local",
+            context: 16_384,
+            providerResponse: response
+        ))
+        #expect(!InstallerEngine.lmStudioReadinessIsVerified(
+            expectedModelID: "qwen/qwen-local",
+            loadedIdentifier: "qwen/qwen-local",
+            loadedModel: "qwen/qwen-local",
+            context: 8_192,
+            providerResponse: response
+        ))
+        #expect(!InstallerEngine.lmStudioReadinessIsVerified(
+            expectedModelID: "qwen/qwen-local",
+            loadedIdentifier: "qwen/qwen-local",
+            loadedModel: "qwen/qwen-local",
+            context: 32_768,
+            providerResponse: #"{"data":[{"id":"other/model"}]}"#
+        ))
+    }
+
+    @Test func guidedSetupCloudPlanSkipsLocalRuntime() throws {
+        let plan = try #require(InstallerViewModel.guidedSetupModelPlan(
+            localInference: false,
+            selectedLocalModel: "",
+            recommendation: "",
+            modelQueries: [:],
+            localProviderModelIDs: [:],
+            cloudModelIdentifier: "openrouter/openai/gpt-5.5"
+        ))
+
+        #expect(!plan.requiresLMStudio)
+        #expect(plan.modelQuery == nil)
+        #expect(plan.modelIdentifier == "openrouter/openai/gpt-5.5")
+        #expect(InstallerViewModel.guidedSetupLocalRuntimeIsReady(
+            plan: plan,
+            lmStudioState: .fail,
+            modelState: .fail
+        ))
+    }
+
+    @MainActor
+    @Test func guidedSetupBlockingStepRunsOutsideMainActor() async {
+        let vm = InstallerViewModel()
+        let result = await vm.runStep(name: "Concurrency probe") {
+            StepResult(
+                state: Thread.isMainThread ? .fail : .ok,
+                message: Thread.isMainThread ? "ran on main thread" : "ran off main thread"
+            )
+        }
+
+        #expect(result.state == .ok)
+    }
+
+    @MainActor
+    @Test func staleRemoteCatalogCannotHideTheLatestVerifiedLocalModel() {
+        let vm = InstallerViewModel()
+        vm.remoteLocalModelCandidates = [
+            .init(name: "Older remote model", query: "older/model", providerId: "older/model", family: "older", summary: "Fixture", fileSizeGB: 1, maxContextK: 32, qualityScore: 1, codingScore: 1, reasoningScore: 1, speedScore: 1, toolUseScore: 1, multimodal: false, badges: [])
+        ]
+
+        let latest = vm.localModelCatalog.first { $0.providerId == "qwen/qwen3.8-27b" }
+        #expect(latest?.badges.contains("Latest") == true)
+        #expect(latest?.query == "lmstudio-community/Qwen3.8-27B-GGUF@Q4_K_M")
+        #expect(LocalModelCatalogService.isValidModelQuery(latest?.query ?? ""))
+    }
+
     @MainActor
     @Test func kanbanTaskCanPrepareCronForm() {
         let vm = InstallerViewModel()
@@ -1206,6 +1328,130 @@ struct InstallerEngineTests {
         #expect(command.contains("--to '1636626469'"))
     }
 
+    @Test func failedKanbanCronSyncRestoresAutomationPayloadAndKeepsPriority() throws {
+        let previous = InstallerViewModel.KanbanCard.fresh(
+            title: "Original task",
+            detail: "Original detail",
+            priority: "Normal",
+            agentID: "main",
+            reviewSchedule: "1d",
+            scheduleTimeZoneID: "Europe/Zurich",
+            scheduleKind: "every",
+            cronEnabled: true,
+            deliveryMode: "channel",
+            deliveryChannel: "telegram",
+            deliveryTo: "old-destination",
+            cronJobID: "job-existing"
+        )
+        var attempted = previous
+        attempted.title = "Edited task"
+        attempted.detail = "Edited detail"
+        attempted.priority = "High"
+        attempted.reviewSchedule = "0 9 * * *"
+        attempted.scheduleKind = "cron"
+        attempted.cronEnabled = false
+        attempted.deliveryTo = "new-destination"
+
+        let restored = try #require(InstallerViewModel.kanbanCardRestoringCronFields(
+            current: attempted,
+            attempted: attempted,
+            previous: previous
+        ))
+
+        #expect(restored.title == "Original task")
+        #expect(restored.detail == "Original detail")
+        #expect(restored.agentID == "main")
+        #expect(restored.priority == "High")
+        #expect(restored.reviewSchedule == "1d")
+        #expect(restored.scheduleKind == "every")
+        #expect(restored.cronEnabled == true)
+        #expect(restored.deliveryTo == "old-destination")
+        #expect(restored.cronJobID == "job-existing")
+
+        var newerEdit = attempted
+        newerEdit.reviewSchedule = "2h"
+        #expect(InstallerViewModel.kanbanCardRestoringCronFields(
+            current: newerEdit,
+            attempted: attempted,
+            previous: previous
+        ) == nil)
+    }
+
+    @Test func kanbanCronCommandHasABoundedTimeout() {
+        let startedAt = Date()
+        let result = InstallerViewModel.runKanbanCronCommand(
+            "exec /bin/sleep 3",
+            timeoutSeconds: 1
+        )
+
+        #expect(result.0 == 124)
+        #expect(result.1.contains("Cron command timed out after 1s"))
+        #expect(Date().timeIntervalSince(startedAt) < 2.5)
+    }
+
+    @MainActor
+    @Test func cronManualRunGateRejectsConcurrentDuplicatePerJobAndAllowsAfterRelease() async {
+        let vm = InstallerViewModel()
+
+        let first = Task { @MainActor in vm.beginCronManualRun("job-a") }
+        let second = Task { @MainActor in vm.beginCronManualRun("job-a") }
+        let outcomes = [await first.value, await second.value]
+        #expect(outcomes.filter { $0 }.count == 1)
+        #expect(vm.cronManualRunInFlightJobIDs == Set(["job-a"]))
+
+        #expect(vm.beginCronManualRun("job-b"))
+        #expect(vm.cronManualRunInFlightJobIDs == Set(["job-a", "job-b"]))
+
+        vm.finishCronManualRun("job-a")
+        #expect(vm.beginCronManualRun("job-a"))
+        vm.finishCronManualRun("job-a")
+        vm.finishCronManualRun("job-b")
+        #expect(vm.cronManualRunInFlightJobIDs.isEmpty)
+    }
+
+    @Test func kanbanCronUnknownStateDoesNotRequireBlindMutationRetry() {
+        #expect(InstallerViewModel.kanbanCronMutationStateIsUnknown(
+            exitCode: 124,
+            expectsNewJobID: false,
+            confirmedJobID: "job-existing"
+        ))
+        #expect(InstallerViewModel.kanbanCronMutationStateIsUnknown(
+            exitCode: 0,
+            expectsNewJobID: true,
+            confirmedJobID: nil
+        ))
+        #expect(!InstallerViewModel.kanbanCronMutationStateIsUnknown(
+            exitCode: 0,
+            expectsNewJobID: true,
+            confirmedJobID: "job-created"
+        ))
+        #expect(!InstallerViewModel.kanbanCronMutationStateIsUnknown(
+            exitCode: 1,
+            expectsNewJobID: true,
+            confirmedJobID: nil
+        ))
+    }
+
+    @Test func kanbanCronInventoryRecoversOnlyExactUniqueCardBindings() {
+        let inventory = #"""
+        {
+          "jobs": [
+            {"id":"job-a","description":"Managed by LocalClaw card card-a"},
+            {"id":"job-b1","declarationKey":"localclaw-kanban-card-b"},
+            {"id":"job-b2","description":"Managed by LocalClaw card card-b"},
+            {"id":"job-c","description":"Managed by LocalClaw card card-c","declarationKey":"localclaw-kanban-other-card"},
+            {"id":"job-d","declaration_key":"localclaw-kanban-card-d"},
+            {"id":"job-e","description":"Not managed by LocalClaw card card-e"}
+          ],
+          "total": 6,
+          "hasMore": false
+        }
+        """#
+
+        let bindings = InstallerViewModel.kanbanCronInventoryBindings(from: inventory)
+        #expect(bindings == ["card-a": "job-a", "card-d": "job-d"])
+    }
+
     @Test func extractsCronJobIDFromJSONOutput() {
         #expect(InstallerViewModel.extractCronJobID(from: #"{"id":"job-123"}"#) == "job-123")
         #expect(InstallerViewModel.extractCronJobID(from: #"{"job":{"id":"job-456"}}"#) == "job-456")
@@ -1216,7 +1462,7 @@ Created job
     }
 
     @MainActor
-    @Test func completedKanbanOneShotCronMovesCardToDone() {
+    @Test func missingKanbanOneShotCronRequiresReceiptBeforeCompletion() {
         let vm = InstallerViewModel()
         vm.kanbanAutomationSyncEnabled = false
         let runAt = Date(timeIntervalSince1970: 1_770_000_000)
@@ -1242,10 +1488,12 @@ Created job
 
         vm.reconcileKanbanCompletedAutomations(knownCronJobIDs: [], now: runAt.addingTimeInterval(60))
 
-        #expect(vm.kanbanColumns.first { $0.id == "review" }?.cards.isEmpty == true)
-        let doneCard = vm.kanbanColumns.first { $0.id == "done" }?.cards.first
-        #expect(doneCard?.title == "Tortue")
-        #expect(doneCard?.cronJobID == "")
+        let reviewCard = vm.kanbanColumns.first { $0.id == "review" }?.cards.first
+        #expect(reviewCard?.title == "Tortue")
+        #expect(reviewCard?.cronJobID.isEmpty == true)
+        #expect(reviewCard?.cronEnabled == false)
+        #expect(vm.kanbanColumns.first { $0.id == "done" }?.cards.isEmpty == true)
+        #expect(vm.kanbanStatus.contains("execution receipt"))
     }
 
     @Test func atScheduleDateFormatsForOpenClawCron() {
@@ -1512,8 +1760,8 @@ Created job
 
         let firstWorkTurn = GoalCenterModel.workRuntimeSessionID(chatSessionID: chatID, stepID: "step-1", turn: 0)
         let retryWorkTurn = GoalCenterModel.workRuntimeSessionID(chatSessionID: chatID, stepID: "step-1", turn: 1)
-        #expect(firstWorkTurn != retryWorkTurn)
-        #expect(firstWorkTurn.contains("-work-step-1-0"))
+        #expect(firstWorkTurn == first)
+        #expect(retryWorkTurn == first)
     }
 
     @Test @MainActor func continuousGoalRunsOnlyWhileActiveAndHealthy() {
@@ -1603,9 +1851,94 @@ Created job
         #expect(prompt.contains("Format or technology: Markdown"))
         #expect(prompt.contains("Current step:\nInspect release configuration"))
         #expect(prompt.contains("<localclaw_progress>"))
-        #expect(prompt.contains("Do not call update_goal yourself"))
+        #expect(prompt.contains("Do not call create_goal, update_goal"))
         #expect(prompt.contains("Replace it with the strongest deterministic automated smoke test"))
         #expect(prompt.contains("Never invent a tool result"))
+    }
+
+    @Test func nativeGoalCannotCompleteOrBlockAheadOfLocalClawPlan() {
+        let now = Date()
+        var plan = GoalExecutionPlan(
+            sessionID: "goal-native-status",
+            nativeGoalID: "native-goal",
+            nativeAgentID: "main",
+            nativeStatePath: "/tmp/state",
+            nativeWorkspacePath: "/tmp/workspace",
+            objective: "Ship a verified artifact",
+            output: GoalOutputContract(type: "Report", format: "Markdown", location: "/tmp/report.md", launch: "Open report", completionCriteria: ["Verified"]),
+            steps: [GoalPlanStep(id: "step-1", title: "Verify", outcome: "Proof", completionCriteria: ["Proof exists"], status: .inProgress, summary: "", evidence: [], attempts: 0, noProgressTurns: 0)],
+            approvedAt: now, createdAt: now, updatedAt: now, version: 1, lastCheckpointMessageID: nil
+        )
+        func snapshot(_ status: GoalLifecycleStatus) -> OpenClawGoalSnapshot {
+            .init(id: "native-goal", objective: plan.objective, status: status, createdAt: 1, updatedAt: 2, tokensUsed: 0, tokenBudget: nil, continuationTurns: 0, lastStatusNote: nil)
+        }
+
+        #expect(GoalCenterModel.nativeGoalStatusIsCompatible(plan: plan, snapshot: snapshot(.active)))
+        #expect(!GoalCenterModel.nativeGoalStatusIsCompatible(plan: plan, snapshot: snapshot(.complete)))
+        #expect(!GoalCenterModel.nativeGoalStatusIsCompatible(plan: plan, snapshot: snapshot(.blocked)))
+
+        plan.steps[0].status = .blocked
+        #expect(GoalCenterModel.nativeGoalStatusIsCompatible(plan: plan, snapshot: snapshot(.blocked)))
+        plan.steps[0].status = .complete
+        #expect(GoalCenterModel.nativeGoalStatusIsCompatible(plan: plan, snapshot: snapshot(.complete)))
+    }
+
+    @Test func goalBlocksOnlyAfterTheSameConditionRecursThreeTimes() {
+        var plan = GoalExecutionPlan(
+            sessionID: "goal-blocker",
+            objective: "Ship a verified artifact",
+            output: GoalOutputContract(type: "Report", format: "Markdown", location: "/tmp/report.md", launch: "Open report", completionCriteria: ["Verified"]),
+            steps: [
+                GoalPlanStep(id: "step-1", title: "Verify", outcome: "Proof", completionCriteria: ["Proof exists"], status: .inProgress, summary: "", evidence: [], attempts: 0, noProgressTurns: 0)
+            ],
+            approvedAt: Date(), createdAt: Date(), updatedAt: Date(), version: 1, lastCheckpointMessageID: nil
+        )
+
+        plan.apply(.init(status: .blocked, summary: "Credentials missing", evidence: [], blockerKey: "credentials-missing"))
+        #expect(plan.currentStep?.status == .inProgress)
+        plan.apply(.init(status: .blocked, summary: "Different blocker", evidence: [], blockerKey: "different-blocker"))
+        #expect(plan.currentStep?.status == .inProgress)
+        plan.apply(.init(status: .blocked, summary: "Different blocker", evidence: [], blockerKey: "different-blocker"))
+        #expect(plan.currentStep?.status == .inProgress)
+        plan.apply(.init(status: .blocked, summary: "Different blocker", evidence: [], blockerKey: "different-blocker"))
+        #expect(plan.currentStep?.status == .blocked)
+    }
+
+    @Test func goalNeverClaimsADurableBlockerFromChangingProseAlone() {
+        var plan = GoalExecutionPlan(
+            sessionID: "goal-unkeyed-blocker",
+            objective: "Ship a verified artifact",
+            output: GoalOutputContract(type: "Report", format: "Markdown", location: "/tmp/report.md", launch: "Open report", completionCriteria: ["Verified"]),
+            steps: [
+                GoalPlanStep(id: "step-1", title: "Verify", outcome: "Proof", completionCriteria: ["Proof exists"], status: .inProgress, summary: "", evidence: [], attempts: 0, noProgressTurns: 0)
+            ],
+            approvedAt: Date(), createdAt: Date(), updatedAt: Date(), version: 1, lastCheckpointMessageID: nil
+        )
+
+        for turn in 1...4 {
+            plan.apply(.init(status: .blocked, summary: "Unidentified blocker \(turn)", evidence: []))
+        }
+        #expect(plan.currentStep?.status == .inProgress)
+        #expect(plan.currentStep?.noProgressTurns == 4)
+    }
+
+    @Test func goalNeverCompletesAPlanStepWithoutConcreteEvidence() {
+        var plan = GoalExecutionPlan(
+            sessionID: "goal-evidence",
+            objective: "Ship a verified artifact",
+            output: GoalOutputContract(type: "Report", format: "Markdown", location: "/tmp/report.md", launch: "Open report", completionCriteria: ["Verified"]),
+            steps: [
+                GoalPlanStep(id: "step-1", title: "Inspect", outcome: "Evidence", completionCriteria: ["Inspection recorded"], status: .inProgress, summary: "", evidence: [], attempts: 0, noProgressTurns: 0),
+                GoalPlanStep(id: "step-2", title: "Deliver", outcome: "Report", completionCriteria: ["Report exists"], status: .pending, summary: "", evidence: [], attempts: 0, noProgressTurns: 0),
+            ],
+            approvedAt: Date(), createdAt: Date(), updatedAt: Date(), version: 1, lastCheckpointMessageID: nil
+        )
+
+        plan.apply(.init(status: .complete, summary: "Done", evidence: []))
+
+        #expect(plan.currentStep?.id == "step-1")
+        #expect(plan.currentStep?.status == .inProgress)
+        #expect(plan.currentStep?.summary.contains("did not include concrete evidence") == true)
     }
 
     @Test func goalResumeResetsOnlyTheCurrentSafetyWindow() throws {

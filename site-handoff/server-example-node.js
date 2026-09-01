@@ -1,6 +1,6 @@
 // Example minimal backend (Node.js, no framework)
 // Endpoints:
-// - POST /api/license/activate
+// - POST /api/license/v2/activate
 // - GET /api/download?token=...
 
 const http = require('http');
@@ -42,7 +42,7 @@ function readJson(req) {
 }
 
 const server = http.createServer(async (req, res) => {
-  if (req.method === 'POST' && req.url === '/api/license/activate') {
+  if (req.method === 'POST' && req.url === '/api/license/v2/activate') {
     try {
       const body = await readJson(req);
       const email = String(body.email || '').trim().toLowerCase();

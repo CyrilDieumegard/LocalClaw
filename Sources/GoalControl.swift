@@ -129,6 +129,7 @@ enum GoalSessionMaintenance {
     static let newGoalTranscriptLines = 1
     static let localGoalTokenBudget = 80_000
     static let localRunTokenBudget = 60_000
+    static let maxAutomaticTurnsPerRun = 20
 
     static func isLocalModel(_ modelID: String) -> Bool {
         modelID.lowercased().hasPrefix("lmstudio/")
@@ -166,6 +167,7 @@ struct GoalPlanStep: Identifiable, Codable, Equatable, Sendable {
     var evidence: [String]
     var attempts: Int
     var noProgressTurns: Int
+    var lastBlockerKey: String? = nil
 
     var isDefined: Bool {
         !title.trimmed.isEmpty &&
@@ -176,6 +178,10 @@ struct GoalPlanStep: Identifiable, Codable, Equatable, Sendable {
 
 struct GoalExecutionPlan: Codable, Equatable, Sendable {
     var sessionID: String
+    var nativeGoalID: String? = nil
+    var nativeAgentID: String? = nil
+    var nativeStatePath: String? = nil
+    var nativeWorkspacePath: String? = nil
     var objective: String
     var output: GoalOutputContract
     var steps: [GoalPlanStep]
@@ -205,6 +211,10 @@ struct GoalExecutionPlan: Codable, Equatable, Sendable {
     var isComplete: Bool { !steps.isEmpty && steps.allSatisfy { $0.status == .complete } }
 
     mutating func prepareForApproval() {
+        nativeGoalID = nil
+        nativeAgentID = nil
+        nativeStatePath = nil
+        nativeWorkspacePath = nil
         approvedAt = Date()
         updatedAt = Date()
         version += 1
@@ -214,12 +224,26 @@ struct GoalExecutionPlan: Codable, Equatable, Sendable {
             steps[index].evidence = []
             steps[index].attempts = 0
             steps[index].noProgressTurns = 0
+            steps[index].lastBlockerKey = nil
         }
     }
 
     mutating func apply(_ report: GoalStepProgressReport) {
         guard let index = currentStepIndex else { return }
+        let previousBlockedTurns = steps[index].noProgressTurns
+        let previousBlockerKey = steps[index].lastBlockerKey
         steps[index].attempts += 1
+        let reportedEvidence = report.evidence.map(\.trimmed).filter { !$0.isEmpty }
+
+        if report.status == .complete, reportedEvidence.isEmpty {
+            steps[index].status = .inProgress
+            steps[index].summary = "LocalClaw rejected the completion claim because it did not include concrete evidence."
+            steps[index].evidence = []
+            steps[index].noProgressTurns += 1
+            steps[index].lastBlockerKey = nil
+            updatedAt = Date()
+            return
+        }
 
         let completesFinalOpenStep = report.status == .complete && steps.indices.allSatisfy {
             $0 == index || steps[$0].status == .complete
@@ -237,14 +261,32 @@ struct GoalExecutionPlan: Codable, Equatable, Sendable {
         }
 
         steps[index].summary = report.summary.trimmed
-        steps[index].evidence = report.evidence.map(\.trimmed).filter { !$0.isEmpty }
-        steps[index].noProgressTurns = report.evidence.isEmpty ? steps[index].noProgressTurns + 1 : 0
+        steps[index].evidence = reportedEvidence
+        if report.status == .blocked {
+            let blockerKey = report.blockerKey?.trimmed.lowercased()
+            if let blockerKey, !blockerKey.isEmpty {
+                steps[index].noProgressTurns = previousBlockerKey == blockerKey ? previousBlockedTurns + 1 : 1
+                steps[index].lastBlockerKey = blockerKey
+            } else {
+                // Without a stable condition identity LocalClaw cannot claim the
+                // same blocker recurred. Count no-progress for a safe pause, but
+                // never mark the native Goal blocked from prose alone.
+                steps[index].noProgressTurns = previousBlockedTurns + 1
+                steps[index].lastBlockerKey = nil
+            }
+        } else {
+            steps[index].noProgressTurns = reportedEvidence.isEmpty ? steps[index].noProgressTurns + 1 : 0
+            steps[index].lastBlockerKey = nil
+        }
 
         switch report.status {
         case .working:
             steps[index].status = .inProgress
         case .blocked:
-            steps[index].status = .blocked
+            // OpenClaw's Goal contract treats a blocker as durable only after the
+            // same condition recurs for three consecutive Goal turns.
+            steps[index].status = steps[index].lastBlockerKey != nil && steps[index].noProgressTurns >= 3
+                ? .blocked : .inProgress
         case .complete:
             steps[index].status = .complete
             if let next = steps.indices.first(where: { $0 > index && steps[$0].status != .complete }) {
@@ -257,6 +299,7 @@ struct GoalExecutionPlan: Codable, Equatable, Sendable {
     mutating func resetCurrentStepSafetyWindow() {
         guard let index = currentStepIndex else { return }
         steps[index].noProgressTurns = 0
+        steps[index].lastBlockerKey = nil
         updatedAt = Date()
     }
 
@@ -269,6 +312,7 @@ struct GoalExecutionPlan: Codable, Equatable, Sendable {
         steps[index].summary = "LocalClaw reopened this step because the approved output is not present on disk."
         steps[index].evidence = []
         steps[index].noProgressTurns = 0
+        steps[index].lastBlockerKey = nil
         updatedAt = Date()
         version += 1
         return verification
@@ -289,6 +333,7 @@ struct GoalStepProgressReport: Codable, Equatable, Sendable {
     let status: GoalStepProgressStatus
     let summary: String
     let evidence: [String]
+    var blockerKey: String? = nil
 }
 
 enum GoalPlanPrompt {
@@ -521,14 +566,14 @@ enum GoalWorkPrompt {
 
         At the very end of your response, include exactly one machine-readable progress block:
         <localclaw_progress>
-        {"status":"working|complete|blocked","summary":"short factual progress summary","evidence":["file, command, test, or observable result"]}
+        {"status":"working|complete|blocked","summary":"short factual progress summary","evidence":["file, command, test, or observable result"],"blockerKey":"stable-kebab-case-condition-or-empty"}
         </localclaw_progress>
 
-        Use status complete only when every criterion for the current step is satisfied. Use blocked only for a genuine blocker that cannot be resolved autonomously. Otherwise use working.
+        Use status complete only when every criterion for the current step is satisfied. Use blocked only for a genuine blocker that cannot be resolved autonomously. For blocked, reuse the exact same short blockerKey on every turn while the underlying condition is unchanged; use an empty value otherwise. Otherwise use working.
 
         Verification must use tools available in this autonomous run. If an approved criterion asks for manual interaction, browser clicking, visual inspection, or unavailable UI automation, do not wait or loop on it. Replace it with the strongest deterministic automated smoke test or static verification you can run, record that evidence, and treat any remaining manual check as optional handoff guidance. Never wait for user interaction during this run.
 
-        Do not call update_goal yourself; LocalClaw advances and completes the durable Goal from the approved plan.
+        Do not call create_goal, update_goal, or any other Goal-mutating tool. LocalClaw alone advances, blocks, and completes the durable Goal from the approved plan. You may call get_goal only to read state.
         """
     }
 }
@@ -549,7 +594,7 @@ enum LocalGoalArtifactError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unsupportedDestination:
-            return "The approved output must be one supported file inside ~/.openclaw/workspace."
+            return "The approved output must be one supported file inside the workspace attached to this OpenClaw Goal."
         case .invalidResponse(let message), .invalidArtifact(let message), .contextBudget(let message), .server(let message):
             return message
         }
@@ -567,8 +612,8 @@ enum LocalGoalArtifactSupport {
     ) -> URL? {
         guard let path = GoalOutputVerifier.resolvedLocalPath(plan.output.location) else { return nil }
         let destination = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
-        let workspace = URL(fileURLWithPath: homeDirectory)
-            .appendingPathComponent(".openclaw/workspace", isDirectory: true)
+        let workspace = (plan.nativeWorkspacePath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? URL(fileURLWithPath: homeDirectory).appendingPathComponent(".openclaw/workspace", isDirectory: true))
             .standardizedFileURL
             .resolvingSymlinksInPath()
         guard destination.path.hasPrefix(workspace.path + "/"),
@@ -777,8 +822,8 @@ actor LocalGoalArtifactGenerator {
     private static func lmStudioSettings() -> (endpoint: URL, apiKey: String?) {
         var baseURL = URL(string: "http://127.0.0.1:1234/v1")!
         var apiKey: String?
-        let configURL = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".openclaw/openclaw.json")
-        if let data = try? Data(contentsOf: configURL),
+        if let configURL = try? OpenClawRuntimeInstallation.selectedConfig(),
+           let data = try? Data(contentsOf: configURL),
            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let models = root["models"] as? [String: Any],
            let providers = models["providers"] as? [String: Any],
@@ -852,8 +897,12 @@ enum GoalCapabilityAdvisor {
 
 private struct GoalControllerRequest: Encodable {
     let id: String
+    let operationId: String
+    let issuedAtMs: Int64
     let action: String
     let sessionKey: String
+    let goalId: String?
+    let expectedUpdatedAt: Int64?
     let objective: String?
     let note: String?
     let tokenBudget: Int?
@@ -937,15 +986,43 @@ actor OpenClawGoalBridge {
     private var output: FileHandle?
     private var outputBuffer = Data()
     private var runtimeIdentifier: String?
+    private struct PendingOperation {
+        let id: String
+        let issuedAtMs: Int64
+    }
+    private var pendingOperations: [String: PendingOperation] = [:]
 
     func invalidateRuntime() { resetProcess() }
 
-    func request(action: String, sessionKey: String, objective: String? = nil, note: String? = nil, tokenBudget: Int? = nil) throws -> (OpenClawGoalSnapshot?, String) {
+    func request(action: String, sessionKey: String, goalId: String? = nil, expectedUpdatedAt: Int64? = nil, objective: String? = nil, note: String? = nil, tokenBudget: Int? = nil) throws -> (OpenClawGoalSnapshot?, String) {
         try ensureProcess()
+        let mutatesGoal = action != "status"
+        let operationKeyParts: [String] = [
+            runtimeIdentifier ?? "unmanaged-runtime",
+            action, sessionKey, goalId ?? "", expectedUpdatedAt.map(String.init) ?? "",
+            objective ?? "", note ?? "", tokenBudget.map(String.init) ?? "",
+        ]
+        let operationKey = operationKeyParts.joined(separator: "\u{0}")
+        let pending = mutatesGoal
+            ? (pendingOperations[operationKey] ?? PendingOperation(
+                id: UUID().uuidString,
+                issuedAtMs: Int64(Date().timeIntervalSince1970 * 1_000)
+            ))
+            : PendingOperation(id: UUID().uuidString, issuedAtMs: Int64(Date().timeIntervalSince1970 * 1_000))
+        if mutatesGoal {
+            if pendingOperations.count >= 64, pendingOperations[operationKey] == nil {
+                pendingOperations.removeValue(forKey: pendingOperations.keys.first!)
+            }
+            pendingOperations[operationKey] = pending
+        }
         let request = GoalControllerRequest(
-            id: UUID().uuidString,
+            id: pending.id,
+            operationId: pending.id,
+            issuedAtMs: pending.issuedAtMs,
             action: action,
             sessionKey: sessionKey,
+            goalId: goalId,
+            expectedUpdatedAt: expectedUpdatedAt,
             objective: objective,
             note: note,
             tokenBudget: tokenBudget
@@ -957,6 +1034,7 @@ actor OpenClawGoalBridge {
         while let line = try readLine() {
             guard let envelope = try? JSONDecoder().decode(GoalControllerEnvelope.self, from: line) else { continue }
             guard envelope.type == "response", envelope.id == request.id else { continue }
+            if mutatesGoal { pendingOperations.removeValue(forKey: operationKey) }
             guard envelope.ok else {
                 throw OpenClawGoalBridgeError.processFailed(envelope.message ?? "OpenClaw Goal action failed.")
             }
@@ -970,8 +1048,25 @@ actor OpenClawGoalBridge {
         guard !OpenClawRuntimeMaintenance.isActive else {
             throw OpenClawGoalBridgeError.processFailed("OpenClaw maintenance is running. Goal checkpoints are preserved; wait for it to finish.")
         }
-        let managedRuntime = try? OpenClawRuntimeInstallation.managed()
-        let identifier = managedRuntime.map { $0.package.path + ":" + ($0.version ?? "unknown") }
+        let managedRuntime: OpenClawRuntimeInstallation?
+        do {
+            managedRuntime = try OpenClawRuntimeInstallation.managed()
+        } catch {
+            throw OpenClawGoalBridgeError.processFailed(
+                "LocalClaw could not uniquely select an OpenClaw profile for Goal control. No Goal was changed. \(error.localizedDescription)"
+            )
+        }
+        let identifier = managedRuntime.map {
+            [
+                $0.package.path,
+                $0.node.path,
+                $0.version ?? "unknown",
+                $0.state.path,
+                $0.config.path,
+                $0.serviceLabel ?? "unmanaged",
+                $0.port.map(String.init) ?? "default-port",
+            ].joined(separator: ":")
+        }
         if let process, process.isRunning, input != nil, output != nil, runtimeIdentifier == identifier { return }
         resetProcess()
 
@@ -1065,6 +1160,7 @@ final class GoalCenterModel: ObservableObject {
 
     private let bridge = OpenClawGoalBridge.shared
     private var continuousTask: Task<Void, Never>?
+    private var snapshotAgentID: String?
 
     static func runtimeSessionID(for chatSessionID: String) -> String {
         let cleaned = chatSessionID.map { character -> Character in
@@ -1078,14 +1174,63 @@ final class GoalCenterModel: ObservableObject {
     }
 
     static func workRuntimeSessionID(chatSessionID: String, stepID: String, turn: Int) -> String {
-        let cleanedStep = stepID.map { character -> Character in
-            character.isLetter || character.isNumber || character == "-" ? character : "-"
-        }
-        return "\(runtimeSessionID(for: chatSessionID))-work-\(String(cleanedStep).prefix(32))-\(max(turn, 0))"
+        // Native Goal context, token usage and budget are session-scoped. Every
+        // work turn must therefore stay on the Goal's owning session.
+        runtimeSessionID(for: chatSessionID)
     }
 
     static func openClawSessionKey(for chatSessionID: String, agentID: String = "main") -> String {
         "agent:\(agentID):explicit:\(runtimeSessionID(for: chatSessionID))"
+    }
+
+    nonisolated static func runtimeBinding(
+        agentID: String,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> (statePath: String, workspacePath: String) {
+        let state = try OpenClawRuntimeInstallation.selectedState(home: home, environment: environment)
+            .standardizedFileURL.resolvingSymlinksInPath()
+        let configURL = try OpenClawRuntimeInstallation.selectedConfig(home: home, environment: environment)
+        let config: [String: Any] = {
+            guard let data = try? Data(contentsOf: configURL),
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
+            return root
+        }()
+        let agents = config["agents"] as? [String: Any]
+        var rawWorkspace: String?
+        if let entries = agents?["entries"] as? [String: Any],
+           let entry = entries[agentID] as? [String: Any] {
+            rawWorkspace = entry["workspace"] as? String
+        }
+        if rawWorkspace == nil, let list = agents?["list"] as? [[String: Any]],
+           let entry = list.first(where: { ($0["id"] as? String) == agentID }) {
+            rawWorkspace = entry["workspace"] as? String
+        }
+        if rawWorkspace == nil, agentID == "main",
+           let defaults = agents?["defaults"] as? [String: Any] {
+            rawWorkspace = defaults["workspace"] as? String
+        }
+
+        let workspace: URL
+        if let raw = rawWorkspace?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            if raw == "~" {
+                workspace = home
+            } else if raw.hasPrefix("~/") {
+                workspace = home.appendingPathComponent(String(raw.dropFirst(2)), isDirectory: true)
+            } else if raw.hasPrefix("/") {
+                workspace = URL(fileURLWithPath: raw, isDirectory: true)
+            } else {
+                workspace = state.appendingPathComponent(raw, isDirectory: true)
+            }
+        } else if agentID == "main" {
+            workspace = state.appendingPathComponent("workspace", isDirectory: true)
+        } else {
+            workspace = state.appendingPathComponent("workspaces/\(agentID)", isDirectory: true)
+        }
+        return (
+            state.path,
+            workspace.standardizedFileURL.resolvingSymlinksInPath().path
+        )
     }
 
     func selectSession(_ sessionID: String, projectName: String? = nil) async {
@@ -1095,6 +1240,7 @@ final class GoalCenterModel: ObservableObject {
         guard !sessionID.isEmpty else {
             selectedChatSessionID = ""
             snapshot = nil
+            snapshotAgentID = nil
             plan = nil
             return
         }
@@ -1125,6 +1271,7 @@ final class GoalCenterModel: ObservableObject {
         outputHint = ""
         note = ""
         snapshot = nil
+        snapshotAgentID = nil
         plan = nil
         statusMessage = "Name the project and describe the result you want."
     }
@@ -1220,11 +1367,23 @@ final class GoalCenterModel: ObservableObject {
     }
 
     func reconcileLatestCheckpoint(using viewModel: InstallerViewModel) async {
+        guard !isBusy, plan?.isApproved == true else { return }
+        await refresh()
         guard var recoveredPlan = plan, recoveredPlan.isApproved,
+              let nativeAgentID = recoveredPlan.nativeAgentID,
+              Self.nativeGoalMatches(plan: recoveredPlan, snapshot: snapshot, agentID: snapshotAgentID),
+              Self.nativeGoalStatusIsCompatible(plan: recoveredPlan, snapshot: snapshot),
+              snapshot?.objective.trimmed == recoveredPlan.objective.trimmed,
+              let binding = try? Self.runtimeBinding(agentID: nativeAgentID),
+              binding.statePath == recoveredPlan.nativeStatePath,
+              binding.workspacePath == recoveredPlan.nativeWorkspacePath,
               let latest = viewModel.normalChatSessions
                 .first(where: { $0.id == selectedChatSessionID })?
                 .messages.last,
-              latest.role == "assistant" else { return }
+              latest.role == "assistant" else {
+            statusMessage = "The latest checkpoint was not applied because its native Goal, profile, agent, or workspace could not be revalidated. The saved plan was preserved."
+            return
+        }
         let parsed = GoalProgressParser.parse(latest.text)
         guard parsed.cleanedText != latest.text else { return }
 
@@ -1290,6 +1449,18 @@ final class GoalCenterModel: ObservableObject {
             return
         }
         approvedPlan.prepareForApproval()
+        if let currentGoal = snapshot, let currentAgent = snapshotAgentID {
+            do {
+                let binding = try Self.runtimeBinding(agentID: currentAgent)
+                approvedPlan.nativeGoalID = currentGoal.id
+                approvedPlan.nativeAgentID = currentAgent
+                approvedPlan.nativeStatePath = binding.statePath
+                approvedPlan.nativeWorkspacePath = binding.workspacePath
+            } catch {
+                statusMessage = "LocalClaw could not attach this plan to one OpenClaw profile and workspace. Nothing was started. \(error.localizedDescription)"
+                return
+            }
+        }
         plan = approvedPlan
         objective = approvedPlan.objective
         GoalPlanStore.save(approvedPlan)
@@ -1317,9 +1488,18 @@ final class GoalCenterModel: ObservableObject {
             guard ready else {
                 if var plan = self.plan {
                     plan.approvedAt = nil
+                    plan.nativeGoalID = nil
+                    plan.nativeAgentID = nil
+                    plan.nativeStatePath = nil
+                    plan.nativeWorkspacePath = nil
                     self.plan = plan
                     GoalPlanStore.save(plan)
                 }
+                return
+            }
+            guard let plan = self.plan,
+                  Self.nativeGoalMatches(plan: plan, snapshot: self.snapshot, agentID: self.snapshotAgentID) else {
+                self.statusMessage = "The native OpenClaw Goal changed while LocalClaw was attaching the approved plan. The run was not started."
                 return
             }
             self.startContinuousRun(using: viewModel, starting: true)
@@ -1354,12 +1534,15 @@ final class GoalCenterModel: ObservableObject {
     }
 
     func resumeForExecution(using viewModel: InstallerViewModel) async -> Bool {
+        guard bindLegacyApprovedPlanForExplicitResume() else { return false }
         if snapshot?.status == .complete, plan?.isComplete == false {
             guard await perform(action: "clear") else { return false }
             let tokenBudget = GoalSessionMaintenance.isLocalModel(viewModel.selectedGoalModelID)
                 ? GoalSessionMaintenance.localGoalTokenBudget
                 : nil
-            return await start(tokenBudget: tokenBudget)
+            return await start(tokenBudget: tokenBudget) && plan.map {
+                Self.nativeGoalMatches(plan: $0, snapshot: snapshot, agentID: snapshotAgentID)
+            } == true
         }
         await resume()
         return snapshot?.status == .active
@@ -1374,7 +1557,10 @@ final class GoalCenterModel: ObservableObject {
     }
     func clear() async {
         stopContinuousRun(message: "Clearing Goal...")
-        _ = await perform(action: "clear")
+        guard await perform(action: "clear") else {
+            statusMessage = "The native Goal could not be cleared. The LocalClaw plan was preserved so you can retry safely."
+            return
+        }
         GoalPlanStore.remove(sessionID: selectedChatSessionID)
         selectedChatSessionID = ""
         projectName = ""
@@ -1391,60 +1577,96 @@ final class GoalCenterModel: ObservableObject {
         enabled && status == .active && latestMessageRole != "error"
     }
 
+    nonisolated static func nativeGoalMatches(plan: GoalExecutionPlan, snapshot: OpenClawGoalSnapshot?, agentID: String? = nil) -> Bool {
+        guard plan.isApproved,
+              let nativeGoalID = plan.nativeGoalID,
+              let nativeAgentID = plan.nativeAgentID,
+              let nativeStatePath = plan.nativeStatePath,
+              let nativeWorkspacePath = plan.nativeWorkspacePath,
+              !nativeAgentID.isEmpty,
+              !nativeStatePath.isEmpty,
+              !nativeWorkspacePath.isEmpty else { return false }
+        return snapshot?.id == nativeGoalID && (agentID == nil || agentID == nativeAgentID)
+    }
+
+    nonisolated static func nativeGoalStatusIsCompatible(plan: GoalExecutionPlan, snapshot: OpenClawGoalSnapshot?) -> Bool {
+        guard let status = snapshot?.status else { return false }
+        if plan.isComplete { return status == .active || status == .complete }
+        if plan.currentStep?.status == .blocked { return status == .active || status == .blocked }
+        return status == .active
+    }
+
+    private func stopForUnexpectedNativeGoalStatus(plan: GoalExecutionPlan) {
+        let nativeStatus = snapshot?.status.label ?? "Missing"
+        stopContinuousRun(
+            message: "Continuous run stopped because the native OpenClaw Goal changed to \(nativeStatus) before the LocalClaw plan reached that state. The LocalClaw plan and verified checkpoints were preserved; review the native Goal, then explicitly resume or recreate it."
+        )
+    }
+
+    private func bindLegacyApprovedPlanForExplicitResume() -> Bool {
+        guard var currentPlan = plan, currentPlan.isApproved else { return false }
+        if currentPlan.nativeGoalID != nil || currentPlan.nativeAgentID != nil {
+            guard Self.nativeGoalMatches(plan: currentPlan, snapshot: snapshot, agentID: snapshotAgentID) else {
+                statusMessage = "The OpenClaw Goal attached to this LocalClaw plan is no longer current. Nothing was changed."
+                return false
+            }
+            return true
+        }
+        guard let snapshot, let snapshotAgentID,
+              snapshot.objective.trimmed == currentPlan.objective.trimmed else {
+            statusMessage = "This saved LocalClaw plan is not attached to the current OpenClaw Goal. Review or recreate it before resuming."
+            return false
+        }
+        let binding: (statePath: String, workspacePath: String)
+        do {
+            binding = try Self.runtimeBinding(agentID: snapshotAgentID)
+        } catch {
+            statusMessage = "The saved plan could not be attached to one OpenClaw profile and workspace. Nothing was changed. \(error.localizedDescription)"
+            return false
+        }
+        currentPlan.nativeGoalID = snapshot.id
+        currentPlan.nativeAgentID = snapshotAgentID
+        currentPlan.nativeStatePath = binding.statePath
+        currentPlan.nativeWorkspacePath = binding.workspacePath
+        currentPlan.updatedAt = Date()
+        plan = currentPlan
+        GoalPlanStore.save(currentPlan)
+        return true
+    }
+
     private func executeDirectLocalArtifactTurn(
         using viewModel: InstallerViewModel,
         plan currentPlan: GoalExecutionPlan,
         sessionID: String
     ) async -> LocalGoalDirectTurnResult {
         guard let destination = LocalGoalArtifactSupport.destination(for: currentPlan),
-              let currentIndex = currentPlan.currentStepIndex else { return .unsupported }
+              let currentIndex = currentPlan.currentStepIndex,
+              currentPlan.steps.count == 2,
+              currentIndex == 0 else { return .unsupported }
 
         do {
-            var generatedTokens = 0
-            var generatedArtifact = false
-            var reviewedArtifact = false
-            var verification = GoalOutputVerifier.verify(currentPlan.output)
-            if currentIndex == 0 || !verification.isSatisfied || currentIndex == currentPlan.steps.indices.last {
-                let existingContent: String?
-                if currentIndex == currentPlan.steps.indices.last, verification.isSatisfied {
-                    existingContent = try String(contentsOf: destination, encoding: .utf8)
-                    reviewedArtifact = true
-                    statusMessage = "Reviewing and correcting the approved file with the local model..."
-                } else {
-                    existingContent = nil
-                    statusMessage = "Generating the approved file directly with the local model..."
-                }
-                let generation = try await LocalGoalArtifactGenerator.shared.generate(
-                    modelID: viewModel.selectedGoalModelID,
-                    plan: currentPlan,
-                    existingContent: existingContent,
-                    contextTokens: viewModel.activeLocalLMStudioContext ?? 32_768
-                )
-                let content = try LocalGoalArtifactSupport.artifactContent(
-                    from: generation.content,
-                    pathExtension: destination.pathExtension
-                )
-                try LocalGoalArtifactSupport.write(content, to: destination)
-                generatedTokens = generation.outputTokens
-                generatedArtifact = true
-                verification = GoalOutputVerifier.verify(currentPlan.output)
-                guard verification.isSatisfied else {
-                    throw LocalGoalArtifactError.invalidArtifact(verification.detail)
-                }
+            statusMessage = "Generating the approved file directly with the local model..."
+            let generation = try await LocalGoalArtifactGenerator.shared.generate(
+                modelID: viewModel.selectedGoalModelID,
+                plan: currentPlan,
+                existingContent: nil,
+                contextTokens: viewModel.activeLocalLMStudioContext ?? 32_768
+            )
+            let content = try LocalGoalArtifactSupport.artifactContent(
+                from: generation.content,
+                pathExtension: destination.pathExtension
+            )
+            try LocalGoalArtifactSupport.write(content, to: destination)
+            let verification = GoalOutputVerifier.verify(currentPlan.output)
+            guard verification.isSatisfied else {
+                throw LocalGoalArtifactError.invalidArtifact(verification.detail)
             }
 
             var updatedPlan = currentPlan
-            let isVerificationStep = currentIndex == updatedPlan.steps.indices.last
-            let tokenEvidence = generatedTokens > 0 ? " · \(generatedTokens.formatted()) output tokens" : ""
+            let tokenEvidence = generation.outputTokens > 0 ? " · \(generation.outputTokens.formatted()) output tokens" : ""
             let report = GoalStepProgressReport(
                 status: .complete,
-                summary: isVerificationStep
-                    ? (reviewedArtifact
-                        ? "The local model reviewed the artifact and LocalClaw verified it on disk."
-                        : "The local model generated the artifact and LocalClaw verified it on disk.")
-                    : (generatedArtifact
-                        ? "The local model generated the complete artifact and LocalClaw saved it atomically."
-                        : "The complete artifact already satisfies this approved checkpoint."),
+                summary: "The local model generated the complete artifact and LocalClaw saved it atomically.",
                 evidence: ["\(destination.path) exists and is not empty\(tokenEvidence)"]
             )
             updatedPlan.apply(report)
@@ -1454,9 +1676,7 @@ final class GoalCenterModel: ObservableObject {
 
             viewModel.appendGoalStatusMessage(
                 sessionID: sessionID,
-                text: isVerificationStep
-                    ? "Verified the approved output at `\(destination.path)`."
-                    : "Generated and saved the approved output at `\(destination.path)`. LocalClaw wrote the file directly so the local model did not need to serialize a large `write` tool call.",
+                text: "Generated and saved the approved output at `\(destination.path)`. The separate verification step will still run through OpenClaw before the Goal can complete.",
                 metadata: "local artifact · verified",
                 modelName: viewModel.selectedGoalModelID
             )
@@ -1484,10 +1704,12 @@ final class GoalCenterModel: ObservableObject {
     func startContinuousRun(using viewModel: InstallerViewModel, starting: Bool) {
         guard !selectedChatSessionID.isEmpty,
               snapshot?.status == .active,
-              plan?.isApproved == true,
-              plan?.currentStep != nil,
+              let approvedPlan = plan,
+              approvedPlan.isApproved,
+              approvedPlan.currentStep != nil,
+              Self.nativeGoalMatches(plan: approvedPlan, snapshot: snapshot, agentID: snapshotAgentID),
               !viewModel.chatIsSending else {
-            statusMessage = "Approve a complete output contract and plan before running this Goal."
+            statusMessage = "Approve and attach a complete plan to this exact OpenClaw Goal before running it."
             return
         }
 
@@ -1517,12 +1739,28 @@ final class GoalCenterModel: ObservableObject {
                     continue
                 }
                 await self.refresh()
+                guard let refreshedPlan = self.plan,
+                      Self.nativeGoalMatches(plan: refreshedPlan, snapshot: self.snapshot, agentID: self.snapshotAgentID) else {
+                    self.stopContinuousRun(message: "Continuous run stopped because OpenClaw replaced or changed the attached Goal. The LocalClaw plan was preserved.")
+                    return
+                }
+                guard Self.nativeGoalStatusIsCompatible(plan: refreshedPlan, snapshot: self.snapshot) else {
+                    self.stopForUnexpectedNativeGoalStatus(plan: refreshedPlan)
+                    return
+                }
                 guard Self.shouldContinueAutomatically(
                     enabled: self.continuousRunEnabled,
                     status: self.snapshot?.status,
                     latestMessageRole: nil
                 ) else {
                     self.finishContinuousRunForCurrentStatus()
+                    return
+                }
+
+                if self.automaticTurns >= GoalSessionMaintenance.maxAutomaticTurnsPerRun {
+                    await self.pauseForSafety(
+                        "LocalClaw paused after \(GoalSessionMaintenance.maxAutomaticTurnsPerRun) automatic turns in this run. Review verified progress and explicitly resume before spending more model time."
+                    )
                     return
                 }
 
@@ -1595,6 +1833,15 @@ final class GoalCenterModel: ObservableObject {
                 guard !Task.isCancelled && self.continuousRunEnabled else { return }
 
                 await self.refresh()
+                guard let postTurnPlan = self.plan,
+                      Self.nativeGoalMatches(plan: postTurnPlan, snapshot: self.snapshot, agentID: self.snapshotAgentID) else {
+                    self.stopContinuousRun(message: "Continuous run stopped because OpenClaw replaced or changed the attached Goal during the model turn. The LocalClaw plan was preserved.")
+                    return
+                }
+                guard Self.nativeGoalStatusIsCompatible(plan: postTurnPlan, snapshot: self.snapshot) else {
+                    self.stopForUnexpectedNativeGoalStatus(plan: postTurnPlan)
+                    return
+                }
                 let latestMessage = viewModel.normalChatSessions
                     .first(where: { $0.id == sessionID })?
                     .messages.last
@@ -1734,20 +1981,59 @@ final class GoalCenterModel: ObservableObject {
         isBusy = true
         statusMessage = action == "status" ? "Reading Goal state..." : "Updating Goal..."
         do {
-            let agentID = await Task.detached(priority: .utility) {
-                InstallerEngine().resolvedChatAgentID()
-            }.value
+            let boundAgentID = plan?.isApproved == true ? plan?.nativeAgentID : nil
+            let agentID: String?
+            if let boundAgentID {
+                agentID = boundAgentID
+            } else {
+                agentID = await Task.detached(priority: .utility) {
+                    InstallerEngine().resolvedChatAgentID()
+                }.value
+            }
             guard let agentID else {
                 throw OpenClawGoalBridgeError.processFailed("Select an owning OpenClaw agent before using Goals. Existing sessions were left unchanged.")
             }
+            let runtimeBinding = try Self.runtimeBinding(agentID: agentID)
+            if let currentPlan = plan, currentPlan.isApproved, currentPlan.nativeGoalID != nil,
+               (currentPlan.nativeStatePath != runtimeBinding.statePath ||
+                currentPlan.nativeWorkspacePath != runtimeBinding.workspacePath) {
+                throw OpenClawGoalBridgeError.processFailed(
+                    "The selected OpenClaw profile or agent workspace no longer matches this LocalClaw Goal plan. No Goal was changed."
+                )
+            }
+            let mutatesExistingGoal = !["status", "start"].contains(action)
+            let goalID = mutatesExistingGoal
+                ? (plan?.isApproved == true ? plan?.nativeGoalID : snapshot?.id)
+                : nil
+            let expectedUpdatedAt = mutatesExistingGoal && snapshot?.id == goalID ? snapshot?.updatedAt : nil
             let result = try await bridge.request(
                 action: action,
                 sessionKey: Self.openClawSessionKey(for: selectedChatSessionID, agentID: agentID),
+                goalId: goalID,
+                expectedUpdatedAt: expectedUpdatedAt,
                 objective: objective,
                 note: note?.trimmingCharacters(in: .whitespacesAndNewlines),
                 tokenBudget: tokenBudget
             )
             snapshot = result.0
+            snapshotAgentID = agentID
+            if action == "status", let currentPlan = plan, currentPlan.isApproved,
+               (!Self.nativeGoalMatches(plan: currentPlan, snapshot: result.0, agentID: agentID) ||
+                result.0?.objective.trimmed != currentPlan.objective.trimmed) {
+                stopContinuousRun(message: "LocalClaw stopped because the native OpenClaw Goal attached to this plan was replaced or cleared. The plan was preserved and no replacement Goal was changed.")
+                isBusy = false
+                lastRefresh = Date()
+                return false
+            }
+            if action == "start", var currentPlan = plan, currentPlan.isApproved, let created = result.0 {
+                currentPlan.nativeGoalID = created.id
+                currentPlan.nativeAgentID = agentID
+                currentPlan.nativeStatePath = runtimeBinding.statePath
+                currentPlan.nativeWorkspacePath = runtimeBinding.workspacePath
+                currentPlan.updatedAt = Date()
+                plan = currentPlan
+                GoalPlanStore.save(currentPlan)
+            }
             if let snapshot { self.objective = snapshot.objective }
             statusMessage = result.1
             lastRefresh = Date()

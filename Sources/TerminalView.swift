@@ -40,7 +40,7 @@ final class TerminalViewModel: ObservableObject {
         
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lc", InstallerEngine.shellPathPrefix + command]
+        process.arguments = ["-lc", InstallerEngine.shellPathPrefix(for: command) + command]
         
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -131,8 +131,14 @@ final class TerminalViewModel: ObservableObject {
     
     /// Show config
     func showConfig() {
-        let path = NSHomeDirectory() + "/.openclaw/openclaw.json"
-        append("$ show redacted ~/.openclaw/openclaw.json")
+        let path: String
+        do {
+            path = try OpenClawRuntimeInstallation.selectedConfig().path
+        } catch {
+            append("Cannot select an OpenClaw profile safely: \(error.localizedDescription)")
+            return
+        }
+        append("$ show redacted \(path)")
         guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else {
             append("Config not found")
             return
@@ -147,7 +153,22 @@ final class TerminalViewModel: ObservableObject {
     
     /// Show logs (if available)
     func showLogs() {
-        execute("cat ~/.openclaw/logs/openclaw.log 2>&1 | tail -100 || echo 'No logs available'")
+        let state: URL
+        do {
+            state = try OpenClawRuntimeInstallation.selectedState()
+        } catch {
+            append("Cannot select an OpenClaw profile safely: \(error.localizedDescription)")
+            return
+        }
+        let candidates = [state.appendingPathComponent("logs/gateway.log"), state.appendingPathComponent("logs/openclaw.log")]
+        guard let path = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }),
+              let raw = try? String(contentsOf: path, encoding: .utf8) else {
+            append("No logs available for \(state.path)")
+            return
+        }
+        append("$ show redacted \(path.path) (last 100 lines)")
+        let lines = raw.components(separatedBy: .newlines).suffix(100).joined(separator: "\n")
+        output += SecretRedactor.redactConfigText(lines) + "\n"
     }
 }
 

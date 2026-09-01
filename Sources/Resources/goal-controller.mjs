@@ -75,8 +75,20 @@ export async function loadController() {
   });
   if (!goalModuleName) throw new Error("OpenClaw Goal controller could not be located.");
 
-  const [goalModule, storeModule] = await Promise.all([
+  const accessorModuleName = readdirSync(dist).filter(
+    (name) => /^session-accessor-[\w-]+\.js$/.test(name),
+  ).find((name) => {
+    const source = readFileSync(join(dist, name), "utf8");
+    return source.includes("async function mutateSessionGoal(") &&
+      source.includes("SessionGoalOperationError = class");
+  });
+  if (!accessorModuleName) {
+    throw new Error("OpenClaw's atomic Goal mutation controller could not be located.");
+  }
+
+  const [goalModule, accessorModule, storeModule] = await Promise.all([
     import(pathToFileURL(join(dist, goalModuleName)).href),
+    import(pathToFileURL(join(dist, accessorModuleName)).href),
     import(pathToFileURL(join(dist, "plugin-sdk/session-store-runtime.js")).href),
   ]);
 
@@ -87,10 +99,18 @@ export async function loadController() {
     .filter(([, value]) => typeof value !== "function")
     .map(([name]) => name);
   if (missing.length) throw new Error(`OpenClaw Goal API is incomplete: ${missing.join(", ")}`);
+  const mutateSessionGoal = findNamedFunction(accessorModule, "mutateSessionGoal");
+  const lookupSessionGoalOperation = findNamedFunction(accessorModule, "lookupSessionGoalOperation");
+  if (typeof mutateSessionGoal !== "function" || typeof lookupSessionGoalOperation !== "function") {
+    throw new Error("OpenClaw's atomic Goal mutation API is unavailable.");
+  }
 
   return {
     ...functions,
+    mutateSessionGoal,
+    lookupSessionGoalOperation,
     getSessionEntry: storeModule.getSessionEntry,
+    patchSessionEntry: storeModule.patchSessionEntry,
     resolveStorePath: storeModule.resolveStorePath,
   };
 }
@@ -106,8 +126,84 @@ export async function handleRequest(controller, request) {
 
   const storePath = controller.resolveStorePath(undefined, { agentId });
   const options = { sessionKey, agentId, storePath };
+  const requestedGoalId = typeof request.goalId === "string" ? request.goalId.trim() : "";
+  const expectedUpdatedAt = Number.isSafeInteger(request.expectedUpdatedAt)
+    ? request.expectedUpdatedAt
+    : null;
+  const operationId = typeof request.operationId === "string" && request.operationId.trim()
+    ? request.operationId.trim()
+    : id;
+  const issuedAtMs = Number.isSafeInteger(request.issuedAtMs)
+    ? request.issuedAtMs
+    : Date.now();
   let goal;
   let message = "";
+
+  const ensureSessionEntry = async () => {
+    let entry = controller.getSessionEntry({ agentId, sessionKey, storePath });
+    if (entry) return entry;
+    const fallbackEntry = { sessionId: randomUUID(), updatedAt: Date.now() };
+    await controller.patchSessionEntry({
+      agentId,
+      sessionKey,
+      storePath,
+      fallbackEntry,
+      update: () => ({}),
+    });
+    entry = controller.getSessionEntry({ agentId, sessionKey, storePath });
+    if (!entry?.sessionId) throw new Error("The Goal session could not be initialized safely.");
+    return entry;
+  };
+
+  const mutateAtomically = async (operation) => {
+    if (operation.action !== "start") {
+      if (!requestedGoalId) throw new Error("Refresh the Goal before changing it; its identity is required.");
+      if (expectedUpdatedAt === null) {
+        throw new Error("Refresh the Goal before changing it; its revision is required.");
+      }
+    }
+    const entry = await ensureSessionEntry();
+    const requestFingerprint = JSON.stringify({
+      action: operation.action,
+      agentId,
+      sessionKey,
+      goalId: operation.goalId ?? null,
+      objective: operation.objective ?? null,
+      note: operation.note ?? null,
+      tokenBudget: operation.tokenBudget ?? null,
+    });
+    const durableOperation = {
+      operationId,
+      issuedAtMs,
+      requestFingerprint,
+      ...operation,
+    };
+    const receipt = controller.lookupSessionGoalOperation({
+      ...options,
+      expectedSessionId: entry.sessionId,
+      operation: durableOperation,
+    });
+    if (receipt) return { result: receipt, replayed: true };
+
+    const assertCurrent = requestedGoalId && expectedUpdatedAt !== null
+      ? () => {
+          const latestEntry = controller.getSessionEntry({ agentId, sessionKey, storePath });
+          const latestGoal = latestEntry?.goal;
+          if (!latestGoal || latestGoal.id !== requestedGoalId) {
+            throw new Error("This Goal was replaced or cleared before the update committed. The stale action was rejected.");
+          }
+          if (latestGoal.updatedAt !== expectedUpdatedAt) {
+            throw new Error("This Goal changed before the update committed. The stale revision was rejected.");
+          }
+        }
+      : undefined;
+    return controller.mutateSessionGoal({
+      ...options,
+      expectedSessionId: entry.sessionId,
+      ...(assertCurrent ? { assertCurrent } : {}),
+      operation: durableOperation,
+    });
+  };
 
   switch (action) {
     case "status": {
@@ -119,27 +215,27 @@ export async function handleRequest(controller, request) {
     case "start": {
       const objective = typeof request.objective === "string" ? request.objective.trim() : "";
       if (!objective) throw new Error("Describe the goal before starting it.");
-      const entry = controller.getSessionEntry({
-        agentId,
-        sessionKey,
-        storePath,
-      });
-      goal = await controller.createSessionGoal({
-        ...options,
+      if (objective.length > 16_000) throw new Error("The goal objective cannot exceed 16,000 characters.");
+      const committed = await mutateAtomically({
+        action: "start",
         objective,
         ...(Number.isInteger(request.tokenBudget) && request.tokenBudget > 0
           ? { tokenBudget: request.tokenBudget }
           : {}),
-        fallbackEntry: entry ?? { sessionId: randomUUID(), updatedAt: Date.now() },
       });
-      message = "Goal created without using model tokens.";
+      goal = committed.result.goal;
+      message = committed.replayed
+        ? "Goal creation receipt replayed safely."
+        : "Goal created atomically without using model tokens.";
       break;
     }
     case "edit": {
       const objective = typeof request.objective === "string" ? request.objective.trim() : "";
       if (!objective) throw new Error("The goal objective cannot be empty.");
-      goal = await controller.updateSessionGoalObjective({ ...options, objective });
-      message = "Goal objective updated.";
+      if (objective.length > 16_000) throw new Error("The goal objective cannot exceed 16,000 characters.");
+      const committed = await mutateAtomically({ action: "edit", goalId: requestedGoalId, objective });
+      goal = committed.result.goal;
+      message = committed.replayed ? "Goal edit receipt replayed safely." : "Goal objective updated atomically.";
       break;
     }
     case "pause":
@@ -154,24 +250,25 @@ export async function handleRequest(controller, request) {
             ? "blocked"
             : action;
       const note = typeof request.note === "string" ? request.note.trim() : "";
-      goal = await controller.updateSessionGoalStatus({
-        ...options,
-        status,
+      if (note.length > 2_000) throw new Error("A Goal status note cannot exceed 2,000 characters.");
+      const committed = await mutateAtomically({
+        action,
+        goalId: requestedGoalId,
         ...(note ? { note } : {}),
       });
-      message = `Goal ${status}.`;
+      goal = committed.result.goal;
+      message = committed.replayed ? `Goal ${status} receipt replayed safely.` : `Goal ${status} atomically.`;
       break;
     }
     case "clear": {
-      const removed = await controller.clearSessionGoal(options);
-      message = removed ? "Goal cleared." : "No goal to clear.";
+      const committed = await mutateAtomically({ action: "clear", goalId: requestedGoalId });
+      message = committed.replayed ? "Goal clear receipt replayed safely." : "Goal cleared atomically.";
       goal = null;
       break;
     }
     default:
       throw new Error(`Unsupported Goal action: ${action}`);
   }
-
   return { type: "response", id, ok: true, message, goal: goalSnapshot(goal) };
 }
 

@@ -32,11 +32,16 @@ function run(args, input, timeout = 60_000) {
 try {
   const version = run([cli, "--version"]).trim();
   console.log(version);
-  const modern = version.includes("2026.8.");
+  const match = /^(?:OpenClaw\s+)?(\d{4})\.(\d+)\.(\d+)(?:\s+\([^)]+\))?$/.exec(version);
+  assert.ok(match, `Release fixture must be a stable OpenClaw version, got ${JSON.stringify(version)}`);
+  const parts = match.slice(1).map(Number);
+  const isOpenClaw2 = parts[0] > 2026 ||
+    (parts[0] === 2026 && (parts[1] > 8 || (parts[1] === 8 && parts[2] >= 1)));
+  assert.ok(isOpenClaw2, `Release fixture must be OpenClaw >= 2026.8.1, got ${version}`);
   writeFileSync(environment.OPENCLAW_CONFIG_PATH, JSON.stringify({
     gateway: { mode: "local", port: 19879, bind: "loopback" },
     agents: {
-      ...(modern ? { entries: { main: {}, writer: {} }, ownership: "explicit" } : { list: [{ id: "main", default: true }, { id: "writer" }] }),
+      entries: { main: {}, writer: {} }, ownership: "explicit",
       defaults: { workspace: join(root, "workspace"), model: { primary: "lmstudio/fixture" } },
     },
   }));
@@ -53,20 +58,31 @@ try {
   assert.ok(Array.isArray(listed.models));
   JSON.parse(run([cli, "plugins", "registry", "--refresh", "--json"]));
   console.log("PASS scoped model discovery and plugin registry refresh");
-  const actions = ["status", "start", "status", "pause", "resume", "edit", "complete", "clear", "status"];
-  const requests = actions.map((action, index) => ({
-    id: String(index), action, sessionKey: "agent:writer:explicit:localclaw-compat-goal",
-    objective: action === "edit" ? "Updated compatibility fixture" : "Compatibility fixture",
-    tokenBudget: 5000,
-  }));
-  const output = run([script], requests.map((value) => JSON.stringify(value)).join("\n") + "\n");
-  const envelopes = output.split("\n").flatMap((line) => {
-    try { return [JSON.parse(line)]; } catch { return []; }
-  });
-  assert.equal(envelopes.find((value) => value.type === "ready")?.ok, true, output);
-  const responses = envelopes.filter((value) => value.type === "response");
-  assert.equal(responses.length, actions.length, output);
-  assert.ok(responses.every((value) => value.ok), output);
+  const sessionKey = "agent:writer:explicit:localclaw-compat-goal";
+  let expectedUpdatedAt;
+  function goalRequest(action, goalId, objective = "Compatibility fixture") {
+    const request = {id: `${action}-${Date.now()}`, action, sessionKey, goalId, expectedUpdatedAt, objective, tokenBudget: 5000};
+    const output = run([script], `${JSON.stringify(request)}\n`);
+    const envelopes = output.split("\n").flatMap((line) => {
+      try { return [JSON.parse(line)]; } catch { return []; }
+    });
+    assert.equal(envelopes.find((value) => value.type === "ready")?.ok, true, output);
+    const response = envelopes.find((value) => value.type === "response");
+    assert.equal(response?.ok, true, output);
+    expectedUpdatedAt = response.goal?.updatedAt;
+    return response;
+  }
+  const responses = [];
+  responses.push(goalRequest("status"));
+  responses.push(goalRequest("start"));
+  const goalId = responses[1].goal.id;
+  responses.push(goalRequest("status"));
+  responses.push(goalRequest("pause", goalId));
+  responses.push(goalRequest("resume", goalId));
+  responses.push(goalRequest("edit", goalId, "Updated compatibility fixture"));
+  responses.push(goalRequest("complete", goalId));
+  responses.push(goalRequest("clear", goalId));
+  responses.push(goalRequest("status"));
   assert.equal(responses[0].goal, null);
   assert.equal(responses[1].goal.tokenBudget, 5000);
   assert.equal(responses[3].goal.status, "paused");
@@ -79,7 +95,7 @@ try {
   run([cli, "backup", "create", "--no-include-workspace", "--verify", "--output", archive, "--json"]);
   assert.ok(statSync(archive).size > 0);
   console.log("PASS verified pre-update state backup (without copying project workspaces)");
-  if (modern) {
+  {
     run([cli, "models", "auth", "paste-api-key", "--agent", "writer", "--provider", "lmstudio"], "fixture-not-a-real-secret\n");
     const status = JSON.parse(run([cli, "models", "status", "--agent", "writer", "--json"]));
     assert.ok(status.auth.providers.some((provider) => provider.provider === "lmstudio" && provider.profiles.apiKey > 0));

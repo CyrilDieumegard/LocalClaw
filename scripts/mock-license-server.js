@@ -4,7 +4,7 @@ const http = require('http');
 const port = process.env.PORT ? Number(process.env.PORT) : 8787;
 
 const server = http.createServer((req, res) => {
-  if (req.method !== 'POST' || req.url !== '/api/license/activate') {
+  if (req.method !== 'POST' || req.url !== '/api/license/v2/activate') {
     res.writeHead(404, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ ok: false, message: 'Not found' }));
   }

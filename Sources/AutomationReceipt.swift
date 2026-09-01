@@ -10,6 +10,7 @@ struct AutomationReceipt: Identifiable, Codable, Equatable, Sendable {
         case running = "Running"
         case succeeded = "Succeeded"
         case failed = "Failed"
+        case unknown = "Unknown"
     }
 
     let id: UUID

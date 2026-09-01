@@ -39,7 +39,9 @@ swift test
 
 ## OpenClaw compatibility
 
-LocalClaw 1.0.201 targets OpenClaw 2026.8.1 and retains the 2026.7.1 runtime path.
+LocalClaw 1.0.202 targets OpenClaw 2026.8.1. It recognizes 2026.7.1 only as
+an existing-user migration source and never treats that older runtime as the
+successful end state of an automatic update.
 Update LocalClaw first, then use Updates to upgrade OpenClaw. Before replacing
 the runtime, LocalClaw creates and verifies a state backup under
 `~/Library/Application Support/LocalClaw/runtime-backups/`. The normal portable
@@ -188,7 +190,8 @@ node scripts/test-openclaw-update-owner.mjs /path/to/new/node_modules/openclaw
 node scripts/test-openclaw-update-owner.mjs /path/to/new/node_modules/openclaw --legacy-config
 ```
 
-The first check supports 2026.7.1 and 2026.8.1. The turn checks target 2026.8.1,
+The first check can start from 2026.7.1 only to prove migration to 2026.8.1.
+All successful end-state and turn checks target 2026.8.1,
 use a deterministic localhost model and temporary HOME, and create a real file
 through OpenClaw's write tool. They do not use customer accounts or paid models.
 The migration check may resolve official plugins from the network. These checks
@@ -219,13 +222,16 @@ bash scripts/build-dmg.sh
 Public releases must use Developer ID signing, notarization, and stapling:
 
 ```bash
-RELEASE_NOTARIZE=1 bash scripts/build-dmg.sh
+OPENCLAW_PACKAGE_ROOT=<verified-openclaw-2-package> \
+  RELEASE_NOTARIZE=1 LOCALCLAW_BUILD_NUMBER=<monotonic-build> bash scripts/release-check.sh
 bash scripts/publish-notarized-dmg.sh
 ```
 
 Release defaults:
 
 - `DEVELOPER_ID_APP`
+- `LOCALCLAW_BUILD_NUMBER` (required positive, monotonic integer)
+- `OPENCLAW_PACKAGE_ROOT` (required verified OpenClaw 2.0 compatibility fixture)
 - `NOTARY_PROFILE=localclaw-notary`
 - `NOTARY_TIMEOUT_SECONDS=900`
 - `NOTARY_POLL_SECONDS=15`
@@ -239,18 +245,27 @@ xcrun notarytool store-credentials "localclaw-notary" \
   --password "<app-specific-password>"
 ```
 
-`publish-notarized-dmg.sh` validates the stapled DMG first, then calculates the manifest sha256 from that final stapled file.
+`publish-notarized-dmg.sh` validates an immutable DMG snapshot and its packaged
+app, compares the candidate against both the local and current public manifests,
+requires an exact HTTP 404 for the new versioned URL, and commits the manifest
+last. Network errors and every target response other than 404 block publication.
+Both public reads use per-run cache-busters; these probe parameters are never
+written into the generated manifest URL.
+
+Publication endpoints can be overridden with
+`LOCALCLAW_PUBLIC_MANIFEST_URL` and `LOCALCLAW_PUBLIC_DOWNLOAD_BASE_URL`; both
+must remain HTTPS.
 
 ## License API endpoint
 
 Default endpoint:
 
-`https://localclaw.io/api/license/activate`
+`https://localclaw.io/api/license/v2/activate`
 
 Override for another backend:
 
 ```bash
-export LOCALCLAW_LICENSE_ENDPOINT="https://your-domain/api/license/activate"
+export LOCALCLAW_LICENSE_ENDPOINT="https://your-domain/api/license/v2/activate"
 swift run
 ```
 
@@ -263,7 +278,7 @@ node scripts/mock-license-server.js
 In another terminal:
 
 ```bash
-export LOCALCLAW_LICENSE_ENDPOINT="http://127.0.0.1:8787/api/license/activate"
+export LOCALCLAW_LICENSE_ENDPOINT="http://127.0.0.1:8787/api/license/v2/activate"
 swift run
 ```
 
