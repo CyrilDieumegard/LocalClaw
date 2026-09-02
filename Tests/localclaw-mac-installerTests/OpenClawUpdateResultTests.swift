@@ -35,7 +35,7 @@ struct OpenClawUpdateResultTests {
         #expect(ChatRecoveryPlan.classify(error: "OpenClaw post-update repair is pending.").kind == .gateway)
     }
 
-    @Test func terminalReviewIsInteractiveAndBoundToTheService() {
+    @Test func terminalReviewIsInteractiveAndDefersGatewayLifecycleToLocalClaw() {
         let runtime = OpenClawRuntimeInstallation(node: URL(fileURLWithPath: "/tmp/user's node/bin/node"),
             package: URL(fileURLWithPath: "/tmp/runtime/lib/node_modules/openclaw"),
             prefix: URL(fileURLWithPath: "/tmp/runtime"), state: URL(fileURLWithPath: "/tmp/state"),
@@ -48,10 +48,11 @@ struct OpenClawUpdateResultTests {
         )
         #expect(script.contains("update repair --timeout 600"))
         #expect(script.contains("OPENCLAW_STATE_DIR='/tmp/state'"))
+        #expect(script.contains("OPENCLAW_SERVICE_REPAIR_POLICY=external"))
         #expect(script.contains("user'\\''s node"))
         #expect(!script.contains("--accept-capabilities"))
         #expect(!script.contains("--yes") && !script.contains("--json"))
-        #expect(!script.contains("gateway restart") && !script.contains("agent --"))
+        #expect(!script.contains("gateway stop") && !script.contains("gateway restart") && !script.contains("agent --"))
         #expect(script.contains("success:fixture-receipt"))
         #expect(script.contains("write_status running"))
         #expect(script.contains("write_status \"failed:${code}\""))
@@ -80,6 +81,10 @@ struct OpenClawUpdateResultTests {
             if [[ "$1" == "-p" ]]; then
               printf '%s\\n' '2026.8.2'
               exit 0
+            fi
+            if [[ "${OPENCLAW_SERVICE_REPAIR_POLICY:-}" != "external" ]]; then
+              printf '%s\\n' 'Doctor contended with the LocalClaw-owned Gateway.' >&2
+              exit 19
             fi
             exit \(exitCode)
             """

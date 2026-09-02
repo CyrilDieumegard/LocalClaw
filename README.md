@@ -39,7 +39,7 @@ swift test
 
 ## OpenClaw compatibility
 
-LocalClaw 1.0.204 targets OpenClaw 2026.8.2. It recognizes 2026.7.1 and
+LocalClaw 1.0.205 targets OpenClaw 2026.8.2. It recognizes 2026.7.1 and
 2026.8.1 as existing-user migration sources and never treats an older runtime
 as the successful end state of an automatic update.
 Update LocalClaw first, then use Updates to upgrade OpenClaw. The one-time
@@ -114,8 +114,11 @@ its binding, configuration, version and two RPC samples before reporting success
 Widened plugin capabilities are never accepted automatically. A dedicated Plugin
 Permissions sheet opens native OpenClaw review in Terminal, where each staged
 plugin's exact capability surface can be accepted or declined. It does not pass
-`--accept-capabilities` or `--yes`. Finish Repair then resumes verification without
-replaying chat. Other plugin warnings remain failures with their original details.
+`--accept-capabilities` or `--yes`. The interactive repair uses
+`OPENCLAW_SERVICE_REPAIR_POLICY=external`, matching LocalClaw's automated
+finalization path, so OpenClaw Doctor does not contend with the Gateway service
+or its activation owner. Finish Repair then resumes verification without replaying
+chat. Other plugin warnings remain failures with their original details.
 
 ```bash
 node scripts/test-openclaw-post-update.mjs /path/to/current-openclaw-package

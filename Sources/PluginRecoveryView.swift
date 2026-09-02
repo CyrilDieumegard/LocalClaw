@@ -44,7 +44,9 @@ enum OpenClawPluginReview {
           exit 1
         fi
         printf '%s\\n' 'Review each plugin and its requested capabilities. You may accept or decline.'
-        \(runtime.command("update repair --timeout 600"))
+        # `update repair` disables Gateway activation in its child Doctor. LocalClaw
+        # owns the verified running service, so Doctor must defer its lifecycle here.
+        \(runtime.command("update repair --timeout 600", externalServiceRepair: true))
         code=$?
         if [[ "$code" != 0 ]]; then
           write_status "failed:${code}"
@@ -105,7 +107,7 @@ struct PluginRecoveryView: View {
             }
             Label("OpenClaw core installed", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
             Text("One or more plugins need approval for new capabilities. No additional permissions have been granted.")
-            Text("Step 1: review the exact plugin version and capabilities in OpenClaw's Terminal prompt. Step 2 stays locked until that command succeeds. You may decline; LocalClaw never accepts capabilities for you.")
+            Text("Step 1: review the exact plugin version and capabilities in OpenClaw's Terminal prompt. LocalClaw remains the Gateway service owner during this review, so OpenClaw Doctor cannot fight the running service. Step 2 stays locked until that command succeeds. You may decline; LocalClaw never accepts capabilities for you.")
                 .font(.callout).foregroundStyle(.secondary)
             ScrollView {
                 Text(diagnostic).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
