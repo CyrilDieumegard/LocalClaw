@@ -45,6 +45,13 @@ final class RecoveryService: @unchecked Sendable {
         let home = URL(fileURLWithPath: homeDirectory)
         let state = try OpenClawRuntimeInstallation.selectedState(home: home)
         let config = try OpenClawRuntimeInstallation.selectedConfig(home: home)
+        return try createSnapshot(reason: reason, state: state, config: config)
+    }
+
+    /// Creates a snapshot for an already-selected runtime. Maintenance uses
+    /// this overload so a named profile can never be backed up as `default`.
+    func createSnapshot(reason: String, state: URL, config: URL) throws -> RecoveryPoint {
+        let home = URL(fileURLWithPath: homeDirectory)
         let timestamp = ISO8601DateFormatter().string(from: Date())
             .replacingOccurrences(of: ":", with: "-")
         let identifier = "snapshot-\(timestamp)-\(UUID().uuidString.prefix(8))"

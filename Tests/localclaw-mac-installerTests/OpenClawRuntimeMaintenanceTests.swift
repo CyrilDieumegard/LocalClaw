@@ -123,6 +123,48 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(!OpenClawRecoveryDiagnostic.hasInvalidConfiguration(#"{"valid":true}"#))
     }
 
+    @Test func ownerlessMultiAgentStartupIsAConfigurationRepairWithoutReplay() {
+        let error = "AgentSelectionRequiredError: Multiple agents are configured, but session agent resolution has no explicit owner."
+        #expect(OpenClawRecoveryDiagnostic.needsAmbientAgentOwner(error))
+        let plan = ChatRecoveryPlan.classify(error: error)
+        #expect(plan.kind == .configuration)
+        #expect(plan.primaryActionLabel == "Repair Gateway")
+        #expect(!plan.replaysRequestAfterRepair)
+        #expect(!OpenClawRecoveryDiagnostic.needsAmbientAgentOwner("ECONNREFUSED\nHistorical startup log (old):\n" + error))
+    }
+
+    @Test func fullStateBackupIsLimitedToTheLegacyBoundaryAndRecoveryCases() {
+        #expect(OpenClawRuntimeMaintenance.requiresFullStateBackup(
+            current: "2026.7.1-2", target: "2026.8.1", requiresOfflineBackup: false,
+            repairingConfiguration: false, pendingLegacyApprovals: false, schemaMismatch: false
+        ))
+        #expect(!OpenClawRuntimeMaintenance.requiresFullStateBackup(
+            current: "2026.8.1", target: "2026.8.2", requiresOfflineBackup: false,
+            repairingConfiguration: false, pendingLegacyApprovals: false, schemaMismatch: false
+        ))
+        #expect(OpenClawRuntimeMaintenance.requiresFullStateBackup(
+            current: "2026.8.2", target: "2026.8.2", requiresOfflineBackup: false,
+            repairingConfiguration: true, pendingLegacyApprovals: false, schemaMismatch: false
+        ))
+    }
+
+    @Test func onlyLocalClawMainCanBeSelectedAsMissingAmbientOwner() {
+        let ownerless: [String: Any] = ["agents": [
+            "ownership": "explicit",
+            "entries": ["main": [:], "localagent": [:]],
+            "defaults": [:],
+        ]]
+        #expect(OpenClawRuntimeMaintenance.missingAmbientAgentOwner(in: ownerless) == "main")
+        var owned = ownerless
+        var agents = owned["agents"] as! [String: Any]
+        agents["defaults"] = ["systemAgent": ["agentId": "main"]]
+        owned["agents"] = agents
+        #expect(OpenClawRuntimeMaintenance.missingAmbientAgentOwner(in: owned) == nil)
+        #expect(OpenClawRuntimeMaintenance.missingAmbientAgentOwner(in: ["agents": [
+            "ownership": "explicit", "entries": ["writer": [:], "helper": [:]],
+        ]]) == nil)
+    }
+
     @Test func explicitCLIFailureCannotBeMistakenForAnAssistantReply() {
         let raw = #"{"ok":false,"error":{"type":"cli_error","message":"Gateway not reachable (ECONNREFUSED)"}}"#
         #expect(InstallerViewModel.normalizedAgentResult((0, raw)).0 != 0)
@@ -382,6 +424,92 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(result.state == .ok, Comment(rawValue: result.message))
         #expect(fixture.commands.contains { $0.contains("backup create") && $0.contains("--verify") })
         #expect(!fixture.commands.contains { $0.contains("npm install") || $0.contains("bootout") })
+    }
+
+    @Test func normalEightOneToEightTwoUpdateDoesNotCreateAnotherFullStateBackup() throws {
+        let fixture = try Fixture(
+            schemaMismatch: false,
+            installedVersion: "2026.8.1",
+            targetVersion: "2026.8.2"
+        )
+        defer { fixture.cleanUp() }
+
+        let result = fixture.maintenance().update()
+
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(result.message.contains("Full state backup: not required"))
+        #expect(!fixture.commands.contains { $0.contains("backup create") || $0.contains("/usr/bin/tar") })
+        #expect(!FileManager.default.fileExists(atPath: fixture.backups.path))
+        #expect(try Data(contentsOf: fixture.database) == Data("fixture state must survive".utf8))
+    }
+
+    @Test func ownerlessMultiAgentConfigIsSnapshottedAssignedAndVerifiedBeforeEightTwoUpdate() throws {
+        let fixture = try Fixture(
+            schemaMismatch: false,
+            installedVersion: "2026.8.1",
+            targetVersion: "2026.8.2",
+            ownerlessAgents: true
+        )
+        defer { fixture.cleanUp() }
+
+        let result = fixture.maintenance().update()
+
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        let dryRun = try #require(fixture.commands.firstIndex {
+            $0.contains("config set agents.defaults.systemAgent.agentId") && $0.contains("--dry-run")
+        })
+        let assignment = try #require(fixture.commands.firstIndex {
+            $0.contains("config set agents.defaults.systemAgent.agentId") && !$0.contains("--dry-run")
+        })
+        let update = try #require(fixture.commands.firstIndex { $0.contains("update --tag") && $0.contains("--yes --json") })
+        #expect(dryRun < assignment && assignment < update)
+        #expect(try fixture.systemAgentOwner() == "main")
+        #expect(RecoveryService(homeDirectory: fixture.home.path).listSnapshots().count == 1)
+        #expect(!fixture.commands.contains { $0.contains("backup create") || $0.contains("/usr/bin/tar") })
+    }
+
+    @Test func gatewayOwnerFailureRoutesThroughScopedRepair() throws {
+        let fixture = try Fixture(
+            schemaMismatch: false,
+            failure: .agentOwner,
+            installedVersion: "2026.8.2",
+            targetVersion: "2026.8.2",
+            ownerlessAgents: true
+        )
+        defer { fixture.cleanUp() }
+
+        let diagnosis = fixture.maintenance().prepareGateway()
+        #expect(diagnosis.state == .fail)
+        #expect(ChatRecoveryPlan.classify(error: diagnosis.message).kind == .configuration)
+        #expect(try fixture.systemAgentOwner() == nil)
+
+        fixture.commands.removeAll()
+        let repaired = fixture.maintenance().prepareGateway(allowRuntimeUpdate: true)
+        #expect(repaired.state == .ok, Comment(rawValue: repaired.message))
+        #expect(try fixture.systemAgentOwner() == "main")
+        #expect(!fixture.commands.contains { $0.contains("backup create") || $0.contains("/usr/bin/tar") })
+    }
+
+    @Test func sameVersionConsentFailureNeedsNoCheckpointOrFullBackup() throws {
+        let fixture = try Fixture(
+            schemaMismatch: false,
+            failure: .consent,
+            installedVersion: "2026.8.2",
+            targetVersion: "2026.8.2"
+        )
+        defer { fixture.cleanUp() }
+        let maintenance = fixture.maintenance()
+
+        let result = maintenance.update()
+
+        #expect(result.state == .fail)
+        #expect(ChatRecoveryPlan.classify(error: result.message).kind == .pluginPermissions)
+        #expect(!maintenance.hasPendingUpdate())
+        #expect(!FileManager.default.fileExists(atPath: fixture.backups.path))
+        let runtime = try #require(try OpenClawRuntimeInstallation.managed(home: fixture.home))
+        let review = try OpenClawPluginReview.prepare(home: fixture.home, runtime: runtime)
+        #expect(FileManager.default.fileExists(atPath: review.commandURL.path))
+        #expect(FileManager.default.fileExists(atPath: review.statusURL.path))
     }
 
     @Test func longBackupAndUpdateKeepReportingElapsedProgress() throws {
@@ -930,8 +1058,9 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(ChatRecoveryPlan.classify(error: first.message).kind == .pluginPermissions)
         let runtime = try #require(try OpenClawRuntimeInstallation.managed(home: fixture.home))
         #expect(OpenClawUpdateCheckpoint.load(home: fixture.home, runtime: runtime) != nil)
-        let script = try OpenClawPluginReview.prepare(home: fixture.home, runtime: runtime)
-        #expect((try FileManager.default.attributesOfItem(atPath: script.path)[.posixPermissions] as? NSNumber)?.intValue == 0o700)
+        let review = try OpenClawPluginReview.prepare(home: fixture.home, runtime: runtime)
+        #expect((try FileManager.default.attributesOfItem(atPath: review.commandURL.path)[.posixPermissions] as? NSNumber)?.intValue == 0o700)
+        #expect((try FileManager.default.attributesOfItem(atPath: review.statusURL.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600)
         fixture.commands.removeAll()
         #expect(fixture.maintenance().prepareGateway().state == .fail)
         #expect(fixture.commands.isEmpty)
@@ -1014,7 +1143,9 @@ struct OpenClawRuntimeMaintenanceTests {
         try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: archive.path)
         #expect((try FileManager.default.attributesOfItem(atPath: archive.path)[.size] as? NSNumber)?.uint64Value == checkpoint.archiveSize)
         #expect(OpenClawUpdateCheckpoint.load(home: fixture.home, runtime: runtime) == nil)
-        #expect(throws: MaintenanceError.self) { try OpenClawPluginReview.prepare(home: fixture.home, runtime: runtime) }
+        let review = try OpenClawPluginReview.prepare(home: fixture.home, runtime: runtime)
+        #expect(FileManager.default.fileExists(atPath: review.commandURL.path))
+        #expect(FileManager.default.fileExists(atPath: review.statusURL.path))
     }
 
     @Test func legacyGlobalCheckpointMigratesToScopedDigestAndResumesWithoutAnotherBackup() throws {
@@ -1110,14 +1241,15 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(FileManager.default.fileExists(atPath: archive.path))
     }
 
-    @Test func failedGatewayRestartKeepsCheckpointAndDoesNotClaimSuccess() throws {
+    @Test func failedSameSchemaGatewayRestartDoesNotClaimSuccessOrInventABackupCheckpoint() throws {
         let fixture = try Fixture(schemaMismatch: false, failure: .restart)
         defer { fixture.cleanUp() }
         try fixture.writeVersion("2026.8.1")
         let result = fixture.maintenance().update()
         #expect(result.state == .fail)
         #expect(result.message.contains("Restart repaired Gateway failed"))
-        #expect(fixture.maintenance().hasPendingUpdate())
+        #expect(!fixture.maintenance().hasPendingUpdate())
+        #expect(!result.message.contains("Recovery backup:"))
     }
 
     @Test func pendingUpdateCheckpointsAreNamespacedByRuntimeIdentity() throws {
@@ -1152,7 +1284,7 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(OpenClawUpdateCheckpoint.load(home: fixture.home, runtime: second) != nil)
     }
 
-    enum Failure: String, Sendable { case backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, pluginWarning, configRemains, registryUnavailable, registryNoSpace, invalidRegistryVersion, newerRegistry, approvalsMigration, unverifiedApprovalsMigration, consent, malformedResult, wrongRepairMode, wrongResultRoot, nonzeroSuccess, restart }
+    enum Failure: String, Sendable { case backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, pluginWarning, configRemains, registryUnavailable, registryNoSpace, invalidRegistryVersion, newerRegistry, approvalsMigration, unverifiedApprovalsMigration, consent, malformedResult, wrongRepairMode, wrongResultRoot, nonzeroSuccess, restart, agentOwner }
 
     private final class Fixture {
         let home: URL
@@ -1161,15 +1293,26 @@ struct OpenClawRuntimeMaintenanceTests {
         let backups: URL
         let schemaMismatch: Bool
         let invalidConfig: Bool
+        let installedVersion: String
+        let targetVersion: String
         var failure: Failure?
         var commands: [String] = []
         var didUpdate = false
         var inspections: [(Int32, String)] = []
 
-        init(schemaMismatch: Bool = true, invalidConfig: Bool = false, failure: Failure? = nil) throws {
+        init(
+            schemaMismatch: Bool = true,
+            invalidConfig: Bool = false,
+            failure: Failure? = nil,
+            installedVersion: String = "2026.7.1-2",
+            targetVersion: String = "2026.8.1",
+            ownerlessAgents: Bool = false
+        ) throws {
             self.schemaMismatch = schemaMismatch
             self.invalidConfig = invalidConfig
             self.failure = failure
+            self.installedVersion = installedVersion
+            self.targetVersion = targetVersion
             home = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("runtime fixture's \(UUID().uuidString)")
             package = home.appendingPathComponent(".local/lib/node_modules/openclaw")
             database = home.appendingPathComponent(".openclaw/state/openclaw.sqlite")
@@ -1182,9 +1325,17 @@ struct OpenClawRuntimeMaintenanceTests {
             }
             try fm.createSymbolicLink(at: node, withDestinationURL: URL(fileURLWithPath: "/usr/bin/true"))
             try Data().write(to: package.appendingPathComponent("openclaw.mjs"))
-            try writeVersion("2026.7.1-2")
+            try writeVersion(installedVersion)
             try Data("fixture state must survive".utf8).write(to: database)
-            try Data("{\"gateway\":{\"mode\":\"local\"}}".utf8).write(to: home.appendingPathComponent(".openclaw/openclaw.json"))
+            let config: [String: Any] = ownerlessAgents ? [
+                "gateway": ["mode": "local"],
+                "agents": [
+                    "ownership": "explicit",
+                    "defaults": [:],
+                    "entries": ["main": [:], "localagent": [:]],
+                ],
+            ] : ["gateway": ["mode": "local"]]
+            try JSONSerialization.data(withJSONObject: config).write(to: home.appendingPathComponent(".openclaw/openclaw.json"))
             let data = try PropertyListSerialization.data(fromPropertyList: [
                 "Label": "ai.openclaw.gateway", "ProgramArguments": [node.path, package.appendingPathComponent("dist/index.js").path, "gateway", "--port", "18789"]
             ], format: .xml, options: 0)
@@ -1200,6 +1351,15 @@ struct OpenClawRuntimeMaintenanceTests {
         func archives() throws -> [URL] { try FileManager.default.contentsOfDirectory(at: backups, includingPropertiesForKeys: nil).filter { $0.pathExtension == "gz" } }
         func writeVersion(_ version: String) throws {
             try JSONSerialization.data(withJSONObject: ["name": "openclaw", "version": version]).write(to: package.appendingPathComponent("package.json"))
+        }
+
+        func systemAgentOwner() throws -> String? {
+            let data = try Data(contentsOf: home.appendingPathComponent(".openclaw/openclaw.json"))
+            let config = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let agents = config?["agents"] as? [String: Any]
+            let defaults = agents?["defaults"] as? [String: Any]
+            let systemAgent = defaults?["systemAgent"] as? [String: Any]
+            return systemAgent?["agentId"] as? String
         }
 
         func wrapService() throws {
@@ -1257,7 +1417,19 @@ struct OpenClawRuntimeMaintenanceTests {
                     if failure == .registryUnavailable { return (1, "registry unavailable") }
                     if failure == .invalidRegistryVersion { return (0, #""2026.8.1; unwanted-command""#) }
                     if failure == .newerRegistry { return (0, #""2026.9.0""#) }
-                    return (0, failure == .downgrade ? #""2026.6.1""# : #""2026.8.1""#)
+                    return (0, failure == .downgrade ? #""2026.6.1""# : "\"\(targetVersion)\"")
+                }
+                if command.contains("config set agents.defaults.systemAgent.agentId") {
+                    if command.contains("--dry-run") { return (0, #"{"ok":true,"dryRun":true}"#) }
+                    let configURL = home.appendingPathComponent(".openclaw/openclaw.json")
+                    var config = try JSONSerialization.jsonObject(with: Data(contentsOf: configURL)) as! [String: Any]
+                    var agents = config["agents"] as! [String: Any]
+                    var defaults = agents["defaults"] as? [String: Any] ?? [:]
+                    defaults["systemAgent"] = ["agentId": "main"]
+                    agents["defaults"] = defaults
+                    config["agents"] = agents
+                    try JSONSerialization.data(withJSONObject: config).write(to: configURL)
+                    return (0, #"{"ok":true}"#)
                 }
                 if command.contains("--dry-run") {
                     if invalidConfig && !didUpdate && !command.contains("updater-") &&
@@ -1266,19 +1438,27 @@ struct OpenClawRuntimeMaintenanceTests {
                     }
                     return (0, String(data: try JSONSerialization.data(withJSONObject: [
                         "dryRun": true, "root": failure == .wrongTarget ? "/wrong/package" : package.path,
-                        "targetVersion": failure == .downgrade ? "2026.6.1" : "2026.8.1"
+                        "targetVersion": failure == .downgrade ? "2026.6.1" : targetVersion
                     ]), encoding: .utf8)!)
                 }
                 if command.contains("gateway status") {
+                    if failure == .agentOwner, try systemAgentOwner() == nil {
+                        return (1, #"{"service":{"runtime":{"status":"stopped"}},"rpc":{"ok":false,"error":"ECONNREFUSED"}}"#)
+                    }
                     if invalidConfig && !didUpdate {
                         return (1, #"{"service":{"runtime":{"status":"stopped"}},"config":{"cli":{"valid":true},"daemon":{"valid":true}},"cli":{"version":"2026.7.1-2"},"rpc":{"ok":false,"error":"ECONNREFUSED"}}"#)
                     }
                     if !didUpdate && schemaMismatch || failure == .schemaRemains {
                         return (1, "Config health-state write failed: OpenClaw state database uses newer schema version 15; this OpenClaw build supports 1.")
                     }
-                    return (0, #"{"service":{"runtime":{"status":"running"}},"rpc":{"ok":true},"gateway":{"version":"VERSION"}}"#.replacingOccurrences(of: "VERSION", with: failure == .unhealthy ? "2026.7.1-2" : "2026.8.1"))
+                    return (0, #"{"service":{"runtime":{"status":"running"}},"rpc":{"ok":true},"gateway":{"version":"VERSION"}}"#.replacingOccurrences(of: "VERSION", with: failure == .unhealthy ? installedVersion : (didUpdate ? targetVersion : ((try? OpenClawRuntimeInstallation.managed(home: home))?.version ?? installedVersion))))
                 }
-                if command.contains("gateway start --json") { return (0, #"{"ok":true}"#) }
+                if command.contains("gateway start --json") {
+                    if failure == .agentOwner, try systemAgentOwner() == nil {
+                        return (1, "AgentSelectionRequiredError: Multiple agents are configured, but session agent resolution has no explicit owner.")
+                    }
+                    return (0, #"{"ok":true}"#)
+                }
                 if command.contains("backup create") {
                     let regex = try NSRegularExpression(pattern: #"openclaw-[0-9A-Fa-f-]+\.tar\.gz"#)
                     let match = regex.firstMatch(in: command, range: NSRange(command.startIndex..., in: command))!
@@ -1313,7 +1493,7 @@ struct OpenClawRuntimeMaintenanceTests {
                         try FileManager.default.removeItem(at: home.appendingPathComponent(".openclaw/exec-approvals.json"))
                     }
                     return (0, String(data: try JSONSerialization.data(withJSONObject: [
-                        "ok": true, "version": "2026.8.1", "stateDir": home.appendingPathComponent(".openclaw").path
+                        "ok": true, "version": targetVersion, "stateDir": home.appendingPathComponent(".openclaw").path
                     ]), encoding: .utf8)!)
                 }
                 if command.contains("npm install") {
@@ -1328,7 +1508,7 @@ struct OpenClawRuntimeMaintenanceTests {
                     if failure == .update { return (1, "post-core repair failed") }
                     didUpdate = true
                     if !command.contains("update repair"), failure != .wrongVersion {
-                        try writeVersion("2026.8.1")
+                        try writeVersion(targetVersion)
                     }
                     if !command.contains("update repair") { try wrapService() }
                     if failure == .malformedResult { return (0, #"{"status":"ok"}"#) }

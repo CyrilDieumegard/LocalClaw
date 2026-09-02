@@ -49,6 +49,13 @@ struct ChatRecoveryPlan: Equatable, Sendable {
                                     primaryActionLabel: "Review Plugin Permissions", systemImage: "hand.raised.fill")
         }
 
+        if OpenClawRecoveryDiagnostic.needsAmbientAgentOwner(current) {
+            return ChatRecoveryPlan(kind: .configuration,
+                                    title: "OpenClaw needs a system agent owner",
+                                    explanation: "This profile has multiple agents but no explicit owner for Gateway startup. LocalClaw can snapshot the selected configuration, assign its main agent, and verify the Gateway without resetting the fleet or replaying your request.",
+                                    primaryActionLabel: "Repair Gateway", systemImage: "wrench.and.screwdriver.fill")
+        }
+
         if clean.contains("post-update") || clean.contains("plugin repair needs attention") {
             return ChatRecoveryPlan(kind: .gateway, title: "OpenClaw repair needs to finish",
                                     explanation: "LocalClaw can resume the remaining repair and verify Gateway health. Your message will not be replayed.",

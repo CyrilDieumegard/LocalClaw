@@ -39,16 +39,19 @@ swift test
 
 ## OpenClaw compatibility
 
-LocalClaw 1.0.203 targets OpenClaw 2026.8.2. It recognizes 2026.7.1 and
+LocalClaw 1.0.204 targets OpenClaw 2026.8.2. It recognizes 2026.7.1 and
 2026.8.1 as existing-user migration sources and never treats an older runtime
 as the successful end state of an automatic update.
-Update LocalClaw first, then use Updates to upgrade OpenClaw. Before replacing
-the runtime, LocalClaw creates and verifies a state backup under
-`~/Library/Application Support/LocalClaw/runtime-backups/`. The normal portable
-backup excludes project workspaces. If the old runtime cannot read an already
-migrated database, LocalClaw stops the identified Gateway, checks for other open
-state files, and archives the entire state directory instead (including nested
-workspaces, so allow extra disk space). It never deletes or downgrades SQLite.
+Update LocalClaw first, then use Updates to upgrade OpenClaw. The one-time
+pre-8.1 to 8.1 migration and exceptional schema/configuration recovery create a
+verified state backup under `~/Library/Application Support/LocalClaw/runtime-backups/`.
+Routine same-schema OpenClaw 2.0 updates, including 8.1 to 8.2, do not duplicate
+that full archive; they use LocalClaw's small config snapshot and OpenClaw's
+native update safeguards. The normal portable backup excludes project workspaces.
+If the old runtime cannot read an already migrated database, LocalClaw stops the
+identified Gateway, checks for other open state files, and archives the entire
+state directory instead (including nested workspaces, so allow extra disk
+space). It never deletes or downgrades SQLite.
 The offline inventory excludes actual Unix sockets, not files merely named
 `.sock`. It preserves file contents, POSIX modes, symbolic links and empty
 directories, but does not pack extended attributes, ACLs or AppleDouble metadata.
@@ -80,6 +83,14 @@ Gateway version and healthy RPC before reporting success. Quick Repair and Docto
 use the same recovery for schema mismatches and rejected configuration.
 Unknown agent-delivery outcomes are not replayed.
 Custom/unidentified service layouts or unsafe backups stop with diagnostics.
+
+OpenClaw 8.2 also requires an explicit ambient owner when a profile contains
+multiple agents. LocalClaw snapshots only the selected configuration, assigns
+the historical `main` agent when that choice is unambiguous, reads the value
+back, and then verifies Gateway RPC. New plugin capabilities remain a user
+decision: LocalClaw opens OpenClaw's interactive Terminal review and keeps the
+final repair button locked until that exact review exits successfully. It never
+passes `--accept-capabilities` on the user's behalf.
 
 OpenClaw 2026.8.1 can fail inside Doctor because its generated-approvals repair
 accesses the approvals store before importing `exec-approvals.json`. After a

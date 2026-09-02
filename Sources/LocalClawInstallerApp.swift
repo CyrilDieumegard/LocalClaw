@@ -10908,7 +10908,10 @@ final class InstallerViewModel: ObservableObject {
 
     nonisolated static func friendlyChatDiagnostic(from raw: String) -> String? {
         let clean = stripANSI(OpenClawRecoveryDiagnostic.currentFailure(in: raw))
-        if OpenClawSchemaMismatch.detect(in: clean) != nil || OpenClawRecoveryDiagnostic.hasInvalidConfiguration(clean) || clean.lowercased().contains("may still be running this turn") {
+        if OpenClawSchemaMismatch.detect(in: clean) != nil ||
+            OpenClawRecoveryDiagnostic.hasInvalidConfiguration(clean) ||
+            OpenClawRecoveryDiagnostic.needsAmbientAgentOwner(clean) ||
+            clean.lowercased().contains("may still be running this turn") {
             return nil
         }
         if agentResponseIndicatesTimeout(clean) {
@@ -19876,7 +19879,7 @@ struct ContentView: View {
                                 }
                             }
 
-                            Text("Config snapshots stay private on this Mac and are not full OpenClaw backups. Runtime update/repair creates a separate verified state backup. Support reports redact tokens and credentials before export.")
+                            Text("Config snapshots stay private on this Mac. A full verified OpenClaw state backup is reserved for the one-time pre-8.1 migration, schema mismatch, legacy approvals, or invalid-configuration recovery; routine OpenClaw 2.0 updates use the small config snapshot and native rollback safeguards. Support reports redact tokens and credentials before export.")
                                 .font(AppFont.body(11))
                                 .foregroundStyle(UI.muted)
                         }

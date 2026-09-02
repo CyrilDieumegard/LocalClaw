@@ -10,11 +10,11 @@ struct StorageRecoveryViewTests {
                 .background(Color(nsColor: dark ? NSColor(calibratedWhite: 0.14, alpha: 1) : NSColor(calibratedWhite: 0.94, alpha: 1)))
                 .preferredColorScheme(dark ? .dark : .light)
             let host = NSHostingView(rootView: view)
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 540), styleMask: [.borderless], backing: .buffered, defer: false)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 560), styleMask: [.borderless], backing: .buffered, defer: false)
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             window.contentView = host
             defer { window.orderOut(nil); window.contentView = nil }
-            host.frame = NSRect(x: 0, y: 0, width: 680, height: 540)
+            host.frame = NSRect(x: 0, y: 0, width: 700, height: 560)
             host.layoutSubtreeIfNeeded()
             host.displayIfNeeded()
             let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))

@@ -25,6 +25,13 @@ enum OpenClawRecoveryDiagnostic {
         guard let config = json["config"] as? [String: Any] else { return false }
         return ["cli", "daemon"].contains { (config[$0] as? [String: Any])?["valid"] as? Bool == false }
     }
+
+    static func needsAmbientAgentOwner(_ text: String) -> Bool {
+        let current = currentFailure(in: text).lowercased()
+        return current.contains("agentselectionrequirederror") ||
+            current.contains("session agent resolution has no explicit owner") ||
+            current.contains("multiple agents are configured, but session agent resolution")
+    }
 }
 
 struct OpenClawSchemaMismatch: Equatable {
@@ -577,6 +584,45 @@ final class OpenClawRuntimeMaintenance {
         return version.compare("2026.8.1", options: .numeric) != .orderedAscending
     }
 
+    static func missingAmbientAgentOwner(in config: [String: Any]) -> String? {
+        guard let agents = config["agents"] as? [String: Any],
+              agents["ownership"] as? String == "explicit" else { return nil }
+        let identifiers: [String]
+        if let entries = agents["entries"] as? [String: Any] {
+            identifiers = Array(entries.keys)
+        } else if let list = agents["list"] as? [[String: Any]] {
+            identifiers = list.compactMap { $0["id"] as? String }
+        } else {
+            return nil
+        }
+        guard Set(identifiers).count > 1 else { return nil }
+        let defaults = agents["defaults"] as? [String: Any]
+        let systemAgent = defaults?["systemAgent"] as? [String: Any]
+        if let owner = systemAgent?["agentId"] as? String,
+           !owner.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return nil
+        }
+        return OpenClawCompatibility.chatAgentID(in: config)
+    }
+
+    static func requiresFullStateBackup(
+        current: String,
+        target: String,
+        requiresOfflineBackup: Bool,
+        repairingConfiguration: Bool,
+        pendingLegacyApprovals: Bool,
+        schemaMismatch: Bool
+    ) -> Bool {
+        if requiresOfflineBackup || repairingConfiguration || pendingLegacyApprovals || schemaMismatch {
+            return true
+        }
+        // 2026.8.1 is the one-time OpenClaw 2.0 state transition. Once that
+        // boundary has been crossed, same-schema updates use OpenClaw's native
+        // config snapshot and package rollback instead of another full archive.
+        return current.compare("2026.8.1", options: .numeric) == .orderedAscending &&
+            target.compare("2026.8.1", options: .numeric) != .orderedAscending
+    }
+
     static func hasUnsafeSharedRuntimeConsumer(
         selected runtime: OpenClawRuntimeInstallation,
         consumers: [OpenClawRuntimeInstallation]
@@ -709,6 +755,9 @@ final class OpenClawRuntimeMaintenance {
                     if OpenClawRecoveryDiagnostic.hasInvalidConfiguration(start.1) {
                         return configurationRecovery(runtime, evidence: start.1, allowed: allowRuntimeUpdate)
                     }
+                    if OpenClawRecoveryDiagnostic.needsAmbientAgentOwner(start.1) {
+                        return ambientAgentOwnerRecovery(runtime, allowed: allowRuntimeUpdate)
+                    }
                     if allowRuntimeUpdate, Self.supportsPostCoreRepair(runtime.version),
                        OpenClawUpdateResult.needsPluginApproval(start.1) {
                         return updateUnlocked()
@@ -731,6 +780,9 @@ final class OpenClawRuntimeMaintenance {
                 }
                 if OpenClawRecoveryDiagnostic.hasInvalidConfiguration(currentEvidence) {
                     return configurationRecovery(runtime, evidence: currentEvidence, allowed: allowRuntimeUpdate)
+                }
+                if OpenClawRecoveryDiagnostic.needsAmbientAgentOwner(currentEvidence) {
+                    return ambientAgentOwnerRecovery(runtime, allowed: allowRuntimeUpdate)
                 }
                 if probe.0 == 0, InstallerEngine.gatewayIsHealthy(statusOutput: probe.1) {
                     healthySamples += 1
@@ -769,6 +821,53 @@ final class OpenClawRuntimeMaintenance {
 
     private func validateConfiguration(_ runtime: OpenClawRuntimeInstallation) -> (Int32, String) {
         run(bounded(runtime.command("config validate --json"), seconds: 30))
+    }
+
+    private func configuration(_ runtime: OpenClawRuntimeInstallation) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: runtime.config) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    private func ensureAmbientAgentOwner(_ runtime: OpenClawRuntimeInstallation) throws {
+        guard Self.supportsPostCoreRepair(runtime.version),
+              let config = configuration(runtime),
+              let owner = Self.missingAmbientAgentOwner(in: config) else { return }
+
+        report("Multiple agents need an explicit system owner. Saving the selected configuration before assigning LocalClaw's main agent...")
+        let snapshot = try RecoveryService(homeDirectory: home.path).createSnapshot(
+            reason: "Before assigning OpenClaw system agent",
+            state: runtime.state,
+            config: runtime.config
+        )
+        let value = q("\"\(owner)\"")
+        _ = try checked(
+            bounded(runtime.command("config set agents.defaults.systemAgent.agentId \(value) --strict-json --dry-run"), seconds: 30),
+            stage: "Validate OpenClaw system agent"
+        )
+        _ = try checked(
+            bounded(runtime.command("config set agents.defaults.systemAgent.agentId \(value) --strict-json"), seconds: 30),
+            stage: "Assign OpenClaw system agent"
+        )
+        guard let updated = configuration(runtime),
+              let agents = updated["agents"] as? [String: Any],
+              let defaults = agents["defaults"] as? [String: Any],
+              let systemAgent = defaults["systemAgent"] as? [String: Any],
+              systemAgent["agentId"] as? String == owner else {
+            throw MaintenanceError("OpenClaw did not retain the selected system agent. The Gateway was not restarted.")
+        }
+        report("OpenClaw system agent verified as \(owner). Config snapshot: \(snapshot.directoryPath)")
+    }
+
+    private func ambientAgentOwnerRecovery(_ runtime: OpenClawRuntimeInstallation, allowed: Bool) -> StepResult {
+        let explanation = "OpenClaw cannot start because multiple agents have no explicit system owner (AgentSelectionRequiredError)."
+        guard allowed else {
+            return StepResult(state: .fail, message: explanation + " No request was sent. Use Repair Gateway to assign LocalClaw's main agent without resetting the fleet.")
+        }
+        guard let config = configuration(runtime), Self.missingAmbientAgentOwner(in: config) != nil else {
+            return StepResult(state: .fail, message: explanation + " LocalClaw could not safely choose an owner because this profile has no unambiguous main agent. No configuration was changed and no request was replayed.")
+        }
+        report("Gateway startup needs an explicit system-agent owner. Preparing a scoped configuration repair...")
+        return updateUnlocked()
     }
 
     private func configurationRecovery(_ runtime: OpenClawRuntimeInstallation, evidence: String, allowed: Bool) -> StepResult {
@@ -890,6 +989,7 @@ final class OpenClawRuntimeMaintenance {
                     ) else { throw sharedRuntimeFailure }
                     report("Resuming an isolated selected-profile repair on the shared OpenClaw core. Core replacement remains disabled...")
                 }
+                try ensureAmbientAgentOwner(runtime)
                 backupPath = checkpoint.archive
                 report("Resuming OpenClaw \(checkpoint.target) repair with the existing verified backup. No core reinstall...")
                 // A resumed repair can reinstall or restart the selected service.
@@ -934,6 +1034,7 @@ final class OpenClawRuntimeMaintenance {
             guard current.compare(target, options: .numeric) != .orderedDescending else {
                 throw MaintenanceError("The selected release would downgrade OpenClaw. No database or runtime was replaced.")
             }
+            try ensureAmbientAgentOwner(runtime)
             let repairOnly = current == target && Self.supportsPostCoreRepair(current)
             if unsafeSharedRuntime {
                 guard isolatedSharedRepair, repairOnly else { throw sharedRuntimeFailure }
@@ -953,36 +1054,49 @@ final class OpenClawRuntimeMaintenance {
                 throw MaintenanceError("The configuration was written by OpenClaw \(authored), newer than available release \(target). No older Doctor was run and no configuration was changed.")
             }
             let status = probeGateway(runtime).1
-            var mismatch = requiresOfflineBackup || repairingConfig || pendingApprovals || OpenClawSchemaMismatch.detect(in: status) != nil
+            let schemaMismatch = OpenClawSchemaMismatch.detect(in: status) != nil
+            var mismatch = requiresOfflineBackup || repairingConfig || pendingApprovals || schemaMismatch
             let directory = home.appendingPathComponent("Library/Application Support/LocalClaw/runtime-backups")
-            try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            let archive = directory.appendingPathComponent("openclaw-\(UUID().uuidString).tar.gz")
-            guard !fm.fileExists(atPath: archive.path) else { throw MaintenanceError("The recovery backup destination already exists.") }
-            var verifiedArchive = false
-            defer { if !verifiedArchive { try? fm.removeItem(at: archive) } }
-            report("Creating a verified recovery backup before changing OpenClaw. Large histories can take several minutes; progress will remain visible here...")
-            if !mismatch {
-                let backup = runWithProgressPulse(
-                    runtime.command("backup create --no-include-workspace --verify --output \(q(archive.path)) --json"),
-                    status: "Recovery backup is still running"
-                )
-                mismatch = OpenClawSchemaMismatch.detect(in: backup.1) != nil || OpenClawRecoveryDiagnostic.hasInvalidConfiguration(backup.1)
-                if !mismatch && backup.0 != 0 { throw MaintenanceError("State backup failed. No runtime was replaced.\n\(backup.1)") }
-                if mismatch && fm.fileExists(atPath: archive.path) { try fm.removeItem(at: archive) }
-            }
-            if mismatch {
-                report("The installed runtime cannot safely handle this state. Creating an offline recovery backup...")
-                if try offlineBackup(runtime, archive: archive) {
-                    restartOnFailure = runtime
+            let needsFullBackup = Self.requiresFullStateBackup(
+                current: current,
+                target: target,
+                requiresOfflineBackup: requiresOfflineBackup,
+                repairingConfiguration: repairingConfig,
+                pendingLegacyApprovals: pendingApprovals,
+                schemaMismatch: schemaMismatch
+            )
+            if needsFullBackup {
+                try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                let archive = directory.appendingPathComponent("openclaw-\(UUID().uuidString).tar.gz")
+                guard !fm.fileExists(atPath: archive.path) else { throw MaintenanceError("The recovery backup destination already exists.") }
+                var verifiedArchive = false
+                defer { if !verifiedArchive { try? fm.removeItem(at: archive) } }
+                report("Creating a verified recovery backup before changing OpenClaw. Large histories can take several minutes; progress will remain visible here...")
+                if !mismatch {
+                    let backup = runWithProgressPulse(
+                        runtime.command("backup create --no-include-workspace --verify --output \(q(archive.path)) --json"),
+                        status: "Recovery backup is still running"
+                    )
+                    mismatch = OpenClawSchemaMismatch.detect(in: backup.1) != nil || OpenClawRecoveryDiagnostic.hasInvalidConfiguration(backup.1)
+                    if !mismatch && backup.0 != 0 { throw MaintenanceError("State backup failed. No runtime was replaced.\n\(backup.1)") }
+                    if mismatch && fm.fileExists(atPath: archive.path) { try fm.removeItem(at: archive) }
                 }
+                if mismatch {
+                    report("The installed runtime cannot safely handle this state. Creating an offline recovery backup...")
+                    if try offlineBackup(runtime, archive: archive) {
+                        restartOnFailure = runtime
+                    }
+                }
+                guard let size = try fm.attributesOfItem(atPath: archive.path)[.size] as? NSNumber, size.intValue > 0 else {
+                    throw MaintenanceError("The recovery archive is missing or empty. Update stopped.")
+                }
+                try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: archive.path)
+                verifiedArchive = true
+                backupPath = archive.path
+                report("Recovery backup: \(archive.path)")
+            } else {
+                report("Full state backup is not required for this same-schema OpenClaw 2.0 maintenance; using OpenClaw's native update safeguards.")
             }
-            guard let size = try fm.attributesOfItem(atPath: archive.path)[.size] as? NSNumber, size.intValue > 0 else {
-                throw MaintenanceError("The recovery archive is missing or empty. Update stopped.")
-            }
-            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: archive.path)
-            verifiedArchive = true
-            backupPath = archive.path
-            report("Recovery backup: \(archive.path)")
 
             var updater = runtime.cli
             var staging: URL?
@@ -1055,7 +1169,10 @@ final class OpenClawRuntimeMaintenance {
                    InstallerEngine.gatewayIsHealthy(statusOutput: probe.1) {
                     serviceRecovery = "\nThe selected Gateway service was reinstalled and RPC health was verified after the failure."
                 } else {
-                    serviceRecovery = "\nGateway compensation was attempted but RPC health was not verified. OpenClaw data remains backed up; review these bounded diagnostics before retrying.\nInstall: \(String(install.1.suffix(1_000)))\nActivate: \(String(activation.1.suffix(1_000)))\nStatus: \(String(probe.1.suffix(1_000)))"
+                    let preservation = backupPath == nil
+                        ? "OpenClaw's native update safeguards remain in place"
+                        : "OpenClaw data remains backed up"
+                    serviceRecovery = "\nGateway compensation was attempted but RPC health was not verified. \(preservation); review these bounded diagnostics before retrying.\nInstall: \(String(install.1.suffix(1_000)))\nActivate: \(String(activation.1.suffix(1_000)))\nStatus: \(String(probe.1.suffix(1_000)))"
                 }
             }
             let backup = backupPath.map { "\nRecovery backup: \($0)" } ?? ""
@@ -1135,7 +1252,9 @@ final class OpenClawRuntimeMaintenance {
             samples = probe.0 == 0 && Self.verifiedGateway(probe.1, expectedVersion: target) ? samples + 1 : 0
             if samples == 2 {
                 try OpenClawUpdateCheckpoint.remove(home: home, runtime: runtime)
-                return StepResult(state: .ok, message: "OpenClaw \(target) ready; configuration, Gateway version and two RPC checks verified.\nRecovery backup: \(backupPath ?? "unknown")\nNo chat request was replayed.")
+                let backup = backupPath.map { "Recovery backup: \($0)" }
+                    ?? "Full state backup: not required for this same-schema OpenClaw 2.0 maintenance."
+                return StepResult(state: .ok, message: "OpenClaw \(target) ready; configuration, Gateway version and two RPC checks verified.\n\(backup)\nNo chat request was replayed.")
             }
         }
         throw MaintenanceError("The Gateway is not running the expected version with healthy RPC.\n\(verified)")
