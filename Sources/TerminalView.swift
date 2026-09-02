@@ -126,7 +126,21 @@ final class TerminalViewModel: ObservableObject {
     
     /// Run doctor
     func runDoctor() {
-        execute("perl -e 'alarm 120; exec @ARGV' openclaw doctor --fix --yes --non-interactive 2>&1")
+        guard !isRunning else {
+            append("⚠️  A command is already running...")
+            return
+        }
+        isRunning = true
+        currentCommand = "Verified OpenClaw Doctor repair"
+        append("$ LocalClaw verified OpenClaw Doctor repair")
+        Task {
+            let result = await Task.detached {
+                InstallerEngine().runDoctorRepair()
+            }.value
+            append(result.state == .ok ? "✅ \(result.message)" : "❌ \(result.message)")
+            isRunning = false
+            currentCommand = ""
+        }
     }
     
     /// Show config

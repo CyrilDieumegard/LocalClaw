@@ -51,8 +51,11 @@ struct OpenClawUpdateResultTests {
         #expect(script.contains("OPENCLAW_SERVICE_REPAIR_POLICY=external"))
         #expect(script.contains("user'\\''s node"))
         #expect(!script.contains("--accept-capabilities"))
-        #expect(!script.contains("--yes") && !script.contains("--json"))
-        #expect(!script.contains("gateway stop") && !script.contains("gateway restart") && !script.contains("agent --"))
+        #expect(!script.contains("update repair --yes") && !script.contains("update repair --json"))
+        #expect(script.contains("gateway stop --force --json"))
+        #expect(script.contains("gateway start --json"))
+        #expect(script.contains("gateway status --json --require-rpc"))
+        #expect(!script.contains("gateway restart") && !script.contains("agent --"))
         #expect(script.contains("success:fixture-receipt"))
         #expect(script.contains("write_status running"))
         #expect(script.contains("write_status \"failed:${code}\""))
@@ -76,15 +79,32 @@ struct OpenClawUpdateResultTests {
             serviceLabel: "ai.openclaw.gateway"
         )
         func writeNode(exitCode: Int) throws {
+            let stopped = home.appendingPathComponent("gateway-stopped").path
             let body = """
             #!/bin/zsh
             if [[ "$1" == "-p" ]]; then
               printf '%s\\n' '2026.8.2'
               exit 0
             fi
+            if [[ "$*" == *"gateway stop --force --json"* ]]; then
+              touch \(OpenClawRuntimeInstallation.quote(stopped))
+              exit 0
+            fi
+            if [[ "$*" == *"gateway start --json"* ]]; then
+              rm -f \(OpenClawRuntimeInstallation.quote(stopped))
+              exit 0
+            fi
+            if [[ "$*" == *"gateway status --json --require-rpc"* ]]; then
+              [[ ! -f \(OpenClawRuntimeInstallation.quote(stopped)) ]]
+              exit $?
+            fi
             if [[ "${OPENCLAW_SERVICE_REPAIR_POLICY:-}" != "external" ]]; then
               printf '%s\\n' 'Doctor contended with the LocalClaw-owned Gateway.' >&2
               exit 19
+            fi
+            if [[ ! -f \(OpenClawRuntimeInstallation.quote(stopped)) ]]; then
+              printf '%s\\n' 'StateDatabaseCoordinatorContentionError: another OpenClaw process owns gateway-lifecycle' >&2
+              exit 20
             fi
             exit \(exitCode)
             """
@@ -100,6 +120,7 @@ struct OpenClawUpdateResultTests {
         #expect(successResult.0 == 0, Comment(rawValue: successResult.1))
         #expect(try String(contentsOf: success.statusURL, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines) == success.successReceipt)
+        #expect(!FileManager.default.fileExists(atPath: home.appendingPathComponent("gateway-stopped").path))
 
         try writeNode(exitCode: 7)
         let failure = try OpenClawPluginReview.prepare(home: home, runtime: runtime)
@@ -109,6 +130,7 @@ struct OpenClawUpdateResultTests {
         #expect(failureResult.0 == 7)
         #expect(try String(contentsOf: failure.statusURL, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines) == "failed:7")
+        #expect(!FileManager.default.fileExists(atPath: home.appendingPathComponent("gateway-stopped").path))
     }
 
     @Test func maintenanceOutputKeepsJSONIntactAndDrainsLargeDiagnostics() throws {

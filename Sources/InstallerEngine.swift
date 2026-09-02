@@ -238,6 +238,16 @@ final class InstallerEngine: @unchecked Sendable {
         return true
     }
 
+    static func gatewayIsStopped(statusOutput: String) -> Bool {
+        guard let root = firstJSONObject(in: statusOutput),
+              let service = root["service"] as? [String: Any],
+              let runtime = service["runtime"] as? [String: Any],
+              let status = runtime["status"] as? String else {
+            return false
+        }
+        return status.lowercased() == "stopped"
+    }
+
     static func officialPluginUpdateSpecs(from statusOutput: String) -> [String] {
         guard let root = firstJSONObject(in: statusOutput),
               let drift = root["pluginVersionDrift"] as? [String: Any],
@@ -1156,6 +1166,10 @@ final class InstallerEngine: @unchecked Sendable {
     func runDoctorRepair() -> StepResult {
         let maintenance = OpenClawRuntimeMaintenance(run: maintenanceShell)
         if maintenance.hasPendingUpdate() || maintenance.schemaMismatch() != nil || maintenance.configurationNeedsRepair() || maintenance.execApprovalsNeedMigration() { return maintenance.update() }
+        if let runtime = try? maintenance.installation(),
+           OpenClawRuntimeMaintenance.supportsPostCoreRepair(runtime.version) {
+            return maintenance.repairCurrentVersion()
+        }
         return runDoctorRepairDetailed().result
     }
 
@@ -2040,6 +2054,10 @@ final class InstallerEngine: @unchecked Sendable {
     func repairOpenClawSetupQuiet() -> StepResult {
         let maintenance = OpenClawRuntimeMaintenance(run: maintenanceShell)
         if maintenance.schemaMismatch() != nil || maintenance.configurationNeedsRepair() { return maintenance.update() }
+        if let runtime = try? maintenance.installation(),
+           OpenClawRuntimeMaintenance.supportsPostCoreRepair(runtime.version) {
+            return maintenance.repairCurrentVersion()
+        }
         let (code, _) = shell("perl -e 'alarm 120; exec @ARGV' openclaw doctor --fix --yes --non-interactive")
         return code == 0
             ? StepResult(state: .ok, message: "Configuration repair completed")

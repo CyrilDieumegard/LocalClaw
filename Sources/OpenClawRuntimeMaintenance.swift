@@ -947,6 +947,12 @@ final class OpenClawRuntimeMaintenance {
         return updateUnlocked()
     }
 
+    func repairCurrentVersion() -> StepResult {
+        guard Self.lock.try() else { return StepResult(state: .fail, message: "Another OpenClaw maintenance operation is running.") }
+        defer { Self.lock.unlock() }
+        return updateUnlocked(forceCurrentRelease: true)
+    }
+
     func clearDownloadCache(confirmed: Bool) -> StepResult {
         guard Self.lock.try() else { return StepResult(state: .fail, message: "Wait for OpenClaw maintenance to finish before cleaning the cache.") }
         defer { Self.lock.unlock() }
@@ -956,7 +962,8 @@ final class OpenClawRuntimeMaintenance {
         } catch { return StepResult(state: .fail, message: SecretRedactor.redactConfigText(error.localizedDescription)) }
     }
 
-    private func updateUnlocked(requiresOfflineBackup: Bool = false, repairConfiguration: Bool = false) -> StepResult {
+    private func updateUnlocked(requiresOfflineBackup: Bool = false, repairConfiguration: Bool = false,
+                                forceCurrentRelease: Bool = false) -> StepResult {
         backupPath = nil
         var restartOnFailure: OpenClawRuntimeInstallation?
         do {
@@ -1014,7 +1021,12 @@ final class OpenClawRuntimeMaintenance {
                 )
             if unsafeSharedRuntime && !isolatedSharedRepair { throw sharedRuntimeFailure }
             let target: String
-            if isolatedSharedRepair {
+            if forceCurrentRelease {
+                guard Self.supportsPostCoreRepair(current), Self.isSupportedUpdateTarget(current) else {
+                    throw MaintenanceError("This OpenClaw release does not support bounded native repair. No service or package was changed.")
+                }
+                target = current
+            } else if isolatedSharedRepair {
                 // Native repair is bound to the already-installed core. Never let a
                 // later `latest` release turn selected-profile repair into a shared
                 // package replacement.
@@ -1184,6 +1196,32 @@ final class OpenClawRuntimeMaintenance {
     private func finishUpdate(_ runtime: OpenClawRuntimeInstallation, target: String, updater: URL, repairOnly: Bool) throws -> StepResult {
         report(repairOnly ? "Finishing Doctor and plugin repair without reinstalling OpenClaw..."
                : "Updating the Gateway, synchronizing plugins and checking startup...")
+        if repairOnly {
+            // OpenClaw 2026.8.2 Doctor still acquires the gateway-lifecycle
+            // coordinator when service repair is externally managed. The selected
+            // Gateway must therefore be stopped by its actual service owner before
+            // entering native repair. Never delete coordinator files: an active
+            // Gateway legitimately owns that lock.
+            report("Stopping the selected Gateway before Doctor acquires maintenance ownership...")
+            _ = try checked(
+                bounded(runtime.command("gateway stop --force --json"), seconds: 90),
+                stage: "Stop selected Gateway for repair"
+            )
+            var confirmedStopped = false
+            var lastStatus = ""
+            for delay in [0.0, 0.25, 0.5, 1.0, 2.0] {
+                wait(delay)
+                let status = run(bounded(runtime.command("gateway status --json --no-probe"), seconds: 25))
+                lastStatus = status.1
+                if InstallerEngine.gatewayIsStopped(statusOutput: status.1) {
+                    confirmedStopped = true
+                    break
+                }
+            }
+            guard confirmedStopped else {
+                throw MaintenanceError("The selected Gateway did not confirm a stopped service before Doctor. No lock file was deleted.\n\(lastStatus)")
+            }
+        }
         let arguments = repairOnly ? "update repair --yes --json" : "update --tag \(q(target)) --yes --json"
         let update = runWithProgressPulse(
             bounded(runtime.command(

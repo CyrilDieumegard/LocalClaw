@@ -21,13 +21,38 @@ enum OpenClawPluginReview {
         umask 077
         status_file=\(q(statusURL.path))
         completed=0
+        gateway_stopped=0
         write_status() {
           local next="${status_file}.tmp.$$"
           printf '%s\\n' "$1" > "$next"
           chmod 600 "$next"
           mv -f "$next" "$status_file"
         }
+        restore_gateway() {
+          if [[ "$gateway_stopped" != 1 ]]; then
+            return 0
+          fi
+          printf '%s\\n' 'Restoring the selected Gateway service...'
+          \(runtime.command("gateway start --json"))
+          local start_code=$?
+          if [[ "$start_code" != 0 ]]; then
+            return "$start_code"
+          fi
+          local probe_code=1
+          local attempt
+          for attempt in {1..12}; do
+            \(runtime.command("gateway status --json --require-rpc --timeout 5000"))
+            probe_code=$?
+            if [[ "$probe_code" == 0 ]]; then
+              gateway_stopped=0
+              return 0
+            fi
+            sleep 1
+          done
+          return "$probe_code"
+        }
         on_exit() {
+          restore_gateway || printf '%s\\n' 'The Gateway could not be restored automatically. Return to LocalClaw and run Finish Gateway Repair.'
           if [[ "$completed" != 1 ]]; then
             write_status failed
           fi
@@ -44,14 +69,37 @@ enum OpenClawPluginReview {
           exit 1
         fi
         printf '%s\\n' 'Review each plugin and its requested capabilities. You may accept or decline.'
-        # `update repair` disables Gateway activation in its child Doctor. LocalClaw
-        # owns the verified running service, so Doctor must defer its lifecycle here.
-        \(runtime.command("update repair --timeout 600", externalServiceRepair: true))
+        printf '%s\\n' 'The selected Gateway will pause during review and will be restored afterward.'
+        \(runtime.command("gateway stop --force --json"))
         code=$?
         if [[ "$code" != 0 ]]; then
           write_status "failed:${code}"
           completed=1
+          printf '%s\\n' 'The selected Gateway could not be stopped through its service owner.'
+          exit "$code"
+        fi
+        gateway_stopped=1
+        # `update repair` disables Gateway activation in its child Doctor. LocalClaw
+        # has stopped the selected service, so Doctor can now acquire maintenance.
+        \(runtime.command("update repair --timeout 600", externalServiceRepair: true))
+        code=$?
+        if [[ "$code" != 0 ]]; then
+          restore_gateway
+          restore_code=$?
+          write_status "failed:${code}"
+          completed=1
           printf '%s\\n' 'Review was declined or did not finish. Nothing was accepted by LocalClaw.'
+          if [[ "$restore_code" != 0 ]]; then
+            printf '%s\\n' 'The Gateway could not be restored automatically. Return to LocalClaw and run Finish Gateway Repair.'
+          fi
+          exit "$code"
+        fi
+        restore_gateway
+        code=$?
+        if [[ "$code" != 0 ]]; then
+          write_status "failed:${code}"
+          completed=1
+          printf '%s\\n' 'Plugin review completed, but Gateway RPC health was not restored. Return to LocalClaw and run Finish Gateway Repair.'
           exit "$code"
         fi
         write_status \(q(successReceipt))
@@ -107,7 +155,7 @@ struct PluginRecoveryView: View {
             }
             Label("OpenClaw core installed", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
             Text("One or more plugins need approval for new capabilities. No additional permissions have been granted.")
-            Text("Step 1: review the exact plugin version and capabilities in OpenClaw's Terminal prompt. LocalClaw remains the Gateway service owner during this review, so OpenClaw Doctor cannot fight the running service. Step 2 stays locked until that command succeeds. You may decline; LocalClaw never accepts capabilities for you.")
+            Text("Step 1: review the exact plugin version and capabilities in OpenClaw's Terminal prompt. LocalClaw briefly stops its selected Gateway so Doctor can acquire maintenance ownership, then restores and verifies it even if you decline. Step 2 stays locked until review succeeds. LocalClaw never accepts capabilities for you.")
                 .font(.callout).foregroundStyle(.secondary)
             ScrollView {
                 Text(diagnostic).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)

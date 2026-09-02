@@ -148,6 +148,9 @@ struct InstallerEngineTests {
         #expect(InstallerEngine.gatewayIsHealthy(statusOutput: healthyWithoutOptionalHealthBlock))
         #expect(!InstallerEngine.gatewayIsHealthy(statusOutput: stopped))
         #expect(!InstallerEngine.gatewayIsHealthy(statusOutput: explicitlyUnhealthy))
+        #expect(!InstallerEngine.gatewayIsStopped(statusOutput: healthyWithoutOptionalHealthBlock))
+        #expect(InstallerEngine.gatewayIsStopped(statusOutput: stopped))
+        #expect(!InstallerEngine.gatewayIsStopped(statusOutput: #"{"service":{"runtime":{"status":"unknown"}}}"#))
     }
 
     @Test func pluginDriftOnlyUpdatesOfficialOpenClawPackages() {

@@ -887,12 +887,35 @@ struct OpenClawRuntimeMaintenanceTests {
         try fixture.writeVersion("2026.8.1")
         let result = fixture.maintenance().update()
         #expect(result.state == .ok, Comment(rawValue: result.message))
+        let stop = try #require(fixture.commands.firstIndex { $0.contains("gateway stop --force --json") })
         let repair = try #require(fixture.commands.firstIndex { $0.contains("update repair --yes --json") })
         let install = try #require(fixture.commands.firstIndex { $0.contains("gateway install --force --json") })
         let restart = try #require(fixture.commands.firstIndex { $0.contains("gateway restart --json") })
-        #expect(repair < install && install < restart)
+        #expect(stop < repair && repair < install && install < restart)
+        #expect(fixture.commands[repair].contains("OPENCLAW_SERVICE_REPAIR_POLICY=external"))
         #expect(fixture.commands.suffix(from: restart).filter { $0.contains("gateway status") }.count == 2)
         #expect(!fixture.commands.contains { $0.contains("npm install") || ($0.contains("update --tag") && $0.contains("--yes")) })
+    }
+
+    @Test func explicitDoctorRepairsInstalledReleaseWithoutTurningIntoAnUpgrade() throws {
+        let fixture = try Fixture(
+            schemaMismatch: false,
+            installedVersion: "2026.8.1",
+            targetVersion: "2026.8.2"
+        )
+        defer { fixture.cleanUp() }
+
+        let result = fixture.maintenance().repairCurrentVersion()
+
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        let stop = try #require(fixture.commands.firstIndex { $0.contains("gateway stop --force --json") })
+        let repair = try #require(fixture.commands.firstIndex { $0.contains("update repair --yes --json") })
+        let restart = try #require(fixture.commands.firstIndex { $0.contains("gateway restart --json") })
+        #expect(stop < repair && repair < restart)
+        #expect((try OpenClawRuntimeInstallation.managed(home: fixture.home))?.version == "2026.8.1")
+        #expect(!fixture.commands.contains {
+            $0.contains("npm view") || $0.contains("--dry-run") || $0.contains("npm install") || $0.contains("update --tag")
+        })
     }
 
     @Test func invalidSelectedProfileRepairsSharedCurrentCoreWithoutMutatingPeerProfile() throws {
@@ -1298,6 +1321,8 @@ struct OpenClawRuntimeMaintenanceTests {
         var failure: Failure?
         var commands: [String] = []
         var didUpdate = false
+        var gatewayRunning = true
+        var gatewayVersion: String
         var inspections: [(Int32, String)] = []
 
         init(
@@ -1313,6 +1338,7 @@ struct OpenClawRuntimeMaintenanceTests {
             self.failure = failure
             self.installedVersion = installedVersion
             self.targetVersion = targetVersion
+            gatewayVersion = installedVersion
             home = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("runtime fixture's \(UUID().uuidString)")
             package = home.appendingPathComponent(".local/lib/node_modules/openclaw")
             database = home.appendingPathComponent(".openclaw/state/openclaw.sqlite")
@@ -1351,6 +1377,7 @@ struct OpenClawRuntimeMaintenanceTests {
         func archives() throws -> [URL] { try FileManager.default.contentsOfDirectory(at: backups, includingPropertiesForKeys: nil).filter { $0.pathExtension == "gz" } }
         func writeVersion(_ version: String) throws {
             try JSONSerialization.data(withJSONObject: ["name": "openclaw", "version": version]).write(to: package.appendingPathComponent("package.json"))
+            gatewayVersion = version
         }
 
         func systemAgentOwner() throws -> String? {
@@ -1442,6 +1469,9 @@ struct OpenClawRuntimeMaintenanceTests {
                     ]), encoding: .utf8)!)
                 }
                 if command.contains("gateway status") {
+                    if !gatewayRunning {
+                        return (0, #"{"service":{"runtime":{"status":"stopped"}},"rpc":{"ok":false}}"#)
+                    }
                     if failure == .agentOwner, try systemAgentOwner() == nil {
                         return (1, #"{"service":{"runtime":{"status":"stopped"}},"rpc":{"ok":false,"error":"ECONNREFUSED"}}"#)
                     }
@@ -1451,13 +1481,18 @@ struct OpenClawRuntimeMaintenanceTests {
                     if !didUpdate && schemaMismatch || failure == .schemaRemains {
                         return (1, "Config health-state write failed: OpenClaw state database uses newer schema version 15; this OpenClaw build supports 1.")
                     }
-                    return (0, #"{"service":{"runtime":{"status":"running"}},"rpc":{"ok":true},"gateway":{"version":"VERSION"}}"#.replacingOccurrences(of: "VERSION", with: failure == .unhealthy ? installedVersion : (didUpdate ? targetVersion : ((try? OpenClawRuntimeInstallation.managed(home: home))?.version ?? installedVersion))))
+                    return (0, #"{"service":{"runtime":{"status":"running"}},"rpc":{"ok":true},"gateway":{"version":"VERSION"}}"#.replacingOccurrences(of: "VERSION", with: failure == .unhealthy ? installedVersion : gatewayVersion))
                 }
                 if command.contains("gateway start --json") {
                     if failure == .agentOwner, try systemAgentOwner() == nil {
                         return (1, "AgentSelectionRequiredError: Multiple agents are configured, but session agent resolution has no explicit owner.")
                     }
+                    gatewayRunning = true
                     return (0, #"{"ok":true}"#)
+                }
+                if command.contains("gateway stop --force --json") {
+                    gatewayRunning = false
+                    return (0, #"{"ok":true,"result":"stopped"}"#)
                 }
                 if command.contains("backup create") {
                     let regex = try NSRegularExpression(pattern: #"openclaw-[0-9A-Fa-f-]+\.tar\.gz"#)
@@ -1486,7 +1521,11 @@ struct OpenClawRuntimeMaintenanceTests {
                 }
                 if command.contains("npm --version") { return (0, "12.0.0") }
                 if command.contains("gateway install --force --json") { return (0, #"{"ok":true}"#) }
-                if command.contains("gateway restart --json") { return failure == .restart ? (1, "restart refused") : (0, #"{"ok":true}"#) }
+                if command.contains("gateway restart --json") {
+                    if failure == .restart { return (1, "restart refused") }
+                    gatewayRunning = true
+                    return (0, #"{"ok":true}"#)
+                }
                 if command.contains("exec-approvals-migration.mjs") {
                     if failure == .approvalsMigration { return (1, "Preserved malformed legacy exec approvals for operator recovery.") }
                     if failure != .unverifiedApprovalsMigration {
@@ -1505,6 +1544,9 @@ struct OpenClawRuntimeMaintenanceTests {
                     return (0, "")
                 }
                 if command.contains("--yes --json") {
+                    if command.contains("update repair"), gatewayRunning {
+                        return (1, "StateDatabaseCoordinatorContentionError: another OpenClaw process owns gateway-lifecycle")
+                    }
                     if failure == .update { return (1, "post-core repair failed") }
                     didUpdate = true
                     if !command.contains("update repair"), failure != .wrongVersion {

@@ -39,7 +39,7 @@ swift test
 
 ## OpenClaw compatibility
 
-LocalClaw 1.0.205 targets OpenClaw 2026.8.2. It recognizes 2026.7.1 and
+LocalClaw 1.0.206 targets OpenClaw 2026.8.2. It recognizes 2026.7.1 and
 2026.8.1 as existing-user migration sources and never treats an older runtime
 as the successful end state of an automatic update.
 Update LocalClaw first, then use Updates to upgrade OpenClaw. The one-time

@@ -676,28 +676,14 @@ final class CommandCenterViewModel: ObservableObject {
     }
     
     func runDoctor() {
-        addLog(.command, "Running doctor...")
-        executeCommandAsync("perl -e 'alarm 120; exec @ARGV' openclaw doctor --fix --yes --non-interactive", onOutput: { line in
-            DispatchQueue.main.async {
-                if line.contains("✓") || line.contains("OK") || line.contains("fixed") {
-                    self.addLog(.success, line)
-                } else if line.contains("✗") || line.contains("FAIL") || line.contains("error") || line.contains("Error") {
-                    self.addLog(.error, line)
-                } else if line.contains("⚠") || line.contains("WARN") || line.contains("warning") {
-                    self.addLog(.warning, line)
-                } else {
-                    self.addLog(.info, line)
-                }
-            }
-        }, onComplete: { code in
-            DispatchQueue.main.async {
-                if code == 0 {
-                    self.addLog(.success, "Doctor completed successfully")
-                } else {
-                    self.addLog(.warning, "Doctor completed with exit code \(code)")
-                }
-            }
-        })
+        addLog(.command, "Running verified Doctor repair...")
+        Task {
+            let result = await Task.detached {
+                InstallerEngine().runDoctorRepair()
+            }.value
+            addLog(result.state == .ok ? .success : .error, result.message)
+            checkGatewayStatus()
+        }
     }
 
     func repairOpenClawConnection() {
