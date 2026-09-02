@@ -17226,17 +17226,27 @@ struct ContentView: View {
                     .font(AppFont.bodySemi(14))
                     .foregroundStyle(UI.muted)
 
-                ScrollView {
-                    Text(vm.logs.isEmpty ? "No update run yet. Click CHECK or UPDATE ALL." : vm.logs)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(UI.text)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(vm.logs.isEmpty ? "No update run yet. Click CHECK or UPDATE ALL." : vm.logs)
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(UI.text)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Color.clear
+                                .frame(height: 1)
+                                .id("update-live-log-bottom")
+                        }
                         .padding(12)
+                    }
+                    .scrollIndicators(.hidden)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+                    .frame(minHeight: 110, maxHeight: 160)
+                    .onChange(of: vm.logs) { _ in
+                        proxy.scrollTo("update-live-log-bottom", anchor: .bottom)
+                    }
                 }
-                .scrollIndicators(.hidden)
-                .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
-                .frame(minHeight: 110, maxHeight: 160)
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .topLeading)

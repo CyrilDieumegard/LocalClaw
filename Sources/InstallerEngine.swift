@@ -369,14 +369,70 @@ final class InstallerEngine: @unchecked Sendable {
         runShell(command, separateDiagnostics: true, enforceOpenClawSelection: true)
     }
 
+    func maintenanceShell(_ command: String, report: @escaping (String) -> Void) -> (Int32, String) {
+        runShell(command, separateDiagnostics: true, enforceOpenClawSelection: true, progress: report)
+    }
+
+    private final class OutputObserver: @unchecked Sendable {
+        private let callback: (String) -> Void
+
+        init(_ callback: @escaping (String) -> Void) {
+            self.callback = callback
+        }
+
+        func send(_ line: String) {
+            let clean = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clean.isEmpty else { return }
+            callback(SecretRedactor.redactConfigText(String(clean.suffix(2_000))))
+        }
+    }
+
     private final class DiagnosticOutput: @unchecked Sendable {
         private let lock = NSLock()
         private var data = Data()
-        func set(_ value: Data) { lock.lock(); defer { lock.unlock() }; data = value }
+        private var pending = Data()
+        private let observer: OutputObserver?
+
+        init(observer: OutputObserver? = nil) {
+            self.observer = observer
+        }
+
+        func read(_ handle: FileHandle) {
+            while true {
+                let chunk = handle.availableData
+                guard !chunk.isEmpty else { break }
+                append(chunk)
+            }
+            flushPendingLine()
+        }
+
+        private func append(_ value: Data) {
+            var lines: [String] = []
+            lock.lock()
+            data.append(value)
+            pending.append(value)
+            while let newline = pending.firstIndex(of: 0x0A) {
+                let line = Data(pending[pending.startIndex..<newline])
+                pending.removeSubrange(pending.startIndex...newline)
+                lines.append(String(decoding: line, as: UTF8.self))
+            }
+            lock.unlock()
+            lines.forEach { observer?.send($0) }
+        }
+
+        private func flushPendingLine() {
+            lock.lock()
+            let line = pending
+            pending.removeAll(keepingCapacity: false)
+            lock.unlock()
+            if !line.isEmpty { observer?.send(String(decoding: line, as: UTF8.self)) }
+        }
+
         func get() -> Data { lock.lock(); defer { lock.unlock() }; return data }
     }
 
-    private func runShell(_ command: String, separateDiagnostics: Bool, enforceOpenClawSelection: Bool) -> (Int32, String) {
+    private func runShell(_ command: String, separateDiagnostics: Bool, enforceOpenClawSelection: Bool,
+                          progress: ((String) -> Void)? = nil) -> (Int32, String) {
         if enforceOpenClawSelection,
            command.range(of: #"(^|[^A-Za-z0-9_-])openclaw([^A-Za-z0-9_-]|$)"#, options: .regularExpression) != nil {
             do {
@@ -403,11 +459,11 @@ final class InstallerEngine: @unchecked Sendable {
         // Drain both pipes concurrently. Doctor writes prose to stderr while the
         // update result is JSON on stdout; merging live bytes can corrupt JSON.
         let group = DispatchGroup()
-        let diagnostics = DiagnosticOutput()
+        let diagnostics = DiagnosticOutput(observer: progress.map(OutputObserver.init))
         if let errors {
             group.enter()
             DispatchQueue.global(qos: .utility).async {
-                diagnostics.set(errors.fileHandleForReading.readDataToEndOfFile())
+                diagnostics.read(errors.fileHandleForReading)
                 group.leave()
             }
         }
@@ -2637,6 +2693,9 @@ final class InstallerEngine: @unchecked Sendable {
         if node.state == .fail {
             return StepResult(state: .fail, message: "Node setup failed before OpenClaw update.\n\(node.message)")
         }
-        return OpenClawRuntimeMaintenance(run: maintenanceShell, report: report).update()
+        return OpenClawRuntimeMaintenance(
+            run: { command in self.maintenanceShell(command, report: report) },
+            report: report
+        ).update()
     }
 }

@@ -8,7 +8,11 @@ import { createHash } from 'node:crypto';
 assert.ok(process.argv[2], 'Pass the unpacked OpenClaw package directory.');
 const pkg = fs.realpathSync(process.argv[2]);
 const original = fs.readFileSync(path.join(pkg, 'package.json'));
-assert.equal(JSON.parse(original).version, '2026.8.1');
+const version = JSON.parse(original).version;
+assert.match(version, /^\d{4}\.\d+\.\d+$/);
+const parts = version.split('.').map(Number);
+assert.ok(parts[0] > 2026 || (parts[0] === 2026 && (parts[1] > 8 || (parts[1] === 8 && parts[2] >= 1))),
+  `Post-update fixture must be OpenClaw >= 2026.8.1, got ${version}`);
 const root = fs.mkdtempSync('/private/tmp/localclaw-post-update-');
 const state = path.join(root, '.openclaw');
 const label = 'io.localclaw.post-update-fixture';
@@ -49,7 +53,7 @@ try {
     assert.ok(output.phaseTimings.some(phase => phase.phase === 'doctor' && phase.outcome === 'completed'));
     assert.equal(fs.existsSync(path.join(root, 'Library/LaunchAgents/ai.openclaw.gateway.plist')), false);
     assert.deepEqual(fs.readFileSync(path.join(pkg, 'package.json')), original);
-    console.log(`PASS native OpenClaw 2026.8.1 update repair ${attempt}: finalization JSON, Doctor, plugins, no core replacement or service restart.`);
+    console.log(`PASS native OpenClaw ${version} update repair ${attempt}: finalization JSON, Doctor, plugins, no core replacement or service restart.`);
   }
   console.log('Network and host home access denied. Isolated state only; no providers or customer services used.');
 } finally {

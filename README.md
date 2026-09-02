@@ -39,9 +39,9 @@ swift test
 
 ## OpenClaw compatibility
 
-LocalClaw 1.0.202 targets OpenClaw 2026.8.1. It recognizes 2026.7.1 only as
-an existing-user migration source and never treats that older runtime as the
-successful end state of an automatic update.
+LocalClaw 1.0.203 targets OpenClaw 2026.8.2. It recognizes 2026.7.1 and
+2026.8.1 as existing-user migration sources and never treats an older runtime
+as the successful end state of an automatic update.
 Update LocalClaw first, then use Updates to upgrade OpenClaw. Before replacing
 the runtime, LocalClaw creates and verifies a state backup under
 `~/Library/Application Support/LocalClaw/runtime-backups/`. The normal portable
@@ -90,9 +90,11 @@ LocalClaw does not write authorization rows itself or relax permissions.
 Malformed/conflicting sources remain blocked and preserved. The compatibility
 adapter is restricted to 2026.8.1 and refuses an unknown module/export contract.
 An already-installed target release uses native `update repair`, not another core
-installation. Maintenance drains stdout and stderr separately and recognizes the
-final update or finalization envelope; JSON examples printed by Doctor cannot
-mask that result. A private checkpoint binds the verified backup to the installed
+installation. Maintenance drains stdout and stderr separately, streams redacted
+OpenClaw diagnostics into the live log, and emits elapsed-time pulses during
+long backups and update finalization. It still recognizes the final update or
+finalization envelope; JSON examples printed by Doctor cannot mask that result.
+A private checkpoint binds the verified backup to the installed
 runtime and state, so a later attempt can resume without duplicating the archive.
 Missing or changed backups cannot be reused. Native repair never restarts the
 Gateway, so LocalClaw explicitly installs/restarts the repaired service and checks
@@ -105,7 +107,7 @@ plugin's exact capability surface can be accepted or declined. It does not pass
 replaying chat. Other plugin warnings remain failures with their original details.
 
 ```bash
-node scripts/test-openclaw-post-update.mjs /path/to/openclaw-2026.8.1-package
+node scripts/test-openclaw-post-update.mjs /path/to/current-openclaw-package
 dist/LocalClaw.app/Contents/MacOS/LocalClaw --check-update-output /path/to/diagnostic.txt
 ```
 
@@ -190,8 +192,9 @@ node scripts/test-openclaw-update-owner.mjs /path/to/new/node_modules/openclaw
 node scripts/test-openclaw-update-owner.mjs /path/to/new/node_modules/openclaw --legacy-config
 ```
 
-The first check can start from 2026.7.1 only to prove migration to 2026.8.1.
-All successful end-state and turn checks target 2026.8.1,
+The legacy migration fixture starts from 2026.8.1 because the restricted
+execution-approvals adapter intentionally supports only that release. All
+successful current end-state and turn checks target OpenClaw 2026.8.2,
 use a deterministic localhost model and temporary HOME, and create a real file
 through OpenClaw's write tool. They do not use customer accounts or paid models.
 The migration check may resolve official plugins from the network. These checks

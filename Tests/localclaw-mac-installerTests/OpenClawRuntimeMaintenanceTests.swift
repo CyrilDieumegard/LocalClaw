@@ -11,6 +11,23 @@ extension RuntimeRecoveryTests {
 struct OpenClawRuntimeMaintenanceTests {
     private let mismatch = "OpenClaw state database /Users/bot/.openclaw/state/openclaw.sqlite uses newer schema version 15; this OpenClaw build supports 1."
 
+    private final class MessageLog: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [String] = []
+
+        func append(_ value: String) {
+            lock.lock()
+            values.append(value)
+            lock.unlock()
+        }
+
+        func snapshot() -> [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return values
+        }
+    }
+
     private struct LegacyCheckpointFixture: Codable {
         let package: String
         let node: String
@@ -365,6 +382,57 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(result.state == .ok, Comment(rawValue: result.message))
         #expect(fixture.commands.contains { $0.contains("backup create") && $0.contains("--verify") })
         #expect(!fixture.commands.contains { $0.contains("npm install") || $0.contains("bootout") })
+    }
+
+    @Test func longBackupAndUpdateKeepReportingElapsedProgress() throws {
+        let fixture = try Fixture(schemaMismatch: false)
+        defer { fixture.cleanUp() }
+        let messages = MessageLog()
+        let maintenance = OpenClawRuntimeMaintenance(
+            home: fixture.home,
+            run: { command in
+                if command.contains("backup create") || command.contains("--yes --json") {
+                    Thread.sleep(forTimeInterval: 0.04)
+                }
+                return fixture.execute(command)
+            },
+            report: messages.append,
+            wait: { _ in },
+            progressInterval: 0.01
+        )
+
+        let result = maintenance.update()
+
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(messages.snapshot().contains { $0.contains("Recovery backup is still running") })
+        #expect(messages.snapshot().contains { $0.contains("OpenClaw update and verification are still running") })
+    }
+
+    @Test func maintenanceShellStreamsRedactedDiagnosticsBeforeReturning() async throws {
+        let messages = MessageLog()
+        let engine = InstallerEngine()
+        let task = Task.detached {
+            engine.maintenanceShell(
+                """
+                printf 'phase one\\n' >&2
+                sleep 0.5
+                printf 'phase two token=secret-value\\n' >&2
+                printf '{\"status\":\"ok\"}\\n'
+                """,
+                report: messages.append
+            )
+        }
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(messages.snapshot().contains("phase one"))
+        #expect(!messages.snapshot().contains { $0.contains("phase two") })
+        let result = await task.value
+
+        #expect(result.0 == 0)
+        #expect(result.1.contains("phase one"))
+        #expect(result.1.contains(#"{"status":"ok"}"#))
+        #expect(messages.snapshot().contains { $0.contains("phase two") })
+        #expect(messages.snapshot().allSatisfy { !$0.contains(#"{"status":"ok"}"#) })
     }
 
     @Test func invalidConfigWithBestEffortValidStatusRequiresExplicitRepair() throws {

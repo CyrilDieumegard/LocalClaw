@@ -25,7 +25,12 @@ if [[ ! "${LOCALCLAW_BUILD_NUMBER:-}" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 if [[ -z "${OPENCLAW_PACKAGE_ROOT:-}" || ! -f "${OPENCLAW_PACKAGE_ROOT}/openclaw.mjs" ]]; then
-  echo "Release blocked: set OPENCLAW_PACKAGE_ROOT to the verified OpenClaw 2.0 package used for compatibility tests." >&2
+  echo "Release blocked: set OPENCLAW_PACKAGE_ROOT to the verified current OpenClaw package used for compatibility tests." >&2
+  exit 1
+fi
+
+if [[ -z "${OPENCLAW_LEGACY_PACKAGE_ROOT:-}" || ! -f "${OPENCLAW_LEGACY_PACKAGE_ROOT}/openclaw.mjs" ]]; then
+  echo "Release blocked: set OPENCLAW_LEGACY_PACKAGE_ROOT to the verified OpenClaw 2026.8.1 package used for the restricted legacy-approvals adapter test." >&2
   exit 1
 fi
 
@@ -35,13 +40,14 @@ echo "[1] release preflight"
 echo "  clean tree: yes"
 echo "  notarized build: yes"
 echo "  build number: ${LOCALCLAW_BUILD_NUMBER}"
-echo "  OpenClaw fixture: ${OPENCLAW_PACKAGE_ROOT}"
+echo "  current OpenClaw fixture: ${OPENCLAW_PACKAGE_ROOT}"
+echo "  legacy OpenClaw fixture: ${OPENCLAW_LEGACY_PACKAGE_ROOT}"
 
 echo "[2] OpenClaw 2.0 compatibility"
 node --check Sources/Resources/goal-controller.mjs
 node scripts/test-goal-controller-contract.mjs
 node scripts/test-openclaw-compat.mjs "$OPENCLAW_PACKAGE_ROOT"
-node scripts/test-openclaw-exec-migration.mjs "$OPENCLAW_PACKAGE_ROOT"
+node scripts/test-openclaw-exec-migration.mjs "$OPENCLAW_LEGACY_PACKAGE_ROOT"
 node scripts/test-openclaw-turn.mjs "$OPENCLAW_PACKAGE_ROOT" --gateway --legacy-config
 node scripts/test-openclaw-post-update.mjs "$OPENCLAW_PACKAGE_ROOT"
 node scripts/test-openclaw-update-owner.mjs "$OPENCLAW_PACKAGE_ROOT" --legacy-config

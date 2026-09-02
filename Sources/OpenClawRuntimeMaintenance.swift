@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 
 enum OpenClawRecoveryDiagnostic {
@@ -458,6 +459,34 @@ struct MaintenanceError: LocalizedError {
     var errorDescription: String? { message }
 }
 
+private final class MaintenanceProgressPulse: @unchecked Sendable {
+    private let lock = NSLock()
+    private let startedAt = Date()
+    private let status: String
+    private let report: (String) -> Void
+    private var active = true
+
+    init(status: String, report: @escaping (String) -> Void) {
+        self.status = status
+        self.report = report
+    }
+
+    func tick() {
+        lock.lock()
+        let shouldReport = active
+        lock.unlock()
+        guard shouldReport else { return }
+        let elapsed = max(1, Int(Date().timeIntervalSince(startedAt).rounded(.down)))
+        report("\(status) (\(elapsed)s elapsed)…")
+    }
+
+    func stop() {
+        lock.lock()
+        active = false
+        lock.unlock()
+    }
+}
+
 /// Keeps update ownership, backup and post-update verification in one transaction.
 final class OpenClawRuntimeMaintenance {
     typealias Runner = (String) -> (Int32, String)
@@ -474,6 +503,7 @@ final class OpenClawRuntimeMaintenance {
     private let wait: (TimeInterval) -> Void
     private let freeBytes: (URL) throws -> UInt64
     private let migrationHelper: () throws -> URL
+    private let progressInterval: TimeInterval
     private let fm = FileManager.default
     private var backupPath: String?
 
@@ -482,7 +512,8 @@ final class OpenClawRuntimeMaintenance {
          run: @escaping Runner,
          report: @escaping (String) -> Void = { _ in }, wait: @escaping (TimeInterval) -> Void = Thread.sleep(forTimeInterval:),
          freeBytes: @escaping (URL) throws -> UInt64 = OpenClawOfflineBackup.availableBytes,
-         migrationHelper: @escaping () throws -> URL = { try OpenClawRecoveryResources.migrationHelper() }) {
+         migrationHelper: @escaping () throws -> URL = { try OpenClawRecoveryResources.migrationHelper() },
+         progressInterval: TimeInterval = 15) {
         self.home = home
         self.environment = environment
         self.run = run
@@ -490,6 +521,7 @@ final class OpenClawRuntimeMaintenance {
         self.wait = wait
         self.freeBytes = freeBytes
         self.migrationHelper = migrationHelper
+        self.progressInterval = progressInterval
     }
 
     func installation() throws -> OpenClawRuntimeInstallation {
@@ -753,6 +785,20 @@ final class OpenClawRuntimeMaintenance {
         "perl -e 'alarm \(seconds); exec @ARGV' " + command
     }
 
+    private func runWithProgressPulse(_ command: String, status: String) -> (Int32, String) {
+        guard progressInterval > 0 else { return run(command) }
+        let pulse = MaintenanceProgressPulse(status: status, report: report)
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + progressInterval, repeating: progressInterval)
+        timer.setEventHandler { pulse.tick() }
+        timer.resume()
+        defer {
+            pulse.stop()
+            timer.cancel()
+        }
+        return run(command)
+    }
+
     private func gatewayFailureDetails(_ runtime: OpenClawRuntimeInstallation, status: String) -> String {
         let root = InstallerEngine.firstJSONObject(in: status)
         let lastError = root?["lastError"] as? String ?? ""
@@ -914,9 +960,12 @@ final class OpenClawRuntimeMaintenance {
             guard !fm.fileExists(atPath: archive.path) else { throw MaintenanceError("The recovery backup destination already exists.") }
             var verifiedArchive = false
             defer { if !verifiedArchive { try? fm.removeItem(at: archive) } }
-            report("Creating a recovery backup before changing OpenClaw...")
+            report("Creating a verified recovery backup before changing OpenClaw. Large histories can take several minutes; progress will remain visible here...")
             if !mismatch {
-                let backup = run(runtime.command("backup create --no-include-workspace --verify --output \(q(archive.path)) --json"))
+                let backup = runWithProgressPulse(
+                    runtime.command("backup create --no-include-workspace --verify --output \(q(archive.path)) --json"),
+                    status: "Recovery backup is still running"
+                )
                 mismatch = OpenClawSchemaMismatch.detect(in: backup.1) != nil || OpenClawRecoveryDiagnostic.hasInvalidConfiguration(backup.1)
                 if !mismatch && backup.0 != 0 { throw MaintenanceError("State backup failed. No runtime was replaced.\n\(backup.1)") }
                 if mismatch && fm.fileExists(atPath: archive.path) { try fm.removeItem(at: archive) }
@@ -1019,11 +1068,14 @@ final class OpenClawRuntimeMaintenance {
         report(repairOnly ? "Finishing Doctor and plugin repair without reinstalling OpenClaw..."
                : "Updating the Gateway, synchronizing plugins and checking startup...")
         let arguments = repairOnly ? "update repair --yes --json" : "update --tag \(q(target)) --yes --json"
-        let update = run(bounded(runtime.command(
-            arguments + " --timeout 600",
-            cli: updater,
-            externalServiceRepair: repairOnly
-        ), seconds: 1800))
+        let update = runWithProgressPulse(
+            bounded(runtime.command(
+                arguments + " --timeout 600",
+                cli: updater,
+                externalServiceRepair: repairOnly
+            ), seconds: 1800),
+            status: "OpenClaw update and verification are still running"
+        )
         // Keep a resumable checkpoint even if Doctor fails after the package swap.
         if runtime.version == target, let backupPath {
             try OpenClawUpdateCheckpoint.save(home: home, runtime: runtime, target: target, archive: URL(fileURLWithPath: backupPath))
@@ -1163,7 +1215,14 @@ final class OpenClawRuntimeMaintenance {
             case .failed(let diagnostic):
                 throw MaintenanceError("LocalClaw could not verify whether OpenClaw data files are in use. This does not confirm a database lock. Backup and update stopped.\n\(diagnostic)")
             }
-            try OpenClawOfflineBackup.create(state: URL(fileURLWithPath: state), archive: archive, run: run, report: report)
+            try OpenClawOfflineBackup.create(
+                state: URL(fileURLWithPath: state),
+                archive: archive,
+                run: { command in
+                    self.runWithProgressPulse(command, status: "Offline recovery backup is still running")
+                },
+                report: report
+            )
             return stoppedLoadedService
         } catch {
             guard stoppedLoadedService else { throw error }
