@@ -22,7 +22,7 @@ enum LocalClawSelfUpdater {
         let previousVersion: String
         let previousBuild: String
         let parentPID: Int32
-        let parentLaunchDate: Date
+        let parentLaunchDate: Date?
     }
 
     /// Returns only once the helper has checked everything and is waiting for
@@ -40,8 +40,7 @@ enum LocalClawSelfUpdater {
                       thanVersion: old.version, build: old.build) else {
             throw UpdateError("The downloaded LocalClaw build is not newer than the running app.")
         }
-        guard let parent = NSRunningApplication(processIdentifier: getpid()),
-              let launchDate = parent.launchDate else {
+        guard let parent = NSRunningApplication(processIdentifier: getpid()) else {
             throw UpdateError("Cannot establish the identity of the running LocalClaw process.")
         }
         let staging = destination.deletingLastPathComponent()
@@ -67,7 +66,7 @@ enum LocalClawSelfUpdater {
         let candidate = staging.appendingPathComponent("LocalClaw.app", isDirectory: true)
         let request = Request(destination: destination.path, version: expectedVersion, build: expectedBuild,
                               previousVersion: old.version, previousBuild: old.build,
-                              parentPID: getpid(), parentLaunchDate: launchDate)
+                              parentPID: getpid(), parentLaunchDate: parent.launchDate)
         let requestURL = staging.appendingPathComponent("request.json")
         try JSONEncoder().encode(request).write(to: requestURL, options: .atomic)
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: requestURL.path)
@@ -240,9 +239,22 @@ enum LocalClawSelfUpdater {
     }
 
     private static func parentMatches(_ parent: NSRunningApplication, request: Request) -> Bool {
-        parent.bundleIdentifier == bundleIdentifier &&
-        parent.bundleURL?.standardizedFileURL.path == request.destination &&
-        parent.launchDate == request.parentLaunchDate && !parent.isTerminated
+        parentIdentityMatches(request: request, actualParentPID: getppid(),
+                              bundleIdentifier: parent.bundleIdentifier,
+                              bundlePath: parent.bundleURL?.standardizedFileURL.path,
+                              launchDate: parent.launchDate, isTerminated: parent.isTerminated)
+    }
+
+    static func parentIdentityMatches(request: Request, actualParentPID: Int32,
+                                      bundleIdentifier: String?, bundlePath: String?,
+                                      launchDate: Date?, isTerminated: Bool) -> Bool {
+        // Apps launched directly with Process can have no Launch Services
+        // launchDate. The live parent relationship authenticates the process
+        // instance: after it exits, getppid becomes 1 rather than a reused PID.
+        // Keep the timestamp as an additional check whenever it is available.
+        request.parentPID > 1 && actualParentPID == request.parentPID &&
+        bundleIdentifier == Self.bundleIdentifier && bundlePath == request.destination &&
+        !isTerminated && (request.parentLaunchDate == nil || launchDate == request.parentLaunchDate)
     }
 
     private static func hasOtherRunningApp(at destination: URL, excluding: Set<Int32>) -> Bool {

@@ -3,6 +3,50 @@ import Testing
 @testable import localclaw_mac_installer
 
 struct LocalClawSelfUpdaterTests {
+    @Test func directlyLaunchedAppWithoutLaunchDateRemainsEligibleToUpdate() {
+        let request = parentRequest(launchDate: nil)
+        #expect(LocalClawSelfUpdater.parentIdentityMatches(request: request, actualParentPID: request.parentPID,
+                                                          bundleIdentifier: LocalClawSelfUpdater.bundleIdentifier,
+                                                          bundlePath: request.destination, launchDate: nil, isTerminated: false))
+    }
+
+    @Test func suppliedParentLaunchDateMustStillMatch() {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let request = parentRequest(launchDate: date)
+        #expect(LocalClawSelfUpdater.parentIdentityMatches(request: request, actualParentPID: request.parentPID,
+                                                          bundleIdentifier: LocalClawSelfUpdater.bundleIdentifier,
+                                                          bundlePath: request.destination, launchDate: date, isTerminated: false))
+        for observedDate in [nil, date.addingTimeInterval(1)] {
+            #expect(!LocalClawSelfUpdater.parentIdentityMatches(request: request, actualParentPID: request.parentPID,
+                                                               bundleIdentifier: LocalClawSelfUpdater.bundleIdentifier,
+                                                               bundlePath: request.destination, launchDate: observedDate, isTerminated: false))
+        }
+    }
+
+    @Test(arguments: ["pid", "orphan", "bundle", "path", "terminated"])
+    func absentLaunchDateDoesNotBypassParentIdentity(_ mismatch: String) {
+        let request = parentRequest(launchDate: nil)
+        let actualPID: Int32 = mismatch == "pid" ? 88 : mismatch == "orphan" ? 1 : request.parentPID
+        #expect(!LocalClawSelfUpdater.parentIdentityMatches(request: request, actualParentPID: actualPID,
+                                                           bundleIdentifier: mismatch == "bundle" ? "other.app" : LocalClawSelfUpdater.bundleIdentifier,
+                                                           bundlePath: mismatch == "path" ? "/tmp/LocalClaw.app" : request.destination,
+                                                           launchDate: nil, isTerminated: mismatch == "terminated"))
+    }
+
+    @Test func updateRequestPreservesOptionalLaunchDateAcrossHelperHandoff() throws {
+        for date in [nil, Date(timeIntervalSince1970: 1_800_000_000)] {
+            let request = parentRequest(launchDate: date)
+            let decoded = try JSONDecoder().decode(LocalClawSelfUpdater.Request.self, from: JSONEncoder().encode(request))
+            #expect(decoded.parentLaunchDate == date)
+            #expect(decoded.parentPID == request.parentPID)
+        }
+    }
+
+    private func parentRequest(launchDate: Date?) -> LocalClawSelfUpdater.Request {
+        LocalClawSelfUpdater.Request(destination: "/Applications/LocalClaw.app", version: "0.1.98", build: "364",
+                                     previousVersion: "0.1.98", previousBuild: "363", parentPID: 42, parentLaunchDate: launchDate)
+    }
+
     @Test func updateOrderingRejectsDowngradesAndIdenticalReleases() {
         #expect(LocalClawSelfUpdater.isNewer(version: "0.8.10", build: "1", thanVersion: "0.8.9", build: "99"))
         #expect(LocalClawSelfUpdater.isNewer(version: "0.8.9", build: "101", thanVersion: "0.8.9", build: "99"))
