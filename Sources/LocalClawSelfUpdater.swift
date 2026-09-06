@@ -260,7 +260,9 @@ enum LocalClawSelfUpdater {
         child.standardOutput = FileHandle.nullDevice
         child.standardError = FileHandle.nullDevice
         try child.run()
-        let deadline = Date().addingTimeInterval(25)
+        // First launch includes hardware/runtime discovery and can take longer
+        // on an existing installation; do not roll back a healthy slow startup.
+        let deadline = Date().addingTimeInterval(90)
         while Date() < deadline, child.isRunning {
             if let app = NSRunningApplication(processIdentifier: child.processIdentifier),
                app.bundleIdentifier == bundleIdentifier,

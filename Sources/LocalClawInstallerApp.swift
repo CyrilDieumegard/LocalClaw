@@ -2200,7 +2200,11 @@ final class InstallerViewModel: ObservableObject {
         }
 
         if isActivated {
-            screen = hasCompletedOnboarding() ? .home : .onboarding
+            if CommandLine.arguments.contains("--self-update-completed") || LocalClawSelfUpdater.launchFailureMessage() != nil {
+                screen = .updates
+            } else {
+                screen = hasCompletedOnboarding() ? .home : .onboarding
+            }
         } else {
             screen = .license
         }
