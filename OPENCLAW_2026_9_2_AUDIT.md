@@ -43,7 +43,7 @@ Les preuves détaillées sont conservées dans
 
 | Vérification | Preuve |
 | --- | --- |
-| Suite Swift complète | `swift-verified.log` : **327 tests dans 16 suites, tous réussis** |
+| Suite Swift complète | `release-1.0.207-364.log` : **347 tests dans 17 suites, tous réussis** |
 | CLI, configuration, modèles, plugins, Goals et workspace | `compat-goal.log` : succès avec 2026.9.2 |
 | Reçus Goal SQLite après redémarrage et rejet des révisions périmées | `compat-goal.log` : succès |
 | Réparation native Doctor/plugins, répétée deux fois | `post-update.log` : succès, réseau et lecture du home hôte interdits |
@@ -53,7 +53,7 @@ Les preuves détaillées sont conservées dans
 | Ancienne migration des permissions 2026.8.1 | `legacy-approvals.log` : 8 scénarios réussis |
 | Contrat du helper Goal | `goal-contract.log` : succès |
 | Compilation optimisée, app et DMG de développement | `build-verified.log` : succès |
-| App extraite du DMG final | `dmg-verified.log` : signature ad-hoc valide, 6 scénarios de ressources, 4 scénarios de diagnostic et égalité des 3 scripts livrés |
+| App extraite du DMG de développement de la première passe | `dmg-verified.log` : signature ad-hoc valide, 6 scénarios de ressources, 4 scénarios de diagnostic et égalité des 3 scripts livrés |
 
 Les tours utilisent un modèle déterministe sur localhost : deux réponses simulées
 par tour. Ils prouvent le transport, le streaming et l'exécution d'outils ; ils ne
@@ -106,3 +106,26 @@ Le précédent DMG signé 1.0.206 est préservé dans
 `/private/tmp/localclaw-audit-2026.9.2/previous-dist/`.
 Les validations d'achat, d'activation client et d'installation sur un Mac vierge
 restent distinctes de ces tests.
+
+## Preuve de mise à jour réelle
+
+Le bouton **App update > Update** a été utilisé sur le Mac Studio de travail.
+Une copie de transition signée, contenant le code final avec un numéro de build
+361 de test, a téléchargé le vrai DMG notarisé 364 depuis la branche candidate.
+Le processus 75800 a été remplacé par le processus 76157 sans intervention de
+Finder. L'app relancée affiche `LocalClaw 1.0.207 (364) was installed and relaunched
+successfully.` Le dossier du helper a été nettoyé automatiquement.
+
+Les 9 fichiers de `/Applications/LocalClaw.app` sont identiques à ceux de l'app
+signée distribuée ; codesign et Gatekeeper acceptent l'installation. Le checksum
+`~/.openclaw/openclaw.json` est inchangé. L'installation OpenClaw active reste en
+2026.9.1 ; les tests de compatibilité 2026.9.2 ont utilisé un état isolé.
+
+Preuves : `self-update-live-proof.json`, `self-update-signature-positive-negative.log`,
+`self-update-parent-identity.log`, `release-1.0.207-364.log`, dans le dossier d'audit.
+SHA-256 du DMG final :
+`d5bc2d2525fb03817eaddc24e8fbff2e44c34f4eecb6fe52e3e5ea282f0c80e1`.
+
+Le site public distribue désormais cette version :
+[téléchargement](https://localclaw.io/downloads/localclaw-1.0.207-364.dmg) et
+[notes de version](https://localclaw.io/changelog/localclaw-installer-v1.0.207).
