@@ -60,8 +60,10 @@ struct LocalClawSelfUpdaterTests {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         try LocalClawUpdateTransaction.replace(candidate: fixture.candidate, destination: fixture.destination) { installed in
-            #expect(try fixture.content(of: installed) == "new")
-            #expect(try fixture.content(of: fixture.candidate) == "old")
+            let installedContents = try fixture.content(of: installed)
+            let previousContents = try fixture.content(of: fixture.candidate)
+            #expect(installedContents == "new")
+            #expect(previousContents == "old")
         }
         #expect(try fixture.content(of: fixture.destination) == "new")
         #expect(try fixture.content(of: fixture.candidate) == "old")
