@@ -321,7 +321,9 @@ enum LocalClawSelfUpdater {
     static func verifySignature(at app: URL, gatekeeper: Bool) throws {
         // The requirement is evaluated by codesign, not inferred from printed
         // TeamIdentifier metadata. Ad-hoc and third-party signatures fail.
-        let requirement = "anchor apple generic and identifier \"\(bundleIdentifier)\" and certificate leaf[subject.OU] = \"\(teamIdentifier)\""
+        // codesign treats -R as a file path unless inline requirements start
+        // with '='. Exercise this production path on the final signed app.
+        let requirement = "=anchor apple generic and identifier \"\(bundleIdentifier)\" and certificate leaf[subject.OU] = \"\(teamIdentifier)\""
         try run("/usr/bin/codesign", ["--verify", "--deep", "--strict", "-R", requirement, app.path])
         if gatekeeper { try run("/usr/sbin/spctl", ["--assess", "--type", "execute", app.path]) }
     }

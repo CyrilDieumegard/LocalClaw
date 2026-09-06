@@ -7,6 +7,19 @@ enum LocalClawMain {
         if CommandLine.arguments.dropFirst().contains(LocalClawSelfUpdater.helperArgument) {
             exit(LocalClawSelfUpdater.runHelper(arguments: CommandLine.arguments))
         }
+        if CommandLine.arguments.dropFirst().contains("--check-self-update-signature") {
+            do {
+                guard CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--check-self-update-signature" else {
+                    throw LocalClawSelfUpdater.UpdateError("Usage: --check-self-update-signature <LocalClaw.app>")
+                }
+                try LocalClawSelfUpdater.verifySignature(at: URL(fileURLWithPath: CommandLine.arguments[2]), gatekeeper: true)
+                print("PASS production self-update signature and Gatekeeper verification")
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8))
+                exit(1)
+            }
+        }
         if CommandLine.arguments.dropFirst().contains("--check-update-output") {
             var result: [String: Any] = ["ok": false, "gatewayVerified": false]
             do {

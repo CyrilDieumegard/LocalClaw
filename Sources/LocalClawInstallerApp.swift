@@ -4288,12 +4288,15 @@ final class InstallerViewModel: ObservableObject {
             await MainActor.run {
                 self.isRunning = false
                 self.chatGatewayPrepared = false
-                if let appRelease {
+                // The initial manifest request may have completed while runtime
+                // updates were running. Include that app release in this click.
+                if let appRelease = appRelease ?? (self.installerUpdateStatus == "Update available" ? self.pendingInstallerRelease : nil) {
                     self.append("Dependencies and OpenClaw finished. Installing the LocalClaw app update...")
                     self.startInstallerUpdate(release: appRelease)
                 } else {
+                    let appCheckWasCurrent = self.installerUpdateStatus == "Up to date"
                     self.refreshVersions()
-                    self.append("Update finished")
+                    self.append(appCheckWasCurrent ? "Update finished" : "Dependencies and OpenClaw finished. The app release check is not complete; use CHECK to retry.")
                 }
             }
         }

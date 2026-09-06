@@ -139,6 +139,9 @@ if [[ "$APP_VERSION" != "$EXPECTED_VERSION" || "$APP_BUILD" != "$LOCALCLAW_BUILD
 fi
 
 echo "[8] artifact sizes"
+# Positive authentication is essential: negative signature tests alone also
+# pass when the verifier accidentally rejects every legitimate release.
+"$PACKAGED_APP/Contents/MacOS/LocalClaw" --check-self-update-signature "$PACKAGED_APP"
 du -h "$APP_PATH" "$DMG_PATH"
 
 echo "Release check complete"

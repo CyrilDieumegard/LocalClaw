@@ -80,10 +80,12 @@ RELEASE_NOTARIZE=0 bash scripts/build-dmg.sh
 
 ## Mise à jour intégrée et livraison 1.0.207
 
-Version de livraison : **1.0.207, build 362**. La publication utilise
+Version de livraison : **1.0.207, build 363**. La publication utilise
 `scripts/release-check.sh` puis `scripts/publish-notarized-dmg.sh` : compilation,
 contrats natifs, tests Swift, signature Developer ID, notarisation Apple,
 vérification du DMG extrait et calcul SHA-256 après agrafage du ticket Apple.
+Le paquet final exécute aussi le vérificateur de signature de l'updater sur une
+app réellement signée et notarisée : un refus systématique échoue à ce contrôle.
 
 Le bouton App update installe la nouvelle app et la relance sans glisser le DMG.
 Le helper vérifie l'identité du processus parent, le dossier Applications et la
