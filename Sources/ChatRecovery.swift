@@ -117,6 +117,18 @@ struct ChatRecoveryPlan: Equatable, Sendable {
             )
         }
 
+        if clean.contains("gateway token mismatch") || clean.contains("gateway_token_mismatch") ||
+            clean.contains("auth_token_mismatch") || clean.contains("device token mismatch") ||
+            clean.contains("gateway authentication failed") || clean.contains("gateway password mismatch") {
+            return ChatRecoveryPlan(
+                kind: .gateway,
+                title: "Gateway authentication needs attention",
+                explanation: "LocalClaw can check the selected Gateway configuration and restore its connection. Your model account does not need to be replaced and your message will not be resent automatically.",
+                primaryActionLabel: "Repair Gateway",
+                systemImage: "wrench.and.screwdriver.fill"
+            )
+        }
+
         if clean.contains("unauthorized") ||
             clean.contains("invalid api key") ||
             clean.contains("authentication failed") ||
@@ -133,11 +145,19 @@ struct ChatRecoveryPlan: Equatable, Sendable {
             )
         }
 
-        if clean.contains("lm studio") ||
-            clean.contains("lmstudio") ||
-            clean.contains("model not found") ||
-            clean.contains("model is not loaded") ||
-            clean.contains("context window too small") {
+        if clean.contains("model not found") || clean.contains("unknown model") ||
+            clean.contains("model is not allowed") || clean.contains("model not allowed") {
+            return ChatRecoveryPlan(
+                kind: .localModel,
+                title: "The selected model is unavailable",
+                explanation: "Open Models to choose an available model or check access to the selected model. Your message remains available in this chat.",
+                primaryActionLabel: "Open Models",
+                systemImage: "exclamationmark.circle.fill"
+            )
+        }
+
+        if clean.contains("lm studio") || clean.contains("lmstudio") ||
+            clean.contains("model is not loaded") || clean.contains("context window too small") {
             return ChatRecoveryPlan(
                 kind: .localModel,
                 title: "The local model needs attention",

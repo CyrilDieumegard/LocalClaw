@@ -37,6 +37,36 @@ struct OpenClawCompatibilityTests {
         #expect(RuntimeSnapshotResolver.route(for: "openai/gpt-5.5") == .cloud)
     }
 
+    @Test func chatPreservesExplicitSystemOwnerInsteadOfRoutingToMain() {
+        let roster: [String: Any] = ["main": [:], "writer": [:]]
+        for owner in ["writer", " writer "] {
+            #expect(OpenClawCompatibility.chatAgentID(in: ["agents": [
+                "ownership": "explicit", "entries": roster,
+                "defaults": ["systemAgent": ["agentId": owner]],
+            ]]) == "writer")
+        }
+        for owner in ["missing", "", "bad;command"] {
+            #expect(OpenClawCompatibility.chatAgentID(in: ["agents": [
+                "entries": roster, "defaults": ["systemAgent": ["agentId": owner]],
+            ]]) == nil)
+        }
+    }
+
+    @Test func legacyDefaultOwnerSurvivesBothRosterShapes() {
+        #expect(OpenClawCompatibility.chatAgentID(in: ["agents": ["list": [
+            ["id": "main"], ["id": "writer", "default": true],
+        ]]]) == "writer")
+        #expect(OpenClawCompatibility.chatAgentID(in: ["agents": ["entries": [
+            "main": [:], "writer": ["default": true],
+        ]]]) == "writer")
+        #expect(OpenClawCompatibility.chatAgentID(in: ["agents": ["list": [
+            ["id": "main", "default": true], ["id": "writer", "default": true],
+        ]]]) == nil)
+        #expect(OpenClawCompatibility.chatAgentID(in: ["agents": [
+            "ownership": "explicit", "entries": ["main": [:], "writer": ["default": true]],
+        ]]) == "main")
+    }
+
     @Test func statusSummaryLabelsAreNotProviderIdentifiers() {
         let status: [String: Any] = ["auth": [
             "providersWithOAuth": ["openai (1)", "legacy", "not a provider"],

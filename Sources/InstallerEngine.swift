@@ -139,7 +139,7 @@ final class InstallerEngine: @unchecked Sendable {
     static let minimumNodeVersion = "22.22.3"
     static let nodeRequirementDescription = "Node 22.22.3+, 24.15+, 25.9+, or 26+"
     private let providerAuthCacheLock = NSLock()
-    private var providerAuthCache: (checkedAt: Date, configuredProviders: Set<String>, oauthProviders: Set<String>)?
+    private var providerAuthCache: (scope: String, checkedAt: Date, configuredProviders: Set<String>, oauthProviders: Set<String>)?
 
     func readOpenClawConfig() -> [String: Any]? {
         guard let path = try? OpenClawRuntimeInstallation.selectedConfig().path else { return nil }
@@ -156,10 +156,76 @@ final class InstallerEngine: @unchecked Sendable {
     }
 
     func hasOAuthAuth(provider: String) -> Bool {
-        _ = providersConfiguredByOpenClawStatus()
-        providerAuthCacheLock.lock()
-        defer { providerAuthCacheLock.unlock() }
-        return providerAuthCache?.oauthProviders.contains(provider.lowercased()) == true
+        let status = providersConfiguredByOpenClawStatus()
+        return status.configuredProviders.contains(provider.lowercased()) &&
+            status.oauthProviders.contains(provider.lowercased())
+    }
+
+    static func configuredChatModel(in config: [String: Any]) -> String? {
+        guard let agentID = OpenClawCompatibility.chatAgentID(in: config) else { return nil }
+        let agents = config["agents"] as? [String: Any] ?? [:]
+        let agent = chatAgentConfiguration(in: config, agentID: agentID)
+        return primaryModel(in: agent["model"]) ??
+            primaryModel(in: (agents["defaults"] as? [String: Any])?["model"])
+    }
+
+    private static func primaryModel(in value: Any?) -> String? {
+        let value = (value as? String) ?? ((value as? [String: Any])?["primary"] as? String)
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        return value
+    }
+
+    private static func chatAgentConfiguration(in config: [String: Any], agentID: String) -> [String: Any] {
+        let agents = config["agents"] as? [String: Any] ?? [:]
+        if let entries = agents["entries"] as? [String: Any] {
+            return entries[agentID] as? [String: Any] ?? [:]
+        }
+        return (agents["list"] as? [[String: Any]])?.first { $0["id"] as? String == agentID } ?? [:]
+    }
+
+    static func chatAgentDirectory(in config: [String: Any], state: URL, home: URL) -> URL? {
+        guard let agentID = OpenClawCompatibility.chatAgentID(in: config) else { return nil }
+        let agent = chatAgentConfiguration(in: config, agentID: agentID)
+        if let configured = (agent["agentDir"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !configured.isEmpty {
+            if configured == "~" { return home }
+            if configured.hasPrefix("~/") { return home.appendingPathComponent(String(configured.dropFirst(2))) }
+            // Relative directories are resolved by the Gateway's working directory, which
+            // can differ from the app's. Let OpenClaw's scoped status probe resolve those.
+            guard configured.hasPrefix("/") else { return nil }
+            return URL(fileURLWithPath: configured, isDirectory: true)
+        }
+        return state.appendingPathComponent("agents/\(agentID)/agent", isDirectory: true)
+    }
+
+    static func configBySelectingChatModel(_ modelIdentifier: String, in config: [String: Any]) -> [String: Any]? {
+        guard let agentID = OpenClawCompatibility.chatAgentID(in: config) else { return nil }
+        var config = config
+        var agents = config["agents"] as? [String: Any] ?? [:]
+        var agent = chatAgentConfiguration(in: config, agentID: agentID)
+        if primaryModel(in: agent["model"]) != nil {
+            // An explicit agent model takes precedence over the shared default. Change
+            // that primary, preserving fallbacks and the other agents' selections.
+            var model = agent["model"] as? [String: Any] ?? [:]
+            model["primary"] = modelIdentifier
+            agent["model"] = model
+            if var entries = agents["entries"] as? [String: Any] {
+                entries[agentID] = agent
+                agents["entries"] = entries
+            } else if var list = agents["list"] as? [[String: Any]],
+                      let index = list.firstIndex(where: { $0["id"] as? String == agentID }) {
+                list[index] = agent
+                agents["list"] = list
+            }
+        } else {
+            var defaults = agents["defaults"] as? [String: Any] ?? [:]
+            var model = defaults["model"] as? [String: Any] ?? [:]
+            model["primary"] = modelIdentifier
+            defaults["model"] = model
+            agents["defaults"] = defaults
+        }
+        config["agents"] = agents
+        return config
     }
 
     static func firstJSONData(in output: String) -> Data? {
@@ -900,12 +966,13 @@ final class InstallerEngine: @unchecked Sendable {
             return StepResult(state: .fail, message: "The existing OpenClaw configuration is missing or invalid JSON. It was left unchanged; repair the Gateway before changing models.")
         }
 
+        guard let selectedConfig = Self.configBySelectingChatModel(modelIdentifier, in: config) else {
+            return StepResult(state: .fail, message: "Select an OpenClaw agent before changing its model. No settings were changed.")
+        }
+        config = selectedConfig
         // Register model settings without changing explicit modelPolicy.allow restrictions.
         var agents = config["agents"] as? [String: Any] ?? [:]
         var defaults = agents["defaults"] as? [String: Any] ?? [:]
-        var model = defaults["model"] as? [String: Any] ?? [:]
-        model["primary"] = modelIdentifier
-        defaults["model"] = model
         defaults = ensureAgentModelAllowlist(defaults: defaults, modelIdentifier: modelIdentifier)
         agents["defaults"] = defaults
         config["agents"] = agents
@@ -1015,7 +1082,11 @@ final class InstallerEngine: @unchecked Sendable {
     func writeApiKeyToConfig(provider: String, apiKey: String) -> StepResult {
         if apiKey.isEmpty { return StepResult(state: .skip, message: "No API key provided") }
 
-        if OpenClawCompatibility.usesUnifiedOpenAIRoutes(version: installedVersion(for: "openclaw")) {
+        let installedVersion = installedVersion(for: "openclaw")
+        guard installedVersion != "Not installed" else {
+            return StepResult(state: .fail, message: "The OpenClaw runtime version could not be verified. Repair the runtime before connecting this provider; no credential was written.")
+        }
+        if OpenClawCompatibility.usesUnifiedOpenAIRoutes(version: installedVersion) {
             guard let agentID = resolvedChatAgentID() else {
                 return StepResult(state: .fail, message: "Select an OpenClaw agent before connecting this provider.")
             }
@@ -1042,13 +1113,30 @@ final class InstallerEngine: @unchecked Sendable {
             return StepResult(state: .fail, message: "Could not select an OpenClaw profile safely. No credential was written. \(error.localizedDescription)")
         }
         let configPath = configURL.path
-        let authStorePath = state.appendingPathComponent("agents/main/agent/auth-profiles.json").path
-
         // 1) Write the selected profile's openclaw.json (legacy schema path)
         var config: [String: Any] = [:]
-        if let data = fm.contents(atPath: configPath),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        if let data = fm.contents(atPath: configPath) {
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return StepResult(state: .fail, message: "The existing OpenClaw configuration is invalid JSON. No credential was written and the configuration was preserved.")
+            }
             config = json
+        } else if fm.fileExists(atPath: configPath) {
+            return StepResult(state: .fail, message: "The existing OpenClaw configuration could not be read. No credential was written and the configuration was preserved.")
+        }
+        guard let agentDirectory = Self.chatAgentDirectory(
+            in: config, state: state, home: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+        ) else {
+            return StepResult(state: .fail, message: "The OpenClaw agent credential directory could not be resolved safely. No credential was written.")
+        }
+        let authStorePath = agentDirectory.appendingPathComponent("auth-profiles.json").path
+        var existingAuthStore: [String: Any] = [:]
+        if let data = fm.contents(atPath: authStorePath) {
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return StepResult(state: .fail, message: "The existing OpenClaw credential store is invalid JSON. No credential was written and existing data was preserved.")
+            }
+            existingAuthStore = json
+        } else if fm.fileExists(atPath: authStorePath) {
+            return StepResult(state: .fail, message: "The existing OpenClaw credential store could not be read. No credential was written and existing data was preserved.")
         }
 
         var auth = config["auth"] as? [String: Any] ?? [:]
@@ -1077,11 +1165,7 @@ final class InstallerEngine: @unchecked Sendable {
             let authStoreDir = (authStorePath as NSString).deletingLastPathComponent
             try fm.createDirectory(atPath: authStoreDir, withIntermediateDirectories: true)
 
-            var authStore: [String: Any] = [:]
-            if let data = fm.contents(atPath: authStorePath),
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                authStore = json
-            }
+            var authStore = existingAuthStore
 
             var storedProfiles = authStore["profiles"] as? [String: Any] ?? [:]
             storedProfiles[profileKey] = profile
@@ -1493,7 +1577,11 @@ final class InstallerEngine: @unchecked Sendable {
         guard let originalConfig = FileManager.default.contents(atPath: configURL.path) else {
             return StepResult(state: .fail, message: "The selected OpenClaw configuration is missing. Repair the Gateway before changing models.")
         }
-        let workspacePath = selectedState.appendingPathComponent("agents/main", isDirectory: true).path
+        guard let config = try? JSONSerialization.jsonObject(with: originalConfig) as? [String: Any],
+              let agentID = OpenClawCompatibility.chatAgentID(in: config) else {
+            return StepResult(state: .fail, message: "The selected OpenClaw configuration or agent could not be resolved. No model setting was changed.")
+        }
+        let workspacePath = selectedState.appendingPathComponent("agents/\(agentID)", isDirectory: true).path
         let modelFilePath = workspacePath + "/.model"
         let originalModel = FileManager.default.contents(atPath: modelFilePath)
 
@@ -1614,17 +1702,21 @@ final class InstallerEngine: @unchecked Sendable {
               let statePath = try? OpenClawRuntimeInstallation.selectedState().path else {
             return "Profile selection required"
         }
-        if let data = FileManager.default.contents(atPath: configPath),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let agents = json["agents"] as? [String: Any],
-           let defaults = agents["defaults"] as? [String: Any],
-           let model = defaults["model"] as? [String: Any],
-           let primary = model["primary"] as? String,
-           !primary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return primary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let agentID: String
+        if let data = FileManager.default.contents(atPath: configPath) {
+            guard let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return "Not configured"
+            }
+            guard let selectedAgentID = OpenClawCompatibility.chatAgentID(in: config) else {
+                return "Agent selection required"
+            }
+            agentID = selectedAgentID
+            if let model = Self.configuredChatModel(in: config) { return model }
+        } else {
+            agentID = "main"
         }
 
-        if let data = FileManager.default.contents(atPath: statePath + "/agents/main/.model"),
+        if let data = FileManager.default.contents(atPath: statePath + "/agents/\(agentID)/.model"),
            let model = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
            !model.isEmpty {
             return model
@@ -1636,13 +1728,16 @@ final class InstallerEngine: @unchecked Sendable {
     func hasProviderAuth(provider: String) -> Bool {
         let fm = FileManager.default
         guard let statePath = try? OpenClawRuntimeInstallation.selectedState().path,
-              let configPath = try? OpenClawRuntimeInstallation.selectedConfig().path else {
+              let configPath = try? OpenClawRuntimeInstallation.selectedConfig().path,
+              let config = readOpenClawConfig(),
+              OpenClawCompatibility.chatAgentID(in: config) != nil else {
             return false
         }
-        let authPaths = [
-            statePath + "/agents/main/agent/auth-profiles.json",
-            configPath
-        ]
+        let agentDirectory = Self.chatAgentDirectory(
+            in: config, state: URL(fileURLWithPath: statePath, isDirectory: true),
+            home: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+        )
+        let authPaths = [agentDirectory?.appendingPathComponent("auth-profiles.json").path, configPath].compactMap { $0 }
 
         for path in authPaths where fm.fileExists(atPath: path) {
             guard let data = fm.contents(atPath: path),
@@ -1676,28 +1771,34 @@ final class InstallerEngine: @unchecked Sendable {
             }
         }
 
-        return providersConfiguredByOpenClawStatus().contains(provider.lowercased())
+        return providersConfiguredByOpenClawStatus().configuredProviders.contains(provider.lowercased())
     }
 
-    private func providersConfiguredByOpenClawStatus() -> Set<String> {
+    private func providersConfiguredByOpenClawStatus() -> (configuredProviders: Set<String>, oauthProviders: Set<String>) {
+        guard let state = try? OpenClawRuntimeInstallation.selectedState().path,
+              let config = try? OpenClawRuntimeInstallation.selectedConfig().path,
+              let agentID = resolvedChatAgentID() else { return ([], []) }
+        let scope = [state, config, agentID].joined(separator: "\n")
         providerAuthCacheLock.lock()
         if let cached = providerAuthCache,
+           cached.scope == scope,
            Date().timeIntervalSince(cached.checkedAt) < 30 {
             providerAuthCacheLock.unlock()
-            return cached.configuredProviders
+            return (cached.configuredProviders, cached.oauthProviders)
         }
         providerAuthCacheLock.unlock()
 
-        let agentArgument = resolvedChatAgentID().map { " --agent '\($0)'" } ?? ""
+        let agentArgument = " --agent \(shellQuote(agentID))"
         let result = shell("perl -e 'alarm 30; exec @ARGV' openclaw models status\(agentArgument) --json 2>/dev/null")
         guard result.0 == 0,
-              let status = Self.firstJSONObject(in: result.1) else { return [] }
+              let status = Self.firstJSONObject(in: result.1) else { return ([], []) }
         let configuredProviders = Self.configuredProviders(inModelStatus: status)
+        let oauthProviders = OpenClawCompatibility.oauthProviders(inModelStatus: status)
 
         providerAuthCacheLock.lock()
-        providerAuthCache = (Date(), configuredProviders, OpenClawCompatibility.oauthProviders(inModelStatus: status))
+        providerAuthCache = (scope, Date(), configuredProviders, oauthProviders)
         providerAuthCacheLock.unlock()
-        return configuredProviders
+        return (configuredProviders, oauthProviders)
     }
 
     static func providerEnvironmentKey(for provider: String) -> String? {
@@ -2608,8 +2709,24 @@ final class InstallerEngine: @unchecked Sendable {
 
     func installedVersion(for command: String) -> String {
         let (code, out) = shell("\(command) --version")
+        if command == "openclaw" {
+            return Self.reportedOpenClawVersion(exitCode: code, output: out) ?? "Not installed"
+        }
         if code != 0 || out.isEmpty { return "Not installed" }
         return out.components(separatedBy: "\n").first ?? out
+    }
+
+    static func reportedOpenClawVersion(exitCode: Int32, output: String) -> String? {
+        guard exitCode == 0 else { return nil }
+        let clean = output.replacingOccurrences(of: "\u{001B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
+        for line in clean.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.range(of: #"^(?:OpenClaw\s+)?v?\d{4}\.\d{1,2}\.\d{1,2}(?:[-+][A-Za-z0-9.-]+)?(?:\s+\([A-Za-z0-9.-]+\))?$"#,
+                             options: [.regularExpression, .caseInsensitive]) != nil {
+                return trimmed
+            }
+        }
+        return nil
     }
 
     func machineIdentifier() -> String {
@@ -2662,6 +2779,9 @@ final class InstallerEngine: @unchecked Sendable {
     }
 
     func updateHomebrew() -> StepResult {
+        guard hasCommand("brew") else {
+            return StepResult(state: .skip, message: "Homebrew is not installed; existing runtimes can still be updated")
+        }
         let (code, out) = shell("brew update")
         return code == 0 ? StepResult(state: .ok, message: "Homebrew updated") : StepResult(state: .fail, message: out)
     }
@@ -2688,13 +2808,12 @@ final class InstallerEngine: @unchecked Sendable {
         if !hasCommand("node") {
             return installNodeIfNeeded()
         }
-        let before = installedVersion(for: "node")
         let (code, out) = shell("brew upgrade node")
         let current = installedVersion(for: "node")
         if code == 0 && Self.isNodeVersionSupported(current) {
             return StepResult(state: .ok, message: "Node upgraded or already up to date: \(current)")
         }
-        if Self.isNodeVersionSupported(current) || Self.isNodeVersionSupported(before) {
+        if Self.isNodeVersionSupported(current) {
             return StepResult(state: .skip, message: "Node \(current) is compatible but not managed by Homebrew")
         }
         if code == 0 || !Self.isNodeVersionSupported(current) {

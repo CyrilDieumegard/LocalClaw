@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 
 const updater = resolve(process.argv[2]);
-const target = JSON.parse(readFileSync(join(updater, "package.json"), "utf8")).version;
+const packageMetadata = JSON.parse(readFileSync(join(updater, "package.json"), "utf8"));
+const target = packageMetadata.version;
+const stateSchema = packageMetadata.openclaw?.schemaVersions?.state ?? 15;
+assert.ok(Number.isSafeInteger(stateSchema) && stateSchema > 0);
 const legacyConfig = process.argv.includes("--legacy-config");
 const home = mkdtempSync("/private/tmp/localclaw-update-owner-");
 const prefix = join(home, ".local");
@@ -30,8 +33,25 @@ try {
   }
   const configText = JSON.stringify(config);
   writeFileSync(join(state, "openclaw.json"), configText);
+  // A version pragma alone is a malformed database, not a schema fixture.
+  // Use this exact package's canonical DDL without importing any runtime or
+  // touching the host state. Refuse a changed private contract explicitly.
+  const schemas = readdirSync(join(updater, "dist"))
+    .filter(name => /^openclaw-state-db(?:-cache)?-.*\.js$/.test(name))
+    .flatMap(name => {
+      const source = readFileSync(join(updater, "dist", name), "utf8");
+      return [...source.matchAll(/const OPENCLAW_STATE_SCHEMA_SQL = ("(?:\\.|[^"\\])*");/g)]
+        .map(match => JSON.parse(match[1]));
+    });
+  assert.equal(schemas.length, 1, "Expected one canonical OpenClaw state schema in the package");
   const db = new DatabaseSync(join(state, "state/openclaw.sqlite"));
-  db.exec("PRAGMA user_version=15");
+  db.exec(schemas[0]);
+  db.exec(`PRAGMA user_version=${stateSchema}`);
+  db.prepare(`INSERT INTO schema_meta
+    (meta_key, role, schema_version, agent_id, app_version, created_at, updated_at)
+    VALUES ('primary', 'global', ?, NULL, NULL, ?, ?)`)
+    .run(stateSchema, Date.now(), Date.now());
+  assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE name = 'audit_events'").get());
   db.close();
 
   const args = [process.execPath, join(pkg, "dist/index.js"), "gateway", "--port", "19877"];
@@ -56,7 +76,7 @@ try {
   assert.equal(plan.targetVersion, target);
   assert.equal(JSON.parse(readFileSync(join(pkg, "package.json"), "utf8")).version, "2026.7.1-2");
   assert.equal(readFileSync(join(state, "openclaw.json"), "utf8"), configText);
-  console.log(`PASS real OpenClaw ${target} updater targets the isolated Gateway's .local installation with schema 15${legacyConfig ? " and rejected legacy configuration" : ""}.`);
+  console.log(`PASS real OpenClaw ${target} updater targets the isolated Gateway's .local installation with canonical schema ${stateSchema}${legacyConfig ? " and rejected legacy configuration" : ""}.`);
   console.log("Dry-run with a test-only OS account fixture: no packages replaced, no LaunchAgents loaded and no provider calls.");
 } finally {
   rmSync(home, { recursive: true, force: true });

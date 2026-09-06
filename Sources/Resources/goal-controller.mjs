@@ -12,7 +12,11 @@ import readline from "node:readline";
 
 export function findOpenClawDist() {
   const explicit = process.env.OPENCLAW_DIST_DIR?.trim();
-  const candidates = explicit ? [explicit] : [];
+  const isRuntime = (directory) => existsSync(join(directory, "plugin-sdk/session-store-runtime.js"));
+  // The selected installation is authoritative, including when an update has
+  // temporarily removed its files. Never open another installation's state.
+  if (explicit) return isRuntime(explicit) ? explicit : undefined;
+  const candidates = [];
 
   for (const directory of (process.env.PATH ?? "").split(":")) {
     if (!directory) continue;
@@ -33,9 +37,7 @@ export function findOpenClawDist() {
     join(homedir(), ".npm-global/lib/node_modules/openclaw/dist"),
   );
 
-  return candidates.find((candidate) =>
-    existsSync(join(candidate, "plugin-sdk/session-store-runtime.js")),
-  );
+  return candidates.find(isRuntime);
 }
 
 function findNamedFunction(module, name) {

@@ -14,21 +14,41 @@ enum OpenClawCompatibility {
         return model
     }
 
-    // LocalClaw historically owns main. Never guess another owner in a multi-agent fleet.
+    // Preserve the configured owner across legacy-roster migrations. LocalClaw's
+    // historical main fallback applies only when no owner has been selected.
     static func chatAgentID(in config: [String: Any]) -> String? {
         let agents = config["agents"] as? [String: Any] ?? [:]
         let identifiers: [String]
+        let defaults: [String]
         if let entries = agents["entries"] as? [String: Any] {
             identifiers = Array(entries.keys)
+            defaults = entries.compactMap { id, entry in
+                (entry as? [String: Any])?["default"] as? Bool == true ? id : nil
+            }
         } else if let list = agents["list"] as? [[String: Any]] {
             identifiers = list.compactMap { $0["id"] as? String }
+            defaults = list.filter { $0["default"] as? Bool == true }.compactMap { $0["id"] as? String }
         } else {
-            return agents["ownership"] as? String == "explicit" ? nil : "main"
+            identifiers = agents["ownership"] as? String == "explicit" ? [] : ["main"]
+            defaults = []
+        }
+        func validOwner(_ owner: String) -> String? {
+            guard identifiers.contains(owner),
+                  owner.range(of: #"^[a-z0-9][a-z0-9_-]*$"#, options: .regularExpression) != nil else { return nil }
+            return owner
+        }
+        let systemAgent = (agents["defaults"] as? [String: Any])?["systemAgent"] as? [String: Any]
+        if let rawOwner = systemAgent?["agentId"] {
+            guard let owner = rawOwner as? String else { return nil }
+            return validOwner(owner.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        if agents["ownership"] as? String != "explicit", !defaults.isEmpty {
+            guard defaults.count == 1 else { return nil }
+            return validOwner(defaults[0])
         }
         if identifiers.contains("main") { return "main" }
-        guard identifiers.count == 1, let only = identifiers.first,
-              only.range(of: #"^[a-z0-9][a-z0-9_-]*$"#, options: .regularExpression) != nil else { return nil }
-        return only
+        guard identifiers.count == 1, let only = identifiers.first else { return nil }
+        return validOwner(only)
     }
 
     static func openAIUsesOAuth(in config: [String: Any], oauthAvailable: Bool) -> Bool {

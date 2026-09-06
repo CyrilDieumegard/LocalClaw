@@ -1,5 +1,34 @@
 import assert from "node:assert/strict";
-import { handleRequest } from "../Sources/Resources/goal-controller.mjs";
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { findOpenClawDist, handleRequest } from "../Sources/Resources/goal-controller.mjs";
+
+const runtimeRoot = mkdtempSync(join(tmpdir(), "localclaw-goal-runtime-"));
+const originalPath = process.env.PATH;
+const originalDist = process.env.OPENCLAW_DIST_DIR;
+try {
+  const ambientPackage = join(runtimeRoot, "ambient");
+  const ambientDist = join(ambientPackage, "dist");
+  const bin = join(runtimeRoot, "bin");
+  mkdirSync(join(ambientDist, "plugin-sdk"), { recursive: true });
+  mkdirSync(bin);
+  writeFileSync(join(ambientDist, "plugin-sdk/session-store-runtime.js"), "export {};\n");
+  writeFileSync(join(ambientPackage, "openclaw.mjs"), "");
+  symlinkSync(join(ambientPackage, "openclaw.mjs"), join(bin, "openclaw"));
+  process.env.PATH = bin;
+  delete process.env.OPENCLAW_DIST_DIR;
+  assert.equal(findOpenClawDist(), realpathSync(ambientDist));
+  process.env.OPENCLAW_DIST_DIR = join(runtimeRoot, "selected-but-missing");
+  assert.equal(findOpenClawDist(), undefined, "An unavailable selected runtime must not fall back to another installation");
+  process.env.OPENCLAW_DIST_DIR = ambientDist;
+  assert.equal(findOpenClawDist(), ambientDist);
+} finally {
+  if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath;
+  if (originalDist === undefined) delete process.env.OPENCLAW_DIST_DIR; else process.env.OPENCLAW_DIST_DIR = originalDist;
+  rmSync(runtimeRoot, { recursive: true, force: true });
+}
+console.log("PASS selected Goal runtime fails closed instead of using an ambient installation");
 
 const sessionKey = "agent:writer:explicit:localclaw-goal-contract";
 let entry = {

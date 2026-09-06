@@ -70,7 +70,7 @@ struct RuntimeSnapshot: Codable, Equatable, Sendable {
         switch health {
         case .checking: return "Checking your setup"
         case .ready: return "Ready to use"
-        case .attention: return "Ready with one recommendation"
+        case .attention: return issues.count == 1 ? "Ready with one recommendation" : "Ready with \(issues.count) recommendations"
         case .blocked: return "Action required"
         }
     }
@@ -105,19 +105,34 @@ final class RuntimeSnapshotResolver: @unchecked Sendable {
             in: engine.readOpenClawConfig() ?? [:], oauthAvailable: engine.hasOAuthAuth(provider: "openai")
         )
         let route = Self.route(for: model, openAIUsesOAuth: openAIUsesOAuth)
-        let openClawVersion = commandOutput("openclaw --version 2>&1 | head -1")
-        let openClawInstalled = !openClawVersion.isEmpty && !openClawVersion.lowercased().contains("command not found")
+        let openClawVersion = engine.installedVersion(for: "openclaw")
+        let openClawInstalled = openClawVersion != "Not installed"
         let lmStudioInstalled = engine.hasLMStudioApp()
         let loadedLocalModel = engine.loadedLMStudioModelInfo()?.model
         let downloadedLocalModels = route == .local ? engine.listLMStudioLLMModelIds() : []
-        let modelConfigured = !model.isEmpty && model != "Not configured" && model != "Unknown"
-        let localModelReady = route != .local || Self.localModel(model, matchesAnyOf: downloadedLocalModels)
         let authProvider = Self.authProvider(for: model)
         let authReady = route == .local || (authProvider.map(engine.hasProviderAuth(provider:)) ?? false)
+        return Self.resolve(
+            gatewayReady: gateway.isRunning, gatewayDetail: gateway.message,
+            openClawInstalled: openClawInstalled, openClawVersion: openClawVersion,
+            model: model, route: route, authReady: authReady,
+            lmStudioInstalled: lmStudioInstalled, loadedLocalModel: loadedLocalModel,
+            downloadedLocalModels: downloadedLocalModels, connectedChannels: connectedChannels
+        )
+    }
+
+    static func resolve(
+        gatewayReady: Bool, gatewayDetail: String, openClawInstalled: Bool, openClawVersion: String,
+        model: String, route: RuntimeRoute, authReady: Bool, lmStudioInstalled: Bool,
+        loadedLocalModel: String?, downloadedLocalModels: [String], connectedChannels: Int
+    ) -> RuntimeSnapshot {
+        let modelConfigured = route != .unavailable
+        let localModelReady = route != .local || Self.localModel(model, matchesAnyOf: downloadedLocalModels)
+        let selectedLocalModelLoaded = loadedLocalModel.map { Self.localModel(model, matchesAnyOf: [$0]) } ?? false
         let authLabel: String = {
             switch route {
             case .local:
-                return localModelReady ? "Model available" : "Model not loaded"
+                return localModelReady ? "Model available" : "Model not available"
             case .cloud, .oauth:
                 return authReady ? "Authentication ready" : "Authentication missing"
             case .custom:
@@ -131,8 +146,8 @@ final class RuntimeSnapshotResolver: @unchecked Sendable {
         if !openClawInstalled {
             issues.append(RuntimeIssue(id: "openclaw", title: "OpenClaw is not installed", detail: "Install or update the OpenClaw runtime before using LocalClaw.", severity: .blocking))
         }
-        if openClawInstalled && !gateway.isRunning {
-            issues.append(RuntimeIssue(id: "gateway", title: "Gateway is offline", detail: gateway.message, severity: .blocking))
+        if openClawInstalled && !gatewayReady {
+            issues.append(RuntimeIssue(id: "gateway", title: "Gateway is offline", detail: gatewayDetail, severity: .blocking))
         }
         if !modelConfigured {
             issues.append(RuntimeIssue(id: "model", title: "No active model", detail: "Choose a model before sending a request.", severity: .blocking))
@@ -143,8 +158,8 @@ final class RuntimeSnapshotResolver: @unchecked Sendable {
         if route == .local && !lmStudioInstalled {
             issues.append(RuntimeIssue(id: "lmstudio", title: "LM Studio is not installed", detail: "Local models require LM Studio.", severity: .blocking))
         } else if route == .local && !localModelReady {
-            issues.append(RuntimeIssue(id: "local-model", title: "Local model is not ready", detail: "Load or download the configured model before the next local request.", severity: .warning))
-        } else if route == .local && loadedLocalModel == nil {
+            issues.append(RuntimeIssue(id: "local-model", title: "Local model is not available", detail: "Download the configured model or choose an installed model before the next local request.", severity: .blocking))
+        } else if route == .local && !selectedLocalModelLoaded {
             issues.append(RuntimeIssue(id: "local-load", title: "Local model is not loaded", detail: "LocalClaw can load it on demand, but the first request may take longer.", severity: .warning))
         }
 
@@ -160,8 +175,8 @@ final class RuntimeSnapshotResolver: @unchecked Sendable {
         return RuntimeSnapshot(
             capturedAt: Date(),
             health: health,
-            gatewayReady: gateway.isRunning,
-            gatewayDetail: gateway.message,
+            gatewayReady: gatewayReady,
+            gatewayDetail: gatewayDetail,
             openClawInstalled: openClawInstalled,
             openClawVersion: openClawInstalled ? openClawVersion : "Not installed",
             route: route,
@@ -176,22 +191,20 @@ final class RuntimeSnapshotResolver: @unchecked Sendable {
         )
     }
 
-    private func commandOutput(_ command: String) -> String {
-        engine.shell(command).1.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     static func route(for model: String, openAIUsesOAuth: Bool = false) -> RuntimeRoute {
-        let normalized = model.lowercased()
+        let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if normalized.hasPrefix("openai/"), openAIUsesOAuth { return .oauth }
         if normalized.hasPrefix("lmstudio/") { return .local }
         if normalized.hasPrefix("openai-codex/") || normalized.hasPrefix("google-gemini-cli/") { return .oauth }
         if normalized.hasPrefix("openrouter/") || normalized.hasPrefix("openai/") || normalized.hasPrefix("anthropic/") || normalized.hasPrefix("google/") || normalized.hasPrefix("x-ai/") { return .cloud }
-        if normalized.isEmpty || normalized == "not configured" || normalized == "unknown" { return .unavailable }
+        if normalized.isEmpty || ["not configured", "unknown", "profile selection required", "agent selection required"].contains(normalized) { return .unavailable }
         return .custom
     }
 
     static func authProvider(for model: String) -> String? {
-        let prefix = model.split(separator: "/", maxSplits: 1).first.map(String.init)?.lowercased()
+        guard route(for: model) != .unavailable else { return nil }
+        let prefix = model.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "/", maxSplits: 1).first.map(String.init)?.lowercased()
         switch prefix {
         case "openrouter": return "openrouter"
         case "openai-codex": return "openai-codex"
@@ -205,9 +218,8 @@ final class RuntimeSnapshotResolver: @unchecked Sendable {
     }
 
     private static func localModel(_ configuredModel: String, matchesAnyOf downloadedModels: [String]) -> Bool {
-        let configured = configuredModel
-            .replacingOccurrences(of: "lmstudio/", with: "")
-            .lowercased()
+        let normalized = configuredModel.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let configured = normalized.hasPrefix("lmstudio/") ? String(normalized.dropFirst("lmstudio/".count)) : normalized
         guard !configured.isEmpty else { return false }
         return downloadedModels.contains { downloaded in
             let candidate = downloaded.lowercased()

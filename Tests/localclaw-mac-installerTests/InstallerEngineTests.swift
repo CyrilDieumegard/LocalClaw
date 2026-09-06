@@ -3,6 +3,91 @@ import Testing
 @testable import localclaw_mac_installer
 
 struct InstallerEngineTests {
+    @Test func selectedChatModelSupportsStringDefaultsAndAgentOverrides() {
+        let defaults: [String: Any] = ["agents": ["defaults": ["model": "  openai/gpt-5.6-sol  "]]]
+        #expect(InstallerEngine.configuredChatModel(in: defaults) == "openai/gpt-5.6-sol")
+        let explicit: [String: Any] = ["agents": [
+            "defaults": ["model": ["primary": "openai/shared"]],
+            "entries": ["writer": ["model": "anthropic/writer"]]
+        ]]
+        #expect(InstallerEngine.configuredChatModel(in: explicit) == "anthropic/writer")
+        let inherited: [String: Any] = ["agents": [
+            "defaults": ["model": "openai/shared"],
+            "entries": ["writer": ["model": ["fallbacks": ["openai/fallback"]]]]
+        ]]
+        #expect(InstallerEngine.configuredChatModel(in: inherited) == "openai/shared")
+    }
+
+    @Test func selectingAgentModelPreservesSharedDefaultOtherAgentsAndFallbacks() throws {
+        let original: [String: Any] = ["agents": [
+            "defaults": ["model": ["primary": "openai/shared"]],
+            "entries": [
+                "main": ["model": ["primary": "openai/old", "fallbacks": ["openai/fallback"]], "name": "My agent"],
+                "research": ["model": "anthropic/research"]
+            ]
+        ], "channels": ["telegram": ["enabled": true]]]
+        let changed = try #require(InstallerEngine.configBySelectingChatModel("openai/new", in: original))
+        #expect(InstallerEngine.configuredChatModel(in: changed) == "openai/new")
+        let agents = try #require(changed["agents"] as? [String: Any])
+        let defaults = try #require(agents["defaults"] as? [String: Any])
+        #expect((defaults["model"] as? [String: Any])?["primary"] as? String == "openai/shared")
+        let entries = try #require(agents["entries"] as? [String: Any])
+        let main = try #require(entries["main"] as? [String: Any])
+        #expect((main["model"] as? [String: Any])?["fallbacks"] as? [String] == ["openai/fallback"])
+        #expect(main["name"] as? String == "My agent")
+        #expect((entries["research"] as? [String: Any])?["model"] as? String == "anthropic/research")
+        #expect(changed["channels"] as? NSDictionary == original["channels"] as? NSDictionary)
+    }
+
+    @Test func selectingLegacyAgentModelUpdatesItsOverride() throws {
+        let original: [String: Any] = ["agents": [
+            "defaults": ["model": "openai/shared"],
+            "list": [["id": "writer", "model": "openai/old"]]
+        ]]
+        let changed = try #require(InstallerEngine.configBySelectingChatModel("openai/new", in: original))
+        #expect(InstallerEngine.configuredChatModel(in: changed) == "openai/new")
+        let agents = try #require(changed["agents"] as? [String: Any])
+        #expect((agents["defaults"] as? [String: Any])?["model"] as? String == "openai/shared")
+    }
+
+    @Test func selectingInheritedModelPreservesDefaultFallbacksAndRejectsAmbiguousFleet() throws {
+        let original: [String: Any] = ["agents": ["defaults": ["model": [
+            "primary": "openai/old", "fallbacks": ["openai/fallback"]
+        ]]]]
+        let changed = try #require(InstallerEngine.configBySelectingChatModel("openai/new", in: original))
+        let agents = try #require(changed["agents"] as? [String: Any])
+        let defaults = try #require(agents["defaults"] as? [String: Any])
+        #expect((defaults["model"] as? [String: Any])?["fallbacks"] as? [String] == ["openai/fallback"])
+        #expect(InstallerEngine.configuredChatModel(in: changed) == "openai/new")
+        let ambiguous: [String: Any] = ["agents": [
+            "ownership": "explicit", "entries": ["writer": [:], "research": [:]],
+            "defaults": ["model": "openai/shared"]
+        ]]
+        #expect(InstallerEngine.configBySelectingChatModel("openai/new", in: ambiguous) == nil)
+        #expect(InstallerEngine.configuredChatModel(in: ambiguous) == nil)
+    }
+
+    @Test func credentialDirectoryUsesSelectedAgentAndCustomDirectory() {
+        let state = URL(fileURLWithPath: "/isolated/state", isDirectory: true)
+        let home = URL(fileURLWithPath: "/isolated/home", isDirectory: true)
+        let sole: [String: Any] = ["agents": ["entries": ["writer": [:]]]]
+        #expect(InstallerEngine.chatAgentDirectory(in: sole, state: state, home: home)?.path == "/isolated/state/agents/writer/agent")
+        let custom: [String: Any] = ["agents": ["entries": ["writer": ["agentDir": "~/custom-auth"]]]]
+        #expect(InstallerEngine.chatAgentDirectory(in: custom, state: state, home: home)?.path == "/isolated/home/custom-auth")
+        let relative: [String: Any] = ["agents": ["entries": ["writer": ["agentDir": "./custom-auth"]]]]
+        #expect(InstallerEngine.chatAgentDirectory(in: relative, state: state, home: home) == nil)
+    }
+
+    @Test func openClawVersionDetectionRejectsDiagnosticAndFailedCommands() {
+        #expect(InstallerEngine.reportedOpenClawVersion(exitCode: 0, output: "[plugins] migration warning\nOpenClaw 2026.9.2 (abc123)\n") == "OpenClaw 2026.9.2 (abc123)")
+        #expect(InstallerEngine.reportedOpenClawVersion(exitCode: 0, output: "2026.9.2\n") == "2026.9.2")
+        #expect(InstallerEngine.reportedOpenClawVersion(exitCode: 0, output: "2026.9.2-beta.1\n") == "2026.9.2-beta.1")
+        #expect(InstallerEngine.reportedOpenClawVersion(exitCode: 1, output: "OpenClaw 2026.9.2") == nil)
+        #expect(InstallerEngine.reportedOpenClawVersion(exitCode: 0, output: "Error: database created by OpenClaw 2026.9.2") == nil)
+        #expect(InstallerEngine.reportedOpenClawVersion(exitCode: 0, output: "Node 22.22.3 is required") == nil)
+        #expect(InstallerEngine.reportedOpenClawVersion(exitCode: 0, output: "Profile selection required") == nil)
+    }
+
     @Test func recommendationForLowMemory() {
         let engine = InstallerEngine()
         let profile = HardwareProfile(chip: "Apple M1", memoryGB: 8, isAppleSilicon: true)

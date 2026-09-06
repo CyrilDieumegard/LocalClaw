@@ -64,16 +64,25 @@ struct AutomationReceipt: Identifiable, Codable, Equatable, Sendable {
 enum AutomationReceiptStore {
     private static let defaultsKey = "localclaw.automation.receipts.v1"
 
-    static func load() -> [AutomationReceipt] {
-        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
+    static func load(defaults: UserDefaults = .standard) -> [AutomationReceipt] {
+        guard let data = defaults.data(forKey: defaultsKey),
               let receipts = try? decoder.decode([AutomationReceipt].self, from: data) else { return [] }
-        return receipts.sorted { $0.startedAt > $1.startedAt }
+        // A previous app process can no longer observe the run it started.
+        // OpenClaw may still finish it: neither success nor failure is proven.
+        return receipts.map { receipt in
+            guard receipt.status == .running else { return receipt }
+            var recovered = receipt
+            recovered.status = .unknown
+            recovered.finishedAt = nil
+            recovered.summary = "LocalClaw restarted before completion was confirmed. Check OpenClaw history before retrying."
+            return recovered
+        }.sorted { $0.startedAt > $1.startedAt }
     }
 
-    static func save(_ receipts: [AutomationReceipt]) {
+    static func save(_ receipts: [AutomationReceipt], defaults: UserDefaults = .standard) {
         let recent = Array(receipts.sorted { $0.startedAt > $1.startedAt }.prefix(100))
         guard let data = try? encoder.encode(recent) else { return }
-        UserDefaults.standard.set(data, forKey: defaultsKey)
+        defaults.set(data, forKey: defaultsKey)
     }
 
     private static var encoder: JSONEncoder {

@@ -17,6 +17,9 @@ const environment = {
   OPENCLAW_CONFIG_PATH: join(state, "openclaw.json"),
   OPENCLAW_DIST_DIR: join(packageRoot, "dist"),
   NO_COLOR: "1",
+  OPENCLAW_NO_AUTO_UPDATE: "1",
+  OPENCLAW_SUPERVISOR_MODE: "external",
+  OPENCLAW_SERVICE_REPAIR_POLICY: "external",
 };
 const cli = join(packageRoot, "openclaw.mjs");
 const script = fileURLToPath(new URL("../Sources/Resources/goal-controller.mjs", import.meta.url));
@@ -54,21 +57,28 @@ try {
   }
   run([cli, "config", "validate"]);
   console.log("PASS configuration schema");
+  const roster = JSON.parse(run([cli, "agents", "list", "--json"]));
+  assert.equal(roster.find((agent) => agent.id === "writer").workspace, join(root, "workspace/writer"));
+  assert.equal(roster.find((agent) => agent.id === "main").workspace, join(root, "workspace/main"));
+  console.log("PASS native explicit-agent workspace inheritance (including main)");
   const listed = JSON.parse(run([cli, "models", "list", "--agent", "writer", "--json"]));
   assert.ok(Array.isArray(listed.models));
   JSON.parse(run([cli, "plugins", "registry", "--refresh", "--json"]));
   console.log("PASS scoped model discovery and plugin registry refresh");
   const sessionKey = "agent:writer:explicit:localclaw-compat-goal";
   let expectedUpdatedAt;
-  function goalRequest(action, goalId, objective = "Compatibility fixture") {
-    const request = {id: `${action}-${Date.now()}`, action, sessionKey, goalId, expectedUpdatedAt, objective, tokenBudget: 5000};
+  function sendGoalRequest(request, expectedOK = true) {
     const output = run([script], `${JSON.stringify(request)}\n`);
     const envelopes = output.split("\n").flatMap((line) => {
       try { return [JSON.parse(line)]; } catch { return []; }
     });
     assert.equal(envelopes.find((value) => value.type === "ready")?.ok, true, output);
     const response = envelopes.find((value) => value.type === "response");
-    assert.equal(response?.ok, true, output);
+    assert.equal(response?.ok, expectedOK, output);
+    return response;
+  }
+  function goalRequest(action, goalId, objective = "Compatibility fixture") {
+    const response = sendGoalRequest({id: `${action}-${Date.now()}`, action, sessionKey, goalId, expectedUpdatedAt, objective, tokenBudget: 5000});
     expectedUpdatedAt = response.goal?.updatedAt;
     return response;
   }
@@ -91,6 +101,22 @@ try {
   assert.equal(responses[6].goal.status, "complete");
   assert.equal(responses[8].goal, null);
   console.log("PASS named-agent Goal lifecycle (start/status/pause/resume/edit/complete/clear)");
+  const restartGoal = goalRequest("start");
+  const durableEdit = {
+    id: "fixture-durable-edit", operationId: "fixture-durable-edit", issuedAtMs: Date.now(),
+    action: "edit", sessionKey, goalId: restartGoal.goal.id,
+    expectedUpdatedAt: restartGoal.goal.updatedAt, objective: "Durably edited fixture",
+  };
+  const committed = sendGoalRequest(durableEdit);
+  const replayed = sendGoalRequest(durableEdit);
+  assert.deepEqual(replayed.goal, committed.goal);
+  assert.match(replayed.message, /replayed safely/);
+  const stale = sendGoalRequest({ ...durableEdit, id: "fixture-stale-edit", operationId: "fixture-stale-edit", objective: "Stale overwrite" }, false);
+  assert.match(stale.message, /stale revision was rejected/);
+  const afterStale = goalRequest("status");
+  assert.equal(afterStale.goal.objective, "Durably edited fixture");
+  goalRequest("clear", afterStale.goal.id);
+  console.log("PASS real SQLite durable Goal receipt replay across controller restarts and stale revision rejection");
   const archive = join(root, "state-backup.tar.gz");
   run([cli, "backup", "create", "--no-include-workspace", "--verify", "--output", archive, "--json"]);
   assert.ok(statSync(archive).size > 0);

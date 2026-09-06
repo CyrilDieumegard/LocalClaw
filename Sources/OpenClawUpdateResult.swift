@@ -51,6 +51,17 @@ enum OpenClawUpdateResult {
             current.contains("requires capability consent") || current.contains("plugin approval required")
     }
 
+    static func serviceRecoveryRefusal(in result: [String: Any]) -> String? {
+        guard let recovery = result["recovery"] as? [String: Any],
+              recovery["serviceRestartSafe"] as? Bool == false else { return nil }
+        let reason = recovery["reason"] as? String ?? "runtime-verification-failed"
+        var message = "OpenClaw could not verify that this installation is safe to restart (\(reason)). LocalClaw did not reinstall or restart the Gateway after this result."
+        if reason == "state-migration-started" {
+            message += " Candidate Doctor may have migrated state; keep the candidate installed and do not roll back code alone."
+        }
+        return message + " Diagnose the selected installation with openclaw triage before restarting it."
+    }
+
     static func pluginFailure(in result: [String: Any]) -> String? {
         guard let plugins = (result["postUpdate"] as? [String: Any])?["plugins"] as? [String: Any],
               let status = plugins["status"] as? String, ["error", "warning"].contains(status) else { return nil }
@@ -60,6 +71,45 @@ enum OpenClawUpdateResult {
             return "Plugin approval required. The OpenClaw core is installed; new plugin permissions were not accepted. Review Plugin Permissions, then Finish Repair. The core will not be reinstalled.\n\(details)"
         }
         return "The OpenClaw core is installed, but plugin repair needs attention. Repair will resume without reinstalling the core.\n\(details)"
+    }
+}
+
+/// Persists native activation refusals across app relaunches, including ordinary
+/// upgrades that do not require a full backup/checkpoint. Only verified repair
+/// clears this record; changing the installed version alone is not health proof.
+enum OpenClawActivationBlock {
+    private static func location(home: URL, runtime: OpenClawRuntimeInstallation) -> URL {
+        // Replacing Node cannot prove that a partially migrated package/state is
+        // runnable. Keep the refusal stable across a Node upgrade or relink.
+        let identity = [runtime.package, runtime.state, runtime.config]
+            .map { $0.resolvingSymlinksInPath().path }.joined(separator: "\u{0}")
+        let digest = SHA256.hash(data: Data(identity.utf8)).prefix(16)
+            .map { String(format: "%02x", $0) }.joined()
+        return home.appendingPathComponent("Library/Application Support/LocalClaw/runtime-backups", isDirectory: true)
+            .appendingPathComponent("activation-blocked-\(digest).json")
+    }
+
+    static func isPresent(home: URL, runtime: OpenClawRuntimeInstallation) -> Bool {
+        let path = location(home: home, runtime: runtime).path
+        return FileManager.default.fileExists(atPath: path) ||
+            (try? FileManager.default.destinationOfSymbolicLink(atPath: path)) != nil
+    }
+
+    static func save(home: URL, runtime: OpenClawRuntimeInstallation, reason: String) throws {
+        let file = location(home: home, runtime: runtime)
+        let directory = file.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        let record = ["version": runtime.version ?? "unknown", "reason": reason]
+        try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]).write(to: file, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+    }
+
+    static func remove(home: URL, runtime: OpenClawRuntimeInstallation) throws {
+        if isPresent(home: home, runtime: runtime) {
+            try FileManager.default.removeItem(at: location(home: home, runtime: runtime))
+        }
     }
 }
 

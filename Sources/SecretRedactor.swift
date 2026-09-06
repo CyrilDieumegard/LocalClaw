@@ -41,35 +41,46 @@ enum SecretRedactor {
             return array.map { redactJSONValue($0) }
         }
 
+        // Provider errors often put reflected credentials inside an ordinary
+        // message field rather than a credential-named JSON property.
+        if let text = value as? String {
+            return redactPlainText(text)
+        }
+
         return value
     }
 
     private static func isSensitiveKey(_ key: String) -> Bool {
         let normalized = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        if sensitiveKeys.contains(normalized) { return true }
-
         let lower = normalized.lowercased()
-        return lower.contains("token")
+        return sensitiveKeys.contains(lower)
+            || lower.contains("token")
             || lower.contains("secret")
             || lower.contains("password")
             || lower.contains("apikey")
             || lower.contains("api_key")
+            || lower.contains("api-key")
             || lower == "key"
     }
 
     private static func redactPlainText(_ raw: String) -> String {
         var redacted = raw.replacingOccurrences(
-            of: #"(?i)([A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*\s*=\s*)[^\s]+"#,
+            of: #"(?i)(\b[A-Z0-9_-]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_-]*\s*=\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s&]+)"#,
             with: "$1<redacted>",
             options: .regularExpression
         )
         redacted = redacted.replacingOccurrences(
-            of: #"(?i)(\"(?:api[_-]?key|apikey|token|secret|password|key)\"\s*:\s*\")[^\"]*(\")"#,
+            of: #"(?i)("(?:[A-Z0-9_-]*(?:api[_-]?key|token|secret|password)[A-Z0-9_-]*|authorization|key)"\s*:\s*")(?:\\.|[^"\\])*(")"#,
             with: "$1<redacted>$2",
             options: .regularExpression
         )
         redacted = redacted.replacingOccurrences(
-            of: #"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{16,}"#,
+            of: #"(?im)(\b(?:authorization|proxy-authorization)\s*:\s*)(?:Basic|Bearer)\s+[^\s"'<>]+"#,
+            with: "$1<redacted>",
+            options: .regularExpression
+        )
+        redacted = redacted.replacingOccurrences(
+            of: #"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"#,
             with: "Bearer <redacted>",
             options: .regularExpression
         )

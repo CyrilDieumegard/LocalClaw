@@ -218,10 +218,7 @@ final class CommandCenterViewModel: ObservableObject {
         guard let configPath = selectedConfigPath() else { return }
         guard let data = FileManager.default.contents(atPath: configPath),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let agents = json["agents"] as? [String: Any],
-              let defaults = agents["defaults"] as? [String: Any],
-              let model = defaults["model"] as? [String: Any],
-              let primary = model["primary"] as? String else {
+              let primary = InstallerEngine.configuredChatModel(in: json) else {
             return
         }
 

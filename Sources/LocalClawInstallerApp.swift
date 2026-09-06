@@ -1493,6 +1493,14 @@ final class InstallerViewModel: ObservableObject {
                 lastActivity: nil
             )
         }
+        if let failure = LocalClawSelfUpdater.launchFailureMessage() {
+            screen = .updates
+            installerUpdateStatus = "Update failed"
+            append("The previous LocalClaw app was restored. \(failure)")
+        } else if CommandLine.arguments.contains("--self-update-completed") {
+            screen = .updates
+            append("LocalClaw \(installerCurrentVersion) (\(installerBuildNumber)) was installed and relaunched successfully.")
+        }
     }
 
     private static let defaultChannelCatalog: [ChannelCatalogEntry] = [
@@ -1937,7 +1945,7 @@ final class InstallerViewModel: ObservableObject {
     private let recoveryService = RecoveryService()
     private let localModelCatalogService = LocalModelCatalogService()
 
-    private struct InstallerUpdateManifest: Codable {
+    private struct InstallerUpdateManifest: Codable, Sendable {
         let latestVersion: String
         let latestBuild: String?
         let dmgUrl: String
@@ -2285,10 +2293,7 @@ final class InstallerViewModel: ObservableObject {
         guard let configURL = try? OpenClawRuntimeInstallation.selectedConfig(),
               let data = try? Data(contentsOf: configURL),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let agents = json["agents"] as? [String: Any],
-              let defaults = agents["defaults"] as? [String: Any],
-              let model = defaults["model"] as? [String: Any],
-              let configuredPrimary = model["primary"] as? String else {
+              let configuredPrimary = InstallerEngine.configuredChatModel(in: json) else {
             return
         }
         let primary = Self.repairedLegacyCloudModelID(configuredPrimary)
@@ -4100,21 +4105,31 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func updateLocalClawFromDMG() {
-        if isRunning { return }
-        guard let url = URL(string: installerDownloadURL), !installerDownloadURL.isEmpty else {
+        startInstallerUpdate(release: pendingInstallerRelease)
+    }
+
+    private var pendingInstallerRelease: InstallerUpdateManifest {
+        InstallerUpdateManifest(latestVersion: installerLatestVersion, latestBuild: installerLatestBuild,
+                                dmgUrl: installerDownloadURL, notesUrl: nil, sha256: installerExpectedSHA256)
+    }
+
+    private func startInstallerUpdate(release: InstallerUpdateManifest) {
+        if modelSwitchIsBlocked { return }
+        guard let url = URL(string: release.dmgUrl), url.scheme?.lowercased() == "https", url.host != nil else {
             append("No installer download URL found in manifest. Click CHECK, then retry.")
             return
         }
-        let expectedSHA256 = installerExpectedSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let expectedSHA256 = (release.sha256 ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard expectedSHA256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else {
             installerUpdateStatus = "Update blocked"
             append("DMG update blocked: the release manifest is missing a valid SHA256 checksum.")
             append("No app or source checkout was changed. Retry CHECK later or use the explicitly labeled developer update only after reviewing its repository path.")
             return
         }
-        let versionComparison = compareVersion(installerLatestVersion, installerCurrentVersion)
-        let buildComparison = compareVersion(installerLatestBuild, installerBuildNumber)
-        guard versionComparison > 0 || (versionComparison == 0 && buildComparison > 0) else {
+        let expectedVersion = release.latestVersion
+        let expectedBuild = release.latestBuild ?? ""
+        guard !expectedBuild.isEmpty, LocalClawSelfUpdater.isNewer(version: expectedVersion, build: expectedBuild,
+                                                                  thanVersion: installerCurrentVersion, build: installerBuildNumber) else {
             installerUpdateStatus = "Up to date"
             append("DMG update skipped: the verified manifest does not describe a newer LocalClaw build.")
             return
@@ -4122,15 +4137,15 @@ final class InstallerViewModel: ObservableObject {
 
         isRunning = true
         installerUpdateStatus = "Downloading update..."
-        append("Downloading and authenticating the LocalClaw DMG. The current app will not be replaced automatically.")
-        let expectedVersion = installerLatestVersion
-        let expectedBuild = installerLatestBuild
+        append("Downloading the signed LocalClaw update. LocalClaw will install it and relaunch automatically.")
         let updateEngine = engine
 
         Task.detached {
             do {
                 let (downloadedURL, response) = try await URLSession.shared.download(from: url)
-                guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                defer { try? FileManager.default.removeItem(at: downloadedURL) }
+                guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+                      http.url?.scheme?.lowercased() == "https" else {
                     throw NSError(domain: "LocalClawUpdate", code: 1, userInfo: [NSLocalizedDescriptionKey: "Download failed"])
                 }
                 if http.expectedContentLength > 0,
@@ -4139,7 +4154,8 @@ final class InstallerViewModel: ObservableObject {
                 }
 
                 let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("localclaw-update-\(UUID().uuidString)", isDirectory: true)
-                try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+                try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+                defer { try? FileManager.default.removeItem(at: tempDir) }
                 let dmgPath = tempDir.appendingPathComponent("localclaw.dmg")
                 try? FileManager.default.removeItem(at: dmgPath)
                 try FileManager.default.moveItem(at: downloadedURL, to: dmgPath)
@@ -4183,7 +4199,7 @@ final class InstallerViewModel: ObservableObject {
                 DMG_TEAM="$(/usr/bin/codesign -dv --verbose=4 "$DMG" 2>&1 | /usr/bin/sed -n 's/^TeamIdentifier=//p' | /usr/bin/head -1)"
                 [ "$DMG_TEAM" = "$EXPECTED_TEAM" ] || { echo "Unexpected DMG signing team: ${DMG_TEAM:-none}"; exit 1; }
                 /usr/sbin/spctl -a -t open --context context:primary-signature -vv "$DMG"
-                /usr/bin/hdiutil attach "$DMG" -nobrowse -quiet -mountpoint "$MOUNT_DIR"
+                /usr/bin/hdiutil attach "$DMG" -readonly -nobrowse -quiet -mountpoint "$MOUNT_DIR"
                 APP_SOURCE="$MOUNT_DIR/LocalClaw.app"
                 [ -d "$APP_SOURCE" ] || { echo "LocalClaw.app not found in DMG"; exit 1; }
                 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_SOURCE"
@@ -4205,19 +4221,18 @@ final class InstallerViewModel: ObservableObject {
                 }
 
                 let result = updateEngine.shell(verificationCommand)
-                if result.0 != 0 { try? FileManager.default.removeItem(at: tempDir) }
+                guard result.0 == 0 else {
+                    throw LocalClawSelfUpdater.UpdateError("Update verification failed before installation: \(result.1)")
+                }
                 await MainActor.run {
-                    if result.0 == 0 {
-                        self.append("Verified LocalClaw \(expectedVersion) (\(expectedBuild)) from the mounted DMG.")
-                        self.append("The DMG will now open. Drag LocalClaw to Applications and approve macOS replacement. LocalClaw did not elevate privileges or replace the running app automatically.")
-                        NSWorkspace.shared.open(dmgPath)
-                        self.installerUpdateStatus = "Verified DMG ready"
-                    } else {
-                        self.append("Update verification failed before installation: \(result.1)")
-                        self.append("The running LocalClaw app was not changed.")
-                        self.installerUpdateStatus = "Update blocked"
-                    }
-                    self.isRunning = false
+                    self.append("Verified LocalClaw \(expectedVersion) (\(expectedBuild)). Preparing automatic installation...")
+                    self.installerUpdateStatus = "Installing update..."
+                }
+                try LocalClawSelfUpdater.prepareAndLaunch(verifiedDMG: dmgPath, expectedVersion: expectedVersion, expectedBuild: expectedBuild)
+                await MainActor.run {
+                    self.append("Update ready. LocalClaw is restarting; your settings and conversations are preserved.")
+                    self.installerUpdateStatus = "Restarting..."
+                    NSApplication.shared.terminate(nil)
                 }
             } catch {
                 await MainActor.run {
@@ -4231,43 +4246,61 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func updateAll() {
-        if isRunning || chatIsSending { return }
-        if installerUpdateStatus == "Update available" {
-            append("LocalClaw app update available. Verifying the signed DMG first; macOS will ask you to replace the app manually.")
-            updateLocalClawFromDMG()
+        if modelSwitchIsBlocked { return }
+        let appRelease = installerUpdateStatus == "Update available" ? pendingInstallerRelease : nil
+        guard createRecoveryPoint(reason: "Before full update") != nil else {
+            append("Update stopped: a configuration recovery point could not be created. \(recoveryStatus)")
             return
         }
-        _ = createRecoveryPoint(reason: "Before full update")
         isRunning = true
-        append("Running update all")
+        append("Updating dependencies and OpenClaw. If an app update is available, LocalClaw will install it and relaunch last.")
         let engine = self.engine
         Task.detached {
             await OpenClawGoalBridge.shared.invalidateRuntime()
-            _ = await self.runStep(name: "Homebrew") { engine.updateHomebrew() }
-            _ = await self.runStep(name: "LM Studio") { engine.upgradeLMStudioIfInstalled() }
-            _ = await self.runStep(name: "Node") { engine.upgradeNodeIfInstalled() }
-            let update = await self.runStep(name: "OpenClaw") { engine.updateOpenClawIfInstalled() }
-            if update.state == .fail {
-                await MainActor.run {
-                    self.isRunning = false
-                    self.refreshVersions()
-                    self.append("Update stopped because OpenClaw could not be updated.")
+            let operations: [(String, @Sendable () -> StepResult)] = [
+                ("Homebrew", { engine.updateHomebrew() }),
+                ("LM Studio", { engine.upgradeLMStudioIfInstalled() }),
+                ("Node", { engine.upgradeNodeIfInstalled() }),
+                ("OpenClaw", { engine.updateOpenClawIfInstalled { message in
+                    Task { @MainActor in self.append(message) }
+                } })
+            ]
+            for (name, operation) in operations {
+                let result = await self.runStep(name: name, action: operation)
+                if result.state == .fail {
+                    await OpenClawGoalBridge.shared.invalidateRuntime()
+                    await MainActor.run {
+                        self.isRunning = false
+                        self.chatGatewayPrepared = false
+                        self.refreshVersions()
+                        self.append("Update stopped because \(name) could not be updated. \(result.message)")
+                        self.presentMaintenanceFailure(result.message)
+                    }
+                    return
                 }
-                return
             }
 
             await OpenClawGoalBridge.shared.invalidateRuntime()
             await MainActor.run {
                 self.isRunning = false
-                self.refreshVersions()
-                self.append("Update finished")
+                self.chatGatewayPrepared = false
+                if let appRelease {
+                    self.append("Dependencies and OpenClaw finished. Installing the LocalClaw app update...")
+                    self.startInstallerUpdate(release: appRelease)
+                } else {
+                    self.refreshVersions()
+                    self.append("Update finished")
+                }
             }
         }
     }
 
     func updateOpenClawRuntime() {
-        if isRunning || chatIsSending { return }
-        _ = createRecoveryPoint(reason: "Before OpenClaw update")
+        if modelSwitchIsBlocked { return }
+        guard createRecoveryPoint(reason: "Before OpenClaw update") != nil else {
+            append("OpenClaw update stopped: a configuration recovery point could not be created. \(recoveryStatus)")
+            return
+        }
         isRunning = true
         append("Updating OpenClaw runtime")
         let engine = self.engine
@@ -4299,14 +4332,27 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func updateDependenciesOnly() {
-        if isRunning { return }
+        if modelSwitchIsBlocked { return }
         isRunning = true
         append("Updating dependencies")
         let engine = self.engine
         Task.detached {
-            _ = await self.runStep(name: "Homebrew") { engine.updateHomebrew() }
-            _ = await self.runStep(name: "Node") { engine.upgradeNodeIfInstalled() }
-            _ = await self.runStep(name: "LM Studio") { engine.upgradeLMStudioIfInstalled() }
+            let operations: [(String, @Sendable () -> StepResult)] = [
+                ("Homebrew", { engine.updateHomebrew() }),
+                ("Node", { engine.upgradeNodeIfInstalled() }),
+                ("LM Studio", { engine.upgradeLMStudioIfInstalled() })
+            ]
+            for (name, operation) in operations {
+                let result = await self.runStep(name: name, action: operation)
+                if result.state == .fail {
+                    await MainActor.run {
+                        self.isRunning = false
+                        self.refreshVersions()
+                        self.append("Dependencies update stopped because \(name) failed. \(result.message)")
+                    }
+                    return
+                }
+            }
             await MainActor.run {
                 self.isRunning = false
                 self.refreshVersions()
@@ -6462,7 +6508,21 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    var modelSwitchIsBlocked: Bool {
+        modeSwitchInProgress || chatIsSending || isRunning || OpenClawRuntimeMaintenance.isActive
+    }
+
+    private func restoreChatSelectionAfterFailedSwitch() {
+        guard RuntimeSnapshotResolver.route(for: currentModel) != .unavailable else {
+            selectedChatModel = ""
+            return
+        }
+        selectedChatModel = currentModel
+        syncChatModelModeWithSelection()
+    }
+
     func applyInferenceModeSwitch() {
+        guard !modelSwitchIsBlocked else { return }
         modeSwitchInProgress = true
         modeSwitchStatus = "Applying switch..."
 
@@ -6501,17 +6561,20 @@ final class InstallerViewModel: ObservableObject {
                         self.activeLocalLMStudioContext = loadedInfo?.context
                         self.selectedChatModel = "lmstudio/\(active)"
                         self.controlCenterLogs += "[OK] Switched to Local LLM: lmstudio/\(active)\n"
+                        self.resetMainAgentSessions()
                     } else {
-                        self.controlCenterLogs += "[FAIL] Local switch failed: \(result.message)\n"
+                        self.controlCenterLogs += "[FAIL] Local switch failed: \(SecretRedactor.redactConfigText(result.message))\n"
                     }
-                    self.resetMainAgentSessions()
                     self.refreshControlCenter()
+                    if result.state != .ok { self.restoreChatSelectionAfterFailedSwitch() }
                     self.modeSwitchInProgress = false
                     self.modeSwitchStatus = result.state == .ok ? "Switched to Local LLM" : "Local setup failed"
                 }
             }
             return
         } else {
+            let targetModel: String
+            let targetLabel: String
             if inferenceMode == .oauth {
                 selectedChatResponseMode = .cloud
                 selectedProvider = .openAI
@@ -6523,37 +6586,36 @@ final class InstallerViewModel: ObservableObject {
                     controlCenterLogs += "[INFO] OAuth login required before switching backend\n"
                     return
                 }
-                let oauthModel = effectiveModelIdentifier()
-                selectedChatModel = oauthModel
-                currentModel = oauthModel
-                let result = engine.changeModel(oauthModel)
-                controlCenterLogs += "[\(result.state.rawValue)] Switched to OAuth LLM: \(oauthModel)\n"
+                targetModel = effectiveModelIdentifier()
+                targetLabel = "OAuth LLM"
             } else {
                 selectedChatResponseMode = .cloud
                 prepareCloudModelSelection()
                 selectedProvider = .openRouter
                 selectedCloudAuthMode = .api
-                selectedChatModel = selectedOpenRouterModel
-                currentModel = selectedOpenRouterModel
-                let result = engine.changeModel(selectedOpenRouterModel)
-                controlCenterLogs += "[\(result.state.rawValue)] Switched to Cloud LLM: \(selectedOpenRouterModel)\n"
+                targetModel = selectedOpenRouterModel
+                targetLabel = "Cloud LLM"
             }
-        }
-
-        resetMainAgentSessions()
-        _ = engine.shell("openclaw gateway restart --preserve-token 2>/dev/null || openclaw gateway restart 2>/dev/null || true")
-        controlCenterLogs += "[OK] Gateway restarted after mode switch\n"
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-            self.refreshControlCenter()
-            self.modeSwitchInProgress = false
-            switch self.inferenceMode {
-            case .local:
-                self.modeSwitchStatus = "Switched to Local LLM"
-            case .oauth:
-                self.modeSwitchStatus = "Switched to OAuth LLM"
-            case .cloud:
-                self.modeSwitchStatus = "Switched to Cloud LLM"
+            // changeModel already restarts, verifies and rolls back on failure.
+            // Keep that potentially slow operation off the main actor and only
+            // reset sessions or advertise the new selection after verification.
+            Task {
+                let result = await Task.detached {
+                    InstallerEngine().changeModel(targetModel)
+                }.value
+                if result.state == .ok {
+                    self.selectedChatModel = targetModel
+                    self.currentModel = targetModel
+                    self.resetMainAgentSessions()
+                    self.controlCenterLogs += "[OK] Switched to \(targetLabel): \(targetModel)\n"
+                    self.modeSwitchStatus = "Switched to \(targetLabel)"
+                } else {
+                    self.controlCenterLogs += "[FAIL] \(targetLabel) switch failed: \(SecretRedactor.redactConfigText(result.message))\n"
+                    self.modeSwitchStatus = "Could not switch to \(targetLabel)"
+                }
+                self.refreshControlCenter()
+                if result.state != .ok { self.restoreChatSelectionAfterFailedSwitch() }
+                self.modeSwitchInProgress = false
             }
         }
     }
@@ -8546,7 +8608,7 @@ final class InstallerViewModel: ObservableObject {
         let hasText = rawInput.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.inverted) != nil
         let text = hasText ? rawInput : ""
         let imagePath = rawImagePath.trimmingCharacters(in: .whitespacesAndNewlines)
-        if (text.isEmpty && imagePath.isEmpty) || chatIsSending || isRunning || OpenClawRuntimeMaintenance.isActive { return }
+        if (text.isEmpty && imagePath.isEmpty) || chatIsSending || isRunning || modeSwitchInProgress || OpenClawRuntimeMaintenance.isActive { return }
 
         if useDeveloperSession {
             developerInput = ""
@@ -9147,14 +9209,16 @@ final class InstallerViewModel: ObservableObject {
             process.arguments = ["node", script.path, agentID, sessionID, String(since)]
             var environment = ProcessInfo.processInfo.environment
             environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:\(NSHomeDirectory())/.npm-global/bin:\(environment["PATH"] ?? "")"
-            if let runtime = try? OpenClawRuntimeInstallation.managed() {
-                environment = runtime.applying(to: environment)
-            }
-            process.environment = environment
             process.standardInput = FileHandle.nullDevice
             process.standardOutput = pipe
             process.standardError = FileHandle.nullDevice
             do {
+                if let runtime = try OpenClawRuntimeInstallation.managed() {
+                    environment = runtime.applying(to: environment)
+                    process.executableURL = runtime.node
+                    process.arguments = [script.path, agentID, sessionID, String(since)]
+                }
+                process.environment = environment
                 try process.run()
                 self.developerActivityProcess = process
                 defer { if process.isRunning { process.terminate() } }
@@ -9299,6 +9363,8 @@ final class InstallerViewModel: ObservableObject {
         if model.hasPrefix("lmstudio/") || localLMStudioModels.contains(model) {
             selectedChatResponseMode = .local
             inferenceMode = .local
+            selectedProvider = .custom
+            selectedCloudAuthMode = .api
         } else if Self.isOAuthRuntimeModelID(model) {
             selectedChatResponseMode = .cloud
             inferenceMode = .oauth
@@ -9308,6 +9374,8 @@ final class InstallerViewModel: ObservableObject {
         } else if model.hasPrefix("openrouter/") {
             selectedChatResponseMode = .cloud
             inferenceMode = .cloud
+            selectedProvider = .openRouter
+            selectedCloudAuthMode = .api
             selectedOpenRouterModel = model
         }
     }
@@ -12997,7 +13065,12 @@ struct ContentView: View {
                 .help("Switch appearance")
 
                 VStack(alignment: .trailing, spacing: 4) {
-                Picker("", selection: $vm.inferenceMode) {
+                Picker("", selection: Binding(get: { vm.inferenceMode }, set: { newValue in
+                    guard !vm.modelSwitchIsBlocked else { return }
+                    vm.selectInferenceModeFromUser(newValue)
+                    if newValue == .oauth && !vm.cloudProviderAuthConfigured { return }
+                    vm.applyInferenceModeSwitch()
+                })) {
                     Text("Cloud LLM").tag(InstallerViewModel.InferenceMode.cloud)
                     Text("OAuth LLM").tag(InstallerViewModel.InferenceMode.oauth)
                     Text("Local LLM").tag(InstallerViewModel.InferenceMode.local)
@@ -13005,13 +13078,7 @@ struct ContentView: View {
                 .pickerStyle(.segmented)
                 .tint(UI.accent)
                 .frame(width: 270)
-                .onChange(of: vm.inferenceMode) { newValue in
-                    vm.selectInferenceModeFromUser(newValue)
-                    if newValue == .oauth && !vm.cloudProviderAuthConfigured {
-                        return
-                    }
-                    vm.applyInferenceModeSwitch()
-                }
+                .disabled(vm.modelSwitchIsBlocked)
 
                 if !vm.modeSwitchStatus.isEmpty || vm.modeSwitchInProgress {
                     Text(vm.modeSwitchInProgress ? "Switching..." : vm.modeSwitchStatus)
@@ -17218,8 +17285,9 @@ struct ContentView: View {
                 HStack(spacing: 10) {
                     Button(vm.isRunning ? "UPDATING..." : "UPDATE ALL") { vm.updateAll() }
                         .buttonStyle(CTAButton(primary: true))
-                        .disabled(vm.isRunning)
+                        .disabled(vm.modelSwitchIsBlocked)
                     Button("CHECK") { vm.refreshVersions() }.buttonStyle(CTAButton(primary: false))
+                        .disabled(vm.modelSwitchIsBlocked)
                     Button("BACK") { vm.screen = .home }.buttonStyle(CTAButton(primary: false))
                 }
 
@@ -17291,7 +17359,7 @@ struct ContentView: View {
         HStack(spacing: 10) {
             updateGroupCard(
                 title: "App update",
-                detail: "Verify and open the signed DMG; installation remains under your control.",
+                detail: "Download, verify, install and relaunch automatically.",
                 status: vm.installerUpdateStatus,
                 icon: "app.badge",
                 primary: vm.installerUpdateStatus == "Update available"
@@ -17462,7 +17530,7 @@ struct ContentView: View {
                 .fixedSize(horizontal: false, vertical: true)
             Button(primary ? "Update" : "Run") { action() }
                 .buttonStyle(CTAButton(primary: primary))
-                .disabled(vm.isRunning || status == "Up to date")
+                .disabled(vm.modelSwitchIsBlocked || status == "Up to date")
         }
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
@@ -19817,7 +19885,7 @@ struct ContentView: View {
                                 .foregroundStyle(UI.accent)
                             faqRow(question: "Terminal asks for Password. Which password is this?", answer: "Your Mac user password. Nothing is shown while typing, this is normal on macOS.")
                             faqRow(question: "Install says complete, but I get no replies.", answer: "Open Install again, verify provider and key, then run Help > Health commands > Run Health Check.")
-                            faqRow(question: "I clicked Update LocalClaw but UI did not change.", answer: "Make sure you are on app version 1.0.1 or newer. Older builds could update repo code without replacing the running app bundle.")
+                            faqRow(question: "I clicked Update LocalClaw but UI did not change.", answer: "From version 1.0.207, App update installs the verified release and relaunches LocalClaw automatically. Install LocalClaw in Applications or your user Applications folder. Earlier versions need one final DMG installation to receive this updater.")
 
                             Text("Common beginner questions")
                                 .font(AppFont.bodySemi(12))

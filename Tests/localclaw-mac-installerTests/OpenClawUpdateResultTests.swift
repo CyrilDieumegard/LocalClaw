@@ -26,6 +26,33 @@ struct OpenClawUpdateResultTests {
         #expect(OpenClawUpdateResult.envelope(in: output)?["steps"] == nil)
     }
 
+    @Test func nativeUnsafeRecoveryCarriesMigrationGuidanceWithoutOverridingConsent() {
+        let result: [String: Any] = ["recovery": [
+            "serviceRestartSafe": false, "reason": "state-migration-started",
+        ]]
+        #expect(OpenClawUpdateResult.serviceRecoveryRefusal(in: result)?.contains("do not roll back code alone") == true)
+        #expect(OpenClawUpdateResult.serviceRecoveryRefusal(in: ["recovery": ["serviceRestartSafe": true]]) == nil)
+        #expect(OpenClawUpdateResult.serviceRecoveryRefusal(in: ["status": "error"]) == nil)
+    }
+
+    @Test func nativeActivationRefusalSurvivesNodeReplacementAndStaysProfileScoped() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("activation-refusal-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let package = home.appendingPathComponent("runtime/lib/node_modules/openclaw")
+        func runtime(node: String, state: String = "state") -> OpenClawRuntimeInstallation {
+            OpenClawRuntimeInstallation(node: home.appendingPathComponent(node), package: package,
+                                        prefix: home.appendingPathComponent("runtime"), state: home.appendingPathComponent(state),
+                                        config: home.appendingPathComponent(state + "/openclaw.json"), serviceLabel: "ai.openclaw.gateway")
+        }
+        let original = runtime(node: "node-22/bin/node")
+        let replacement = runtime(node: "node-24/bin/node")
+        try OpenClawActivationBlock.save(home: home, runtime: original, reason: "state-migration-started")
+        #expect(OpenClawActivationBlock.isPresent(home: home, runtime: replacement))
+        #expect(!OpenClawActivationBlock.isPresent(home: home, runtime: runtime(node: "node-24/bin/node", state: "other-state")))
+        try OpenClawActivationBlock.remove(home: home, runtime: replacement)
+        #expect(!OpenClawActivationBlock.isPresent(home: home, runtime: original))
+    }
+
     @Test func capabilityWarningUsesExplicitReviewWithoutReplay() {
         let text = "Plugin codex requires capability consent; rerun with --accept-capabilities."
         let plan = ChatRecoveryPlan.classify(error: text)

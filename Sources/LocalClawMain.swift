@@ -4,6 +4,9 @@ import SwiftUI
 @main
 enum LocalClawMain {
     @MainActor static func main() {
+        if CommandLine.arguments.dropFirst().contains(LocalClawSelfUpdater.helperArgument) {
+            exit(LocalClawSelfUpdater.runHelper(arguments: CommandLine.arguments))
+        }
         if CommandLine.arguments.dropFirst().contains("--check-update-output") {
             var result: [String: Any] = ["ok": false, "gatewayVerified": false]
             do {

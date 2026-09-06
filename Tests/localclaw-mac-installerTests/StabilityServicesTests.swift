@@ -18,6 +18,79 @@ struct StabilityServicesTests {
         #expect(RuntimeSnapshotResolver.authProvider(for: "lmstudio/google/gemma-4-e2b") == nil)
     }
 
+    @Test func ambiguousProfileAndAgentCannotAppearAsCustomModels() {
+        for placeholder in ["Profile selection required", "Agent selection required", " Unknown "] {
+            #expect(RuntimeSnapshotResolver.route(for: placeholder) == .unavailable)
+            #expect(RuntimeSnapshotResolver.authProvider(for: placeholder) == nil)
+        }
+    }
+
+    @Test func missingSelectedLocalModelBlocksReadinessEvenWhenAnotherModelIsLoaded() {
+        let snapshot = RuntimeSnapshotResolver.resolve(
+            gatewayReady: true, gatewayDetail: "RPC healthy", openClawInstalled: true,
+            openClawVersion: "2026.9.2", model: "lmstudio/test/selected", route: .local,
+            authReady: true, lmStudioInstalled: true, loadedLocalModel: "test/other",
+            downloadedLocalModels: ["test/other"], connectedChannels: 0
+        )
+        #expect(snapshot.health == .blocked)
+        #expect(!snapshot.isUsable)
+        #expect(!snapshot.modelReady)
+        #expect(snapshot.issues.first?.id == "local-model")
+        #expect(snapshot.authLabel == "Model not available")
+    }
+
+    @Test func downloadedSelectedLocalModelWarnsWhenOnlyAnotherModelIsLoaded() {
+        let snapshot = RuntimeSnapshotResolver.resolve(
+            gatewayReady: true, gatewayDetail: "RPC healthy", openClawInstalled: true,
+            openClawVersion: "2026.9.2", model: "lmstudio/test/selected", route: .local,
+            authReady: true, lmStudioInstalled: true, loadedLocalModel: "test/other",
+            downloadedLocalModels: ["test/other", "test/selected"], connectedChannels: 0
+        )
+        #expect(snapshot.health == .attention)
+        #expect(snapshot.isUsable)
+        #expect(snapshot.modelReady)
+        #expect(snapshot.issues.first?.id == "local-load")
+    }
+
+    @Test func selectedLoadedLocalModelAndAuthenticatedCloudAreReady() {
+        let local = RuntimeSnapshotResolver.resolve(
+            gatewayReady: true, gatewayDetail: "RPC healthy", openClawInstalled: true,
+            openClawVersion: "2026.9.2", model: "lmstudio/test/selected", route: .local,
+            authReady: true, lmStudioInstalled: true, loadedLocalModel: "test/selected",
+            downloadedLocalModels: ["test/selected"], connectedChannels: 0
+        )
+        #expect(local.health == .ready)
+        let cloud = RuntimeSnapshotResolver.resolve(
+            gatewayReady: true, gatewayDetail: "RPC healthy", openClawInstalled: true,
+            openClawVersion: "2026.9.2", model: "openai/test", route: .oauth,
+            authReady: true, lmStudioInstalled: false, loadedLocalModel: nil,
+            downloadedLocalModels: [], connectedChannels: 0
+        )
+        #expect(cloud.health == .ready)
+    }
+
+    @Test func catalogTrustValidationRejectsOffOriginRedirectDestinations() throws {
+        #expect(LocalModelCatalogService.isTrustedEndpoint(try #require(URL(string: "https://localclaw.io/downloads/models.json"))))
+        for endpoint in ["http://localclaw.io/models.json", "https://example.com/models.json", "https://localclaw.io:8443/models.json", "https://user:password@localclaw.io/models.json"] {
+            #expect(!LocalModelCatalogService.isTrustedEndpoint(try #require(URL(string: endpoint))))
+        }
+    }
+
+    @Test func gatewayAuthenticationFailureDoesNotRequestNewModelCredentials() {
+        let plan = ChatRecoveryPlan.classify(error: "unauthorized: gateway token mismatch (auth_token_mismatch)")
+        #expect(plan.kind == .gateway)
+        #expect(plan.primaryActionLabel == "Repair Gateway")
+        #expect(!plan.replaysRequestAfterRepair)
+        #expect(ChatRecoveryPlan.classify(error: "Invalid API key, status 401").kind == .authentication)
+    }
+
+    @Test func unavailableCloudModelDoesNotClaimLMStudioNeedsRepair() {
+        let plan = ChatRecoveryPlan.classify(error: "GatewayClientRequestError: Unknown model openai/removed-model")
+        #expect(plan.primaryActionLabel == "Open Models")
+        #expect(plan.title == "The selected model is unavailable")
+        #expect(!plan.explanation.contains("local model"))
+    }
+
     @Test @MainActor func catalogValidationAcceptsSupportedSchema() throws {
         let data = """
         {

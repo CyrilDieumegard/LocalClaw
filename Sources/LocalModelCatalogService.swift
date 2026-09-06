@@ -39,13 +39,14 @@ final class LocalModelCatalogService: @unchecked Sendable {
     }
 
     func fetch() async throws -> LocalModelCatalogDocument {
-        guard endpoint.scheme == "https", endpoint.host == "localclaw.io" else { throw CatalogError.invalidEndpoint }
+        guard Self.isTrustedEndpoint(endpoint) else { throw CatalogError.invalidEndpoint }
         var request = URLRequest(url: endpoint)
         request.timeoutInterval = 12
         request.cachePolicy = .reloadRevalidatingCacheData
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode), data.count < 512_000 else {
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+              let finalURL = http.url, Self.isTrustedEndpoint(finalURL), data.count < 512_000 else {
             throw CatalogError.invalidResponse
         }
         let document = try decodeAndValidate(data)
@@ -60,6 +61,7 @@ final class LocalModelCatalogService: @unchecked Sendable {
     }
 
     func decodeAndValidate(_ data: Data) throws -> LocalModelCatalogDocument {
+        guard data.count < 512_000 else { throw CatalogError.invalidCatalog }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let document = try decoder.decode(LocalModelCatalogDocument.self, from: data)
@@ -88,6 +90,11 @@ final class LocalModelCatalogService: @unchecked Sendable {
 
     static func isValidModelQuery(_ value: String) -> Bool {
         isValidSlugPath(value, allowsQuantization: true)
+    }
+
+    static func isTrustedEndpoint(_ url: URL) -> Bool {
+        url.scheme?.lowercased() == "https" && url.host?.lowercased() == "localclaw.io" &&
+            url.user == nil && url.password == nil && (url.port == nil || url.port == 443)
     }
 
     static func isValidProviderID(_ value: String) -> Bool {

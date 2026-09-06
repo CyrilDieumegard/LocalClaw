@@ -661,6 +661,101 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(try fixture.archives().count == 1)
     }
 
+    @Test(arguments: [false, true])
+    func nativeActivationRefusalKeepsGatewayStoppedAndBackupIntact(_ needsOfflineBackup: Bool) throws {
+        let fixture = try Fixture(schemaMismatch: needsOfflineBackup, failure: .unsafeRecovery,
+                                  installedVersion: "2026.9.1", targetVersion: "2026.9.2")
+        defer { fixture.cleanUp() }
+        let original = try Data(contentsOf: fixture.database)
+        let result = fixture.maintenance().update()
+        #expect(result.state == .fail)
+        #expect(result.message.contains("could not verify that this installation is safe to restart"))
+        #expect(result.message.contains("do not roll back code alone"))
+        #expect(!result.message.contains("RPC health was verified after the failure"))
+        #expect(!fixture.gatewayRunning)
+        #expect(!fixture.commands.contains { $0.contains("gateway install") || $0.contains("gateway restart") || $0.contains("gateway start") })
+        #expect(fixture.maintenance().hasPendingUpdate())
+        let commandCount = fixture.commands.count
+        let nextAttempt = fixture.maintenance().prepareGateway()
+        #expect(nextAttempt.state == .fail)
+        #expect(nextAttempt.message.contains("safe Gateway activation"))
+        #expect(fixture.commands.count == commandCount)
+        #expect(try Data(contentsOf: fixture.database) == original)
+        if needsOfflineBackup { #expect(try fixture.archives().count == 1) }
+    }
+
+    @Test func nativeActivationBlockClearsOnlyAfterACompleteVerifiedRepair() throws {
+        let fixture = try Fixture(schemaMismatch: false, failure: .unsafeRecovery,
+                                  installedVersion: "2026.9.1", targetVersion: "2026.9.2")
+        defer { fixture.cleanUp() }
+        #expect(fixture.maintenance().update().state == .fail)
+        #expect(fixture.maintenance().hasPendingUpdate())
+
+        fixture.failure = .restart
+        let incompleteRepair = fixture.maintenance().repairCurrentVersion()
+        #expect(incompleteRepair.state == .fail)
+        #expect(fixture.maintenance().hasPendingUpdate())
+        #expect(!fixture.gatewayRunning)
+        #expect(!incompleteRepair.message.contains("RPC health was verified after the failure"))
+
+        fixture.failure = nil
+        let verifiedRepair = fixture.maintenance().repairCurrentVersion()
+        #expect(verifiedRepair.state == .ok, Comment(rawValue: verifiedRepair.message))
+        #expect(!fixture.maintenance().hasPendingUpdate())
+        #expect(fixture.gatewayRunning)
+        #expect(verifiedRepair.message.contains("two RPC checks verified"))
+    }
+
+    @Test func failedOfflineBackupDoesNotBypassAnEarlierNativeActivationRefusal() throws {
+        let fixture = try Fixture(schemaMismatch: false, failure: .unsafeRecovery,
+                                  installedVersion: "2026.9.1", targetVersion: "2026.9.2")
+        defer { fixture.cleanUp() }
+        #expect(fixture.maintenance().update().state == .fail)
+        fixture.failure = .activeWriter
+        let commandsBeforeRetry = fixture.commands.count
+        #expect(fixture.maintenance().repairCurrentVersion().state == .fail)
+        #expect(fixture.maintenance().hasPendingUpdate())
+        #expect(!fixture.gatewayRunning)
+        #expect(!fixture.commands.dropFirst(commandsBeforeRetry).contains {
+            $0.contains("gateway install") || $0.contains("gateway start") || $0.contains("gateway restart")
+        })
+    }
+
+    @Test func nativeVerifiedRollbackCanRestorePreviousGatewayWithoutClaimingUpgradeSuccess() throws {
+        let fixture = try Fixture(schemaMismatch: false, failure: .safeRollback,
+                                  installedVersion: "2026.9.1", targetVersion: "2026.9.2")
+        defer { fixture.cleanUp() }
+        let result = fixture.maintenance().update()
+        #expect(result.state == .fail)
+        #expect(fixture.gatewayRunning)
+        #expect(fixture.gatewayVersion == "2026.9.1")
+        #expect(result.message.contains("RPC health was verified after the failure"))
+        #expect(!fixture.maintenance().hasPendingUpdate())
+    }
+
+    @Test(arguments: ["v22.22.2", "v23.11.0", "v24.14.0", "v25.8.0", "unreadable"])
+    func incompatibleSelectedNodeStopsBeforeConfigBackupOrServiceMutation(_ nodeVersion: String) throws {
+        let fixture = try Fixture(schemaMismatch: false, installedVersion: "2026.9.1", targetVersion: "2026.9.2")
+        defer { fixture.cleanUp() }
+        fixture.nodeVersion = nodeVersion
+        let result = fixture.maintenance().update()
+        #expect(result.state == .fail)
+        #expect(result.message.contains("selected Gateway uses unsupported Node"))
+        #expect(fixture.commands.count == 1)
+        #expect(fixture.commands[0].contains(".hermes/node/bin/node' --version"))
+        #expect(!fixture.didUpdate)
+        #expect(fixture.gatewayRunning)
+    }
+
+    @Test func selectedSupportedNodeAllowsNineTwoMaintenance() throws {
+        let fixture = try Fixture(schemaMismatch: false, installedVersion: "2026.9.1", targetVersion: "2026.9.2")
+        defer { fixture.cleanUp() }
+        fixture.nodeVersion = "v24.15.0"
+        let result = fixture.maintenance().update()
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(result.message.contains("OpenClaw 2026.9.2 ready"))
+    }
+
     @Test func healthRequiresGatewayVersionNotJustCLIOrPort() {
         #expect(!OpenClawRuntimeMaintenance.verifiedGateway(#"{"service":{"runtime":{"status":"running"}},"rpc":{"ok":true},"cli":{"version":"2026.8.1"},"gateway":{"version":"2026.7.1-2"}}"#, expectedVersion: "2026.8.1"))
         #expect(OpenClawRuntimeMaintenance.verifiedGateway(#"{"service":{"runtime":{"status":"running"}},"rpc":{"ok":true,"server":{"version":"2026.8.1"}}}"#, expectedVersion: "2026.8.1"))
@@ -1307,7 +1402,7 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(OpenClawUpdateCheckpoint.load(home: fixture.home, runtime: second) != nil)
     }
 
-    enum Failure: String, Sendable { case backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, pluginWarning, configRemains, registryUnavailable, registryNoSpace, invalidRegistryVersion, newerRegistry, approvalsMigration, unverifiedApprovalsMigration, consent, malformedResult, wrongRepairMode, wrongResultRoot, nonzeroSuccess, restart, agentOwner }
+    enum Failure: String, Sendable { case backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, pluginWarning, configRemains, registryUnavailable, registryNoSpace, invalidRegistryVersion, newerRegistry, approvalsMigration, unverifiedApprovalsMigration, consent, malformedResult, wrongRepairMode, wrongResultRoot, nonzeroSuccess, restart, agentOwner, unsafeRecovery, safeRollback }
 
     private final class Fixture {
         let home: URL
@@ -1323,6 +1418,7 @@ struct OpenClawRuntimeMaintenanceTests {
         var didUpdate = false
         var gatewayRunning = true
         var gatewayVersion: String
+        var nodeVersion = "v22.22.3"
         var inspections: [(Int32, String)] = []
 
         init(
@@ -1433,6 +1529,7 @@ struct OpenClawRuntimeMaintenanceTests {
         func execute(_ command: String) -> (Int32, String) {
             commands.append(command)
             do {
+                if command.contains("node' --version") { return (0, nodeVersion) }
                 if command.contains("config validate --json") {
                     if invalidConfig && !didUpdate || failure == .configRemains {
                         return (1, #"{"ok":false,"valid":false,"issues":[{"path":"meta","message":"Invalid input"},{"path":"agents.defaults","message":"Invalid input"},{"path":"memory","message":"Invalid input"}]}"#)
@@ -1565,6 +1662,15 @@ struct OpenClawRuntimeMaintenanceTests {
                     if failure == .pluginWarning { result["postUpdate"] = ["plugins": ["status": "warning"]] }
                     if failure == .consent {
                         result["postUpdate"] = ["plugins": ["status": "warning", "npm": ["outcomes": [["pluginId": "codex", "status": "error", "code": "PLUGIN_CAPABILITY_CONSENT_REQUIRED"]]]]]
+                    }
+                    if failure == .unsafeRecovery || failure == .safeRollback {
+                        gatewayRunning = false
+                        result["status"] = "error"
+                        result["recovery"] = [
+                            "serviceRestartSafe": failure == .safeRollback,
+                            "reason": failure == .safeRollback ? "rollback-verified" : "state-migration-started",
+                        ]
+                        if failure == .safeRollback { try writeVersion(installedVersion) }
                     }
                     let diagnostic = #"Doctor: openclaw config set commands.ownerAllowFrom '["telegram:123456789"]'"#
                     return (failure == .nonzeroSuccess ? 1 : 0, diagnostic + "\n" + String(decoding: try JSONSerialization.data(withJSONObject: result), as: UTF8.self))

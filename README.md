@@ -28,7 +28,7 @@ No DMG or prebuilt binaries are committed here.
 ## Quick start
 
 ```bash
-swift run
+./script/build_and_run.sh
 ```
 
 ## Run tests
@@ -37,15 +37,39 @@ swift run
 swift test
 ```
 
+## Automatic app updates
+
+From 1.0.207, **Updates > App update > Update** downloads the release, checks its
+SHA-256, Apple signature, signing team, bundle identity, exact version/build and
+Gatekeeper assessment, then installs and relaunches LocalClaw automatically.
+**Update all** finishes dependencies and OpenClaw first, then installs the app
+update last. A failed prerequisite stops the operation and reports its cause.
+
+The updater runs from `/Applications/LocalClaw.app` or
+`~/Applications/LocalClaw.app` when the account can write to that Applications
+folder. It uses a private staging directory on the same volume, authenticates the
+new app's helper, waits for the exact old process to exit and atomically swaps
+bundles. If verification or relaunch fails, it restores the previous bundle when
+safe and relaunches it with a readable failure report. Settings and conversations
+are not part of the app replacement. Read-only/admin-owned destinations give an
+explicit error; installing in the user's Applications folder enables updates
+without a privileged helper.
+
+Users of 1.0.206 and earlier need one final DMG installation to receive this new
+updater. They can use the integrated button for subsequent releases.
+
 ## OpenClaw compatibility
 
-LocalClaw 1.0.206 targets OpenClaw 2026.8.2. It recognizes 2026.7.1 and
+LocalClaw 1.0.207 is checked against the real OpenClaw 2026.9.2 npm package.
+The audit and its validation boundaries are recorded in
+[`OPENCLAW_2026_9_2_AUDIT.md`](OPENCLAW_2026_9_2_AUDIT.md).
+LocalClaw recognizes 2026.7.1 and
 2026.8.1 as existing-user migration sources and never treats an older runtime
 as the successful end state of an automatic update.
 Update LocalClaw first, then use Updates to upgrade OpenClaw. The one-time
 pre-8.1 to 8.1 migration and exceptional schema/configuration recovery create a
 verified state backup under `~/Library/Application Support/LocalClaw/runtime-backups/`.
-Routine same-schema OpenClaw 2.0 updates, including 8.1 to 8.2, do not duplicate
+Routine same-schema OpenClaw 2.0 updates, including 2026.9.2, do not duplicate
 that full archive; they use LocalClaw's small config snapshot and OpenClaw's
 native update safeguards. The normal portable backup excludes project workspaces.
 If the old runtime cannot read an already migrated database, LocalClaw stops the
@@ -110,6 +134,22 @@ runtime and state, so a later attempt can resume without duplicating the archive
 Missing or changed backups cannot be reused. Native repair never restarts the
 Gateway, so LocalClaw explicitly installs/restarts the repaired service and checks
 its binding, configuration, version and two RPC samples before reporting success.
+
+Maintenance verifies the exact Gateway Node version before stopping a service or
+starting an update. If the native updater reports `recovery.serviceRestartSafe=false`,
+LocalClaw respects that recovery decision instead of blindly reinstalling and
+restarting the service. Explicit system-agent and legacy default-agent ownership
+are preserved. Model selection and credential discovery follow that selected agent,
+including per-agent model overrides and custom credential directories.
+
+Goal control uses the selected OpenClaw package and bounds unresponsive helper
+reads. A lost response retains the original operation ID for native receipt
+reconciliation. Automation receipts left running by a previous LocalClaw process
+are shown as unknown until their outcome can be checked in OpenClaw. A configured
+local model that is absent blocks readiness; loading a different model does not
+make the selected one ready. Gateway-token failures lead to Gateway recovery.
+Support diagnostics redact credentials inside structured error messages as well
+as quoted environment variables, HTTP authorization headers and mixed JSON logs.
 
 Widened plugin capabilities are never accepted automatically. A dedicated Plugin
 Permissions sheet opens native OpenClaw review in Terminal, where each staged

@@ -462,7 +462,11 @@ struct OpenClawRuntimeInstallation {
 
 struct MaintenanceError: LocalizedError {
     let message: String
-    init(_ message: String) { self.message = message }
+    let allowsServiceRecovery: Bool
+    init(_ message: String, allowsServiceRecovery: Bool = true) {
+        self.message = message
+        self.allowsServiceRecovery = allowsServiceRecovery
+    }
     var errorDescription: String? { message }
 }
 
@@ -576,7 +580,8 @@ final class OpenClawRuntimeMaintenance {
 
     func hasPendingUpdate() -> Bool {
         guard let runtime = try? installation() else { return false }
-        return OpenClawUpdateCheckpoint.load(home: home, runtime: runtime) != nil
+        return OpenClawUpdateCheckpoint.load(home: home, runtime: runtime) != nil ||
+            OpenClawActivationBlock.isPresent(home: home, runtime: runtime)
     }
 
     static func supportsPostCoreRepair(_ version: String?) -> Bool {
@@ -602,7 +607,7 @@ final class OpenClawRuntimeMaintenance {
            !owner.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return nil
         }
-        return OpenClawCompatibility.chatAgentID(in: config)
+        return identifiers.contains("main") ? "main" : nil
     }
 
     static func requiresFullStateBackup(
@@ -687,6 +692,10 @@ final class OpenClawRuntimeMaintenance {
         defer { Self.lock.unlock() }
         do {
             var runtime = try installation()
+            if OpenClawActivationBlock.isPresent(home: home, runtime: runtime) {
+                return allowRuntimeUpdate ? updateUnlocked(requiresOfflineBackup: true)
+                    : StepResult(state: .fail, message: "OpenClaw post-update repair is pending because the updater could not verify safe Gateway activation. Use Repair Gateway to finish verification before starting it. No request was sent.")
+            }
             if OpenClawUpdateCheckpoint.load(home: home, runtime: runtime) != nil {
                 return allowRuntimeUpdate ? updateUnlocked()
                     : StepResult(state: .fail, message: "OpenClaw post-update repair is pending. Use Repair Gateway to finish. No request was sent.")
@@ -970,6 +979,16 @@ final class OpenClawRuntimeMaintenance {
             report("Checking free disk space before contacting npm...")
             try OpenClawStorageRecovery.requireSpace(at: home, freeBytes: freeBytes)
             let runtime = try installation()
+            let nodeVersion = try checked(
+                bounded(runtime.environmentPrefix + q(runtime.node.path) + " --version", seconds: 15),
+                stage: "Check Gateway Node runtime"
+            )
+            guard InstallerEngine.isNodeVersionSupported(nodeVersion) else {
+                throw MaintenanceError(
+                    "The selected Gateway uses unsupported Node \(nodeVersion) at \(runtime.node.path). " +
+                    "OpenClaw requires \(InstallerEngine.nodeRequirementDescription). Update that Node installation before retrying; no service or package was changed."
+                )
+            }
             let installedConsumers = try OpenClawRuntimeInstallation.installedGatewayServices(home: home)
             let unsafeSharedRuntime = Self.hasUnsafeSharedRuntimeConsumer(
                 selected: runtime, consumers: installedConsumers
@@ -1067,12 +1086,13 @@ final class OpenClawRuntimeMaintenance {
             }
             let status = probeGateway(runtime).1
             let schemaMismatch = OpenClawSchemaMismatch.detect(in: status) != nil
-            var mismatch = requiresOfflineBackup || repairingConfig || pendingApprovals || schemaMismatch
+            let activationBlocked = OpenClawActivationBlock.isPresent(home: home, runtime: runtime)
+            var mismatch = requiresOfflineBackup || repairingConfig || pendingApprovals || schemaMismatch || activationBlocked
             let directory = home.appendingPathComponent("Library/Application Support/LocalClaw/runtime-backups")
             let needsFullBackup = Self.requiresFullStateBackup(
                 current: current,
                 target: target,
-                requiresOfflineBackup: requiresOfflineBackup,
+                requiresOfflineBackup: requiresOfflineBackup || activationBlocked,
                 repairingConfiguration: repairingConfig,
                 pendingLegacyApprovals: pendingApprovals,
                 schemaMismatch: schemaMismatch
@@ -1157,7 +1177,8 @@ final class OpenClawRuntimeMaintenance {
             return result
         } catch {
             var serviceRecovery = ""
-            if let runtime = restartOnFailure {
+            if let runtime = restartOnFailure, (error as? MaintenanceError)?.allowsServiceRecovery != false,
+               !OpenClawActivationBlock.isPresent(home: home, runtime: runtime) {
                 report("Maintenance failed after runtime or service mutation. Reinstalling the selected service definition and verifying RPC...")
                 let install = run(bounded(runtime.command("gateway install --force --json"), seconds: 90))
                 var recoveryRuntime = runtime
@@ -1231,15 +1252,25 @@ final class OpenClawRuntimeMaintenance {
             ), seconds: 1800),
             status: "OpenClaw update and verification are still running"
         )
-        // Keep a resumable checkpoint even if Doctor fails after the package swap.
-        if runtime.version == target, let backupPath {
-            try OpenClawUpdateCheckpoint.save(home: home, runtime: runtime, target: target, archive: URL(fileURLWithPath: backupPath))
-        }
         let output = update.1
         guard let result = OpenClawUpdateResult.envelope(in: output),
               let root = result["root"] as? String,
               URL(fileURLWithPath: root).resolvingSymlinksInPath() == runtime.package.resolvingSymlinksInPath() else {
             throw MaintenanceError("OpenClaw maintenance returned no verifiable result for this installation (exit \(update.0)).\n\(output)")
+        }
+        if let refusal = OpenClawUpdateResult.serviceRecoveryRefusal(in: result) {
+            do {
+                try OpenClawActivationBlock.save(home: home, runtime: runtime, reason: refusal)
+            } catch {
+                throw MaintenanceError(refusal + "\nThe activation refusal could not be saved: \(error.localizedDescription)\n" + output,
+                                       allowsServiceRecovery: false)
+            }
+            throw MaintenanceError(refusal + "\n" + output, allowsServiceRecovery: false)
+        }
+        // Keep a resumable checkpoint when the selected core is installed, but
+        // never turn an explicit native activation refusal into a resume receipt.
+        if runtime.version == target, let backupPath {
+            try OpenClawUpdateCheckpoint.save(home: home, runtime: runtime, target: target, archive: URL(fileURLWithPath: backupPath))
         }
         if repairOnly {
             guard result["mode"] as? String == "finalize", result["restart"] as? Bool == false else {
@@ -1289,6 +1320,7 @@ final class OpenClawRuntimeMaintenance {
             verified = probe.1
             samples = probe.0 == 0 && Self.verifiedGateway(probe.1, expectedVersion: target) ? samples + 1 : 0
             if samples == 2 {
+                try OpenClawActivationBlock.remove(home: home, runtime: runtime)
                 try OpenClawUpdateCheckpoint.remove(home: home, runtime: runtime)
                 let backup = backupPath.map { "Recovery backup: \($0)" }
                     ?? "Full state backup: not required for this same-schema OpenClaw 2.0 maintenance."
@@ -1382,7 +1414,7 @@ final class OpenClawRuntimeMaintenance {
             )
             return stoppedLoadedService
         } catch {
-            guard stoppedLoadedService else { throw error }
+            guard stoppedLoadedService, !OpenClawActivationBlock.isPresent(home: home, runtime: runtime) else { throw error }
             report("Offline backup failed after stopping the Gateway. Restoring and verifying the previous service...")
             let restart = run(bounded(runtime.command("gateway start --json"), seconds: 90))
             let probe = restart.0 == 0

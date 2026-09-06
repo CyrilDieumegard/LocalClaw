@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Darwin
 
 enum GoalLifecycleStatus: String, Codable, Sendable {
     case active
@@ -930,6 +931,108 @@ enum OpenClawGoalBridgeError: LocalizedError {
     }
 }
 
+struct GoalControllerLineReader {
+    private var buffer = Data()
+
+    mutating func readLine(
+        from handle: FileHandle,
+        deadline: TimeInterval,
+        maxLineBytes: Int = 1_048_576
+    ) throws -> Data? {
+        while true {
+            if let newline = buffer.firstIndex(of: 0x0A) {
+                guard buffer.distance(from: buffer.startIndex, to: newline) <= maxLineBytes else { throw OpenClawGoalBridgeError.invalidResponse }
+                let line = Data(buffer[..<newline])
+                buffer.removeSubrange(...newline)
+                if line.isEmpty { continue }
+                return line
+            }
+            guard buffer.count <= maxLineBytes else { throw OpenClawGoalBridgeError.invalidResponse }
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            guard remaining > 0 else {
+                throw OpenClawGoalBridgeError.processFailed(
+                    "OpenClaw Goal control timed out. The operation may have committed; refresh its state before retrying."
+                )
+            }
+            var descriptor = pollfd(fd: handle.fileDescriptor, events: Int16(POLLIN), revents: 0)
+            let result = Darwin.poll(&descriptor, 1, Int32(max(1, min(remaining * 1_000, 1_000))))
+            if result < 0 {
+                if errno == EINTR { continue }
+                throw OpenClawGoalBridgeError.invalidResponse
+            }
+            if result == 0 { continue }
+            guard descriptor.revents & Int16(POLLNVAL | POLLERR) == 0 else {
+                throw OpenClawGoalBridgeError.invalidResponse
+            }
+            var bytes = [UInt8](repeating: 0, count: 8_192)
+            let count = Darwin.read(handle.fileDescriptor, &bytes, bytes.count)
+            if count < 0 {
+                if errno == EINTR || errno == EAGAIN { continue }
+                throw OpenClawGoalBridgeError.invalidResponse
+            }
+            if count == 0 { return nil }
+            buffer.append(contentsOf: bytes.prefix(count))
+        }
+    }
+}
+
+enum GoalWorkspaceBinding {
+    // Match OpenClaw's resolveAgentWorkspaceDir: only the sole/legacy-default
+    // agent inherits the base workspace; every other agent gets its own folder.
+    static func resolve(
+        agentID: String,
+        config: [String: Any],
+        state: URL,
+        home: URL,
+        environment: [String: String],
+        workingDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    ) -> URL {
+        let agents = config["agents"] as? [String: Any] ?? [:]
+        let defaults = agents["defaults"] as? [String: Any] ?? [:]
+        var entries: [String: [String: Any]] = [:]
+        if let keyed = agents["entries"] as? [String: Any] {
+            for (id, value) in keyed {
+                if let entry = value as? [String: Any] { entries[id.lowercased()] = entry }
+            }
+        } else if let list = agents["list"] as? [[String: Any]] {
+            for entry in list {
+                if let id = entry["id"] as? String { entries[id.lowercased()] = entry }
+            }
+        }
+        let id = agentID.lowercased()
+        let configuredDefaults = entries.filter { $0.value["default"] as? Bool == true }.map(\.key)
+        let inheritedID: String?
+        if agents["ownership"] as? String != "explicit", configuredDefaults.count == 1 {
+            inheritedID = configuredDefaults.first
+        } else if entries.count == 1 {
+            inheritedID = entries.keys.first
+        } else if agents["entries"] == nil && agents["list"] == nil {
+            inheritedID = "main"
+        } else {
+            inheritedID = nil
+        }
+
+        func path(_ raw: Any?) -> URL? {
+            guard let raw = (raw as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
+            if raw == "~" { return home }
+            if raw.hasPrefix("~/") { return home.appendingPathComponent(String(raw.dropFirst(2)), isDirectory: true) }
+            if raw.hasPrefix("/") { return URL(fileURLWithPath: raw, isDirectory: true) }
+            return workingDirectory.appendingPathComponent(raw, isDirectory: true)
+        }
+        let workspace: URL
+        if let configured = path(entries[id]?["workspace"]) {
+            workspace = configured
+        } else if let base = path(defaults["workspace"]) {
+            workspace = id == inheritedID ? base : base.appendingPathComponent(id, isDirectory: true)
+        } else if id == inheritedID {
+            workspace = path(environment["OPENCLAW_WORKSPACE_DIR"]) ?? state.appendingPathComponent("workspace", isDirectory: true)
+        } else {
+            workspace = state.appendingPathComponent("workspace-\(id)", isDirectory: true)
+        }
+        return workspace.standardizedFileURL.resolvingSymlinksInPath()
+    }
+}
+
 enum GoalControllerResourceLocator {
     private static let resourceBundleName = "localclaw-mac-installer_localclaw-mac-installer.bundle"
     static func locate(scriptName: String = "goal-controller.mjs") -> URL? {
@@ -984,7 +1087,7 @@ actor OpenClawGoalBridge {
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
-    private var outputBuffer = Data()
+    private var outputReader = GoalControllerLineReader()
     private var runtimeIdentifier: String?
     private struct PendingOperation {
         let id: String
@@ -1029,16 +1132,21 @@ actor OpenClawGoalBridge {
         )
         let payload = try JSONEncoder().encode(request)
         guard let input else { throw OpenClawGoalBridgeError.processFailed("Goal controller is not running.") }
-        try input.write(contentsOf: payload + Data([0x0A]))
-
-        while let line = try readLine() {
-            guard let envelope = try? JSONDecoder().decode(GoalControllerEnvelope.self, from: line) else { continue }
-            guard envelope.type == "response", envelope.id == request.id else { continue }
-            if mutatesGoal { pendingOperations.removeValue(forKey: operationKey) }
-            guard envelope.ok else {
-                throw OpenClawGoalBridgeError.processFailed(envelope.message ?? "OpenClaw Goal action failed.")
+        do {
+            try input.write(contentsOf: payload + Data([0x0A]))
+            let deadline = ProcessInfo.processInfo.systemUptime + 30
+            while let line = try readLine(deadline: deadline) {
+                guard let envelope = try? JSONDecoder().decode(GoalControllerEnvelope.self, from: line) else { continue }
+                guard envelope.type == "response", envelope.id == request.id else { continue }
+                if mutatesGoal { pendingOperations.removeValue(forKey: operationKey) }
+                guard envelope.ok else {
+                    throw OpenClawGoalBridgeError.processFailed(envelope.message ?? "OpenClaw Goal action failed.")
+                }
+                return (envelope.goal, envelope.message ?? "Goal updated.")
             }
-            return (envelope.goal, envelope.message ?? "Goal updated.")
+        } catch {
+            resetProcess()
+            throw error
         }
         resetProcess()
         throw OpenClawGoalBridgeError.processFailed("OpenClaw Goal controller stopped unexpectedly.")
@@ -1083,6 +1191,8 @@ actor OpenClawGoalBridge {
         environment["PATH"] = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:\(environment["PATH"] ?? "")"
         if let runtime = managedRuntime {
             environment = runtime.applying(to: environment)
+            process.executableURL = runtime.node
+            process.arguments = [scriptURL.path]
         }
         process.environment = environment
         process.standardInput = stdinPipe
@@ -1099,9 +1209,15 @@ actor OpenClawGoalBridge {
         runtimeIdentifier = identifier
         input = stdinPipe.fileHandleForWriting
         output = stdoutPipe.fileHandleForReading
-        outputBuffer.removeAll(keepingCapacity: true)
+        outputReader = GoalControllerLineReader()
 
-        let readyLine = try readLine()
+        let readyLine: Data?
+        do {
+            readyLine = try readLine(deadline: ProcessInfo.processInfo.systemUptime + 30)
+        } catch {
+            resetProcess()
+            throw error
+        }
         let ready = readyLine.flatMap { try? JSONDecoder().decode(GoalControllerEnvelope.self, from: $0) }
         guard let ready, ready.type == "ready", ready.ok else {
             let message = ready?.message
@@ -1110,19 +1226,9 @@ actor OpenClawGoalBridge {
         }
     }
 
-    private func readLine() throws -> Data? {
-        while true {
-            if let newline = outputBuffer.firstIndex(of: 0x0A) {
-                let line = Data(outputBuffer[..<newline])
-                outputBuffer.removeSubrange(...newline)
-                if line.isEmpty { continue }
-                return line
-            }
-            guard let output else { return nil }
-            let chunk = output.availableData
-            if chunk.isEmpty { return nil }
-            outputBuffer.append(chunk)
-        }
+    private func readLine(deadline: TimeInterval) throws -> Data? {
+        guard let output else { return nil }
+        return try outputReader.readLine(from: output, deadline: deadline)
     }
 
     private func resetProcess() {
@@ -1132,7 +1238,7 @@ actor OpenClawGoalBridge {
         process = nil
         input = nil
         output = nil
-        outputBuffer.removeAll(keepingCapacity: false)
+        outputReader = GoalControllerLineReader()
         runtimeIdentifier = nil
     }
 }
@@ -1196,37 +1302,7 @@ final class GoalCenterModel: ObservableObject {
                   let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
             return root
         }()
-        let agents = config["agents"] as? [String: Any]
-        var rawWorkspace: String?
-        if let entries = agents?["entries"] as? [String: Any],
-           let entry = entries[agentID] as? [String: Any] {
-            rawWorkspace = entry["workspace"] as? String
-        }
-        if rawWorkspace == nil, let list = agents?["list"] as? [[String: Any]],
-           let entry = list.first(where: { ($0["id"] as? String) == agentID }) {
-            rawWorkspace = entry["workspace"] as? String
-        }
-        if rawWorkspace == nil, agentID == "main",
-           let defaults = agents?["defaults"] as? [String: Any] {
-            rawWorkspace = defaults["workspace"] as? String
-        }
-
-        let workspace: URL
-        if let raw = rawWorkspace?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
-            if raw == "~" {
-                workspace = home
-            } else if raw.hasPrefix("~/") {
-                workspace = home.appendingPathComponent(String(raw.dropFirst(2)), isDirectory: true)
-            } else if raw.hasPrefix("/") {
-                workspace = URL(fileURLWithPath: raw, isDirectory: true)
-            } else {
-                workspace = state.appendingPathComponent(raw, isDirectory: true)
-            }
-        } else if agentID == "main" {
-            workspace = state.appendingPathComponent("workspace", isDirectory: true)
-        } else {
-            workspace = state.appendingPathComponent("workspaces/\(agentID)", isDirectory: true)
-        }
+        let workspace = GoalWorkspaceBinding.resolve(agentID: agentID, config: config, state: state, home: home, environment: environment)
         return (
             state.path,
             workspace.standardizedFileURL.resolvingSymlinksInPath().path
