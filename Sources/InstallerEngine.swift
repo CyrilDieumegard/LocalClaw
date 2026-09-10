@@ -1949,20 +1949,22 @@ final class InstallerEngine: @unchecked Sendable {
     /// Machine resource snapshot for Control Center
     func getSystemUsage() -> SystemUsageSnapshot {
         let (_, memTotalRaw) = shell("sysctl -n hw.memsize")
-        let memoryTotalGB = (Double(memTotalRaw) ?? 0) / 1024 / 1024 / 1024
+        let memoryTotalBytes = UInt64(memTotalRaw.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        let memoryTotalGB = Double(memoryTotalBytes) / 1024 / 1024 / 1024
 
         let (_, cpuRaw) = shell("top -l 1 -n 0 | grep -E '^CPU usage' | head -1")
         let cpuPercent = parseCPUPercent(cpuRaw)
 
         let (_, vmRaw) = shell("vm_stat")
-        let (memUsedGB, memAvailableGB) = parseMemoryFromVMStat(vmRaw)
+        let (memUsedGB, memAvailableGB) = SystemResourceMetrics.memory(fromVMStat: vmRaw, totalBytes: memoryTotalBytes)
 
         let (_, swapRaw) = shell("sysctl vm.swapusage")
         let (swapUsedGB, swapTotalGB) = parseSwapUsage(swapRaw)
 
-        let (_, lmRaw) = shell("ps -axo rss,comm | grep -i 'LM Studio.app/Contents/MacOS/LM Studio' | awk '{sum += $1} END {print int(sum/1024)}'")
-        let (_, ocRaw) = shell("ps -axo rss,comm | grep -i '/openclaw' | grep -v grep | awk '{sum += $1} END {print int(sum/1024)}'")
-        let (_, nodeRaw) = shell("ps -axo rss,comm | grep -i '/node' | grep -v grep | awk '{sum += $1} END {print int(sum/1024)}'")
+        // Read RSS once; use arguments only to identify Node entry scripts.
+        let (_, processRaw) = shell("/bin/ps -ww -axo pid=,ppid=,rss=,comm=")
+        let (_, argumentsRaw) = shell("/bin/ps -ww -axo pid=,args=")
+        let processMemory = SystemResourceMetrics.processMemory(fromPS: processRaw, arguments: argumentsRaw)
 
         return SystemUsageSnapshot(
             cpuPercent: cpuPercent,
@@ -1971,9 +1973,9 @@ final class InstallerEngine: @unchecked Sendable {
             memoryTotalGB: max(0, memoryTotalGB),
             swapUsedGB: max(0, swapUsedGB),
             swapTotalGB: max(0, swapTotalGB),
-            lmStudioMemoryMB: Int(lmRaw.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0,
-            openclawMemoryMB: Int(ocRaw.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0,
-            nodeMemoryMB: Int(nodeRaw.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+            lmStudioMemoryMB: processMemory.lmStudioMB,
+            openclawMemoryMB: processMemory.openclawMB,
+            nodeMemoryMB: processMemory.nodeMB
         )
     }
 
@@ -1984,36 +1986,6 @@ final class InstallerEngine: @unchecked Sendable {
             .compactMap { Double($0) }
         guard numbers.count >= 2 else { return 0 }
         return numbers[0] + numbers[1]
-    }
-
-    private func parseMemoryFromVMStat(_ raw: String) -> (usedGB: Double, availableGB: Double) {
-        let lines = raw.components(separatedBy: "\n")
-        var pageSize: Double = 16384
-        if let first = lines.first,
-           let size = first.components(separatedBy: CharacterSet.decimalDigits.inverted).compactMap({ Double($0) }).first {
-            pageSize = size
-        }
-
-        func pages(_ key: String) -> Double {
-            guard let line = lines.first(where: { $0.contains(key) }) else { return 0 }
-            let digits = line.filter { $0.isNumber }
-            return Double(digits) ?? 0
-        }
-
-        let free = pages("Pages free")
-        let speculative = pages("Pages speculative")
-        let active = pages("Pages active")
-        let inactive = pages("Pages inactive")
-        let wired = pages("Pages wired down")
-        let compressed = pages("Pages occupied by compressor")
-
-        let usedPages = active + inactive + wired + compressed
-        let availablePages = free + speculative
-
-        let usedGB = (usedPages * pageSize) / 1024 / 1024 / 1024
-        let availableGB = (availablePages * pageSize) / 1024 / 1024 / 1024
-
-        return (usedGB, availableGB)
     }
 
     private func parseSwapUsage(_ raw: String) -> (usedGB: Double, totalGB: Double) {

@@ -13495,7 +13495,10 @@ struct ContentView: View {
                                 VStack(alignment: .leading, spacing: 12) {
                                     dashboardMeter("CPU", value: vm.machineCPUPercent / 100, label: String(format: "%.0f%%", vm.machineCPUPercent), tint: UI.accent)
                                     let memoryRatio = vm.machineMemoryTotalGB > 0 ? vm.machineMemoryUsedGB / vm.machineMemoryTotalGB : 0
-                                    dashboardMeter("RAM", value: memoryRatio, label: String(format: "%.1f / %.1f GB", vm.machineMemoryUsedGB, vm.machineMemoryTotalGB), tint: Color(NSColor.systemBlue))
+                                    dashboardMeter("RAM used (Mac)", value: memoryRatio, label: String(format: "%.1f / %.1f GB", vm.machineMemoryUsedGB, vm.machineMemoryTotalGB), tint: Color(NSColor.systemBlue))
+                                        .help(SystemResourceMetrics.memoryExplanation)
+                                    Text(SystemResourceMetrics.memoryExplanation)
+                                        .font(AppFont.body(11)).foregroundStyle(UI.muted)
                                     let swapRatio = vm.machineSwapTotalGB > 0 ? vm.machineSwapUsedGB / vm.machineSwapTotalGB : 0
                                     dashboardMeter("Swap", value: swapRatio, label: String(format: "%.2f / %.2f GB", vm.machineSwapUsedGB, vm.machineSwapTotalGB), tint: vm.machineSwapUsedGB >= 4 ? Color(NSColor.systemRed) : Color(NSColor.systemOrange))
                                     HStack(spacing: 8) {
@@ -13503,6 +13506,8 @@ struct ContentView: View {
                                         dashboardMiniStat("LM Studio", String(format: "%.0f MB", vm.machineLMStudioMB))
                                         dashboardMiniStat("Node", String(format: "%.0f MB", vm.machineNodeMB))
                                     }
+                                    Text(SystemResourceMetrics.processExplanation)
+                                        .font(AppFont.body(11)).foregroundStyle(UI.muted)
                                     HStack(spacing: 8) {
                                         Button("Refresh performance") { vm.refreshMachineUsageSnapshot() }
                                             .buttonStyle(CTAButton(primary: false))
@@ -21721,7 +21726,8 @@ struct ContentView: View {
                             String(format: "%.1f / %.1f GB", vm.machineMemoryUsedGB, max(vm.machineMemoryTotalGB, 0.1)),
                             ratio: vm.machineMemoryTotalGB > 0 ? vm.machineMemoryUsedGB / vm.machineMemoryTotalGB : 0
                         )
-                        machineMetricRow("Memory available", String(format: "%.1f GB", vm.machineMemoryAvailableGB))
+                        machineMetricRow("Memory available (incl. cache)", String(format: "%.1f GB", vm.machineMemoryAvailableGB))
+                        Text(SystemResourceMetrics.memoryExplanation).font(AppFont.body(11)).foregroundStyle(UI.muted)
                         machineGaugeRow(
                             "Swap",
                             vm.machineSwapTotalGB > 0 ? String(format: "%.2f / %.2f GB", vm.machineSwapUsedGB, vm.machineSwapTotalGB) : "0 GB",
@@ -21730,6 +21736,7 @@ struct ContentView: View {
                         machineMetricRow("LM Studio", "\(vm.machineLMStudioMB) MB")
                         machineMetricRow("OpenClaw", "\(vm.machineOpenclawMB) MB")
                         machineMetricRow("Node", "\(vm.machineNodeMB) MB")
+                        Text(SystemResourceMetrics.processExplanation).font(AppFont.body(11)).foregroundStyle(UI.muted)
                     }
                 }
                 .padding(14)

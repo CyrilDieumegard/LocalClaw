@@ -1750,6 +1750,8 @@ struct AdvancedCommandCenterView: View {
                     value: String(format: "%.1f / %.1f GB", viewModel.usageSnapshot.memoryUsedGB, max(0.1, viewModel.usageSnapshot.memoryTotalGB)),
                     ratio: viewModel.usageSnapshot.memoryTotalGB > 0 ? viewModel.usageSnapshot.memoryUsedGB / viewModel.usageSnapshot.memoryTotalGB : 0
                 )
+                Text(SystemResourceMetrics.memoryExplanation)
+                    .font(AppFont.body(11)).foregroundStyle(UI.muted)
                 resourceGaugeRow(
                     "Swap",
                     value: String(format: "%.2f / %.2f GB", viewModel.usageSnapshot.swapUsedGB, viewModel.usageSnapshot.swapTotalGB),
@@ -1761,6 +1763,9 @@ struct AdvancedCommandCenterView: View {
                     miniStat("OpenClaw", "\(viewModel.usageSnapshot.openclawMemoryMB) MB")
                     miniStat("Node", "\(viewModel.usageSnapshot.nodeMemoryMB) MB")
                 }
+
+                Text(SystemResourceMetrics.processExplanation)
+                    .font(AppFont.body(11)).foregroundStyle(UI.muted)
 
                 HStack {
                     Text("Heavy processes")

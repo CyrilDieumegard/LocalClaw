@@ -368,3 +368,16 @@ Run the full release matrix in `RELEASE_CHECKLIST.md`. A successful repository b
 - GitHub repo: transparent source and DIY setup
 - Paid installer distribution: convenience, packaging, support
 - Stability and recoverability take priority over adding new sections
+
+## Resource monitoring (1.0.208)
+
+Home and the resource panels show whole-Mac used RAM as physical memory minus
+free pages, file-backed cache and purgeable pages. Reclaimable cache counts as
+available; speculative pages are not counted twice. This retains system memory
+that is absent from a sum of anonymous, wired and compressed pages. Measurements
+can differ slightly from Activity Monitor because sampling times differ.
+
+OpenClaw, LM Studio and Node counters sum resident memory (RSS), not Activity
+Monitor's per-process physical footprint. Bare executable names, OpenClaw Node
+entry scripts and OpenClaw/LM Studio descendants are recognized. Groups can
+overlap (for example, OpenClaw also appears in Node); do not sum these counters.
