@@ -74,6 +74,18 @@ struct SystemResourceMetricsTests {
         #expect(result.nodeMB == 1)
     }
 
+    @Test func gatewayNodeOptionsDoNotHideTheEntryScript() {
+        let processes = "101 1 8192 /opt/homebrew/opt/node/bin/node"
+        for arguments in [
+            "101 /opt/homebrew/opt/node/bin/node --max-old-space-size=8192 /opt/homebrew/lib/node_modules/openclaw/dist/index.js gateway",
+            "101 node --max-old-space-size 8192 --no-warnings /opt/homebrew/lib/node_modules/openclaw/openclaw.mjs gateway",
+            "101 node --require /tmp/preload.js -- /opt/homebrew/lib/node_modules/openclaw/dist/index.js gateway"
+        ] {
+            #expect(SystemResourceMetrics.processMemory(fromPS: processes, arguments: arguments).openclawMB == 8)
+        }
+        #expect(SystemResourceMetrics.processMemory(fromPS: processes, arguments: "101 node --eval openclaw.mjs").openclawMB == 0)
+    }
+
     @Test func incidentalNamesAndMalformedRowsAreNotProcesses() {
         let sample = """
         1 0 999999 /bin/zsh

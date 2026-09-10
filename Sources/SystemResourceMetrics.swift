@@ -67,7 +67,7 @@ enum SystemResourceMetrics {
             let isOpenClawTitle = executable == "openclaw" || executable == "openclaw-gateway"
             // Recognize Node's entry script, not an incidental mention in a shell,
             // grep command, or a later user-supplied argument.
-            let script = argumentsByPID[row.pid]?.split(whereSeparator: { $0.isWhitespace }).dropFirst().first.map(String.init) ?? ""
+            let script = nodeEntryScript(argumentsByPID[row.pid] ?? "")
             let scriptName = (script as NSString).lastPathComponent.lowercased()
             let isOpenClawScript = isNode && (scriptName == "openclaw" || scriptName == "openclaw.mjs"
                 || script.hasSuffix("/openclaw/dist/index.js") || script.hasSuffix("/openclaw/dist/entry.js"))
@@ -99,5 +99,23 @@ enum SystemResourceMetrics {
             } / 1024
         }
         return ProcessMemory(lmStudioMB: megabytes(lmStudio), openclawMB: megabytes(openclaw), nodeMB: megabytes(node))
+    }
+
+    private static func nodeEntryScript(_ arguments: String) -> String {
+        let words = arguments.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        let optionsWithValue: Set<String> = ["-r", "--require", "--import", "--loader", "--experimental-loader",
+                                             "--max-old-space-size", "--max-semi-space-size", "--stack-size"]
+        var index = 1
+        while index < words.count {
+            let word = words[index]
+            if word == "--" { return index + 1 < words.count ? words[index + 1] : "" }
+            // Inline programs are not entry scripts, even if their text names OpenClaw.
+            if ["-e", "--eval", "-p", "--print"].contains(word)
+                || word.hasPrefix("--eval=") || word.hasPrefix("--print=") { return "" }
+            if optionsWithValue.contains(word) { index += 2; continue }
+            if word.hasPrefix("-") { index += 1; continue }
+            return word
+        }
+        return ""
     }
 }
