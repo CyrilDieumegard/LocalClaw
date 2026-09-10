@@ -381,3 +381,5 @@ OpenClaw, LM Studio and Node counters sum resident memory (RSS), not Activity
 Monitor's per-process physical footprint. Bare executable names, OpenClaw Node
 entry scripts and OpenClaw/LM Studio descendants are recognized. Groups can
 overlap (for example, OpenClaw also appears in Node); do not sum these counters.
+Home also formats these integer counters directly, fixing the previous floating-point
+format mismatch that could display nonzero measurements as 0 MB.

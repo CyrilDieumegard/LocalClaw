@@ -13502,9 +13502,9 @@ struct ContentView: View {
                                     let swapRatio = vm.machineSwapTotalGB > 0 ? vm.machineSwapUsedGB / vm.machineSwapTotalGB : 0
                                     dashboardMeter("Swap", value: swapRatio, label: String(format: "%.2f / %.2f GB", vm.machineSwapUsedGB, vm.machineSwapTotalGB), tint: vm.machineSwapUsedGB >= 4 ? Color(NSColor.systemRed) : Color(NSColor.systemOrange))
                                     HStack(spacing: 8) {
-                                        dashboardMiniStat("OpenClaw", String(format: "%.0f MB", vm.machineOpenclawMB))
-                                        dashboardMiniStat("LM Studio", String(format: "%.0f MB", vm.machineLMStudioMB))
-                                        dashboardMiniStat("Node", String(format: "%.0f MB", vm.machineNodeMB))
+                                        dashboardMiniStat("OpenClaw", "\(vm.machineOpenclawMB) MB")
+                                        dashboardMiniStat("LM Studio", "\(vm.machineLMStudioMB) MB")
+                                        dashboardMiniStat("Node", "\(vm.machineNodeMB) MB")
                                     }
                                     Text(SystemResourceMetrics.processExplanation)
                                         .font(AppFont.body(11)).foregroundStyle(UI.muted)
