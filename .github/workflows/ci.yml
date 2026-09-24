@@ -10,6 +10,8 @@ jobs:
   swift:
     name: Swift build and tests
     runs-on: macos-15
+    env:
+      NSUnbufferedIO: "YES"
     steps:
       - name: Checkout
         uses: actions/checkout@v4

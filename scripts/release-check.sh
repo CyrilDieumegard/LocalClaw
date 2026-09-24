@@ -53,7 +53,7 @@ node scripts/test-openclaw-post-update.mjs "$OPENCLAW_PACKAGE_ROOT"
 node scripts/test-openclaw-update-owner.mjs "$OPENCLAW_PACKAGE_ROOT" --legacy-config
 
 echo "[3] swift test"
-swift test --scratch-path /private/tmp/localclaw-release-swift -j 1
+swift test --no-parallel --scratch-path /private/tmp/localclaw-release-swift -j 1
 
 echo "[4] build, sign, notarize and staple DMG"
 RELEASE_NOTARIZE=1 LOCALCLAW_BUILD_NUMBER="$LOCALCLAW_BUILD_NUMBER" bash scripts/build-dmg.sh

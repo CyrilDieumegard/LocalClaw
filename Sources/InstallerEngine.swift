@@ -536,12 +536,20 @@ final class InstallerEngine: @unchecked Sendable {
         let diagnostics = DiagnosticOutput(observer: progress.map(OutputObserver.init))
         if let errors {
             group.enter()
-            DispatchQueue.global(qos: .utility).async {
+            // A blocking caller may occupy a Swift cooperative worker. The
+            // stderr reader must have its own thread: queuing it on a shared
+            // executor can leave the child blocked on a full stderr pipe while
+            // this caller waits for stdout to close.
+            let diagnosticReader = Thread {
+                defer { group.leave() }
                 diagnostics.read(errors.fileHandleForReading)
-                group.leave()
             }
+            diagnosticReader.name = "LocalClaw command diagnostics"
+            diagnosticReader.qualityOfService = .utility
+            diagnosticReader.start()
         }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        // Diagnostic callbacks are complete before the result is returned.
         group.wait()
         process.waitUntilExit()
         let stderr = String(decoding: diagnostics.get(), as: UTF8.self)
@@ -1257,6 +1265,29 @@ final class InstallerEngine: @unchecked Sendable {
 
     func prepareChatGateway(allowRuntimeUpdate: Bool = false, report: @escaping (String) -> Void = { _ in }) -> StepResult {
         OpenClawRuntimeMaintenance(run: maintenanceShell, report: report).prepareGateway(allowRuntimeUpdate: allowRuntimeUpdate)
+    }
+
+    /// Quick Repair checks the selected Gateway before considering native
+    /// maintenance. Only a proven schema mismatch may upgrade the core;
+    /// ordinary startup failures use same-version Doctor repair.
+    func quickRepairOpenClawGateway(maintenance providedMaintenance: OpenClawRuntimeMaintenance? = nil) -> StepResult {
+        let maintenance = providedMaintenance ?? OpenClawRuntimeMaintenance(run: maintenanceShell)
+        let prepared = maintenance.prepareGateway()
+        guard prepared.state == .fail else { return prepared }
+        if prepared.message.contains("CLI targets a different Gateway") { return prepared }
+        let currentFailure = OpenClawRecoveryDiagnostic.currentFailure(in: prepared.message)
+        if OpenClawSchemaMismatch.detect(in: currentFailure) != nil || maintenance.schemaMismatch() != nil {
+            return maintenance.update()
+        }
+        guard let runtime = try? maintenance.installation() else {
+            return prepared
+        }
+        if runtime.serviceLabel == nil,
+           currentFailure.hasPrefix("Gateway recovery stopped: The Gateway service is missing.") {
+            return maintenance.prepareGateway(allowRuntimeUpdate: true)
+        }
+        guard OpenClawRuntimeMaintenance.supportsPostCoreRepair(runtime.version) else { return prepared }
+        return maintenance.repairCurrentVersion()
     }
 
     func gatewayConnectionDiagnostic() -> String {

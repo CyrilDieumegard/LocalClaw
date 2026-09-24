@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import localclaw_mac_installer
@@ -1517,13 +1518,46 @@ struct InstallerEngineTests {
         ) == nil)
     }
 
+    @Test func kanbanCronCommandPreservesSuccessfulOutput() {
+        let result = InstallerViewModel.runKanbanCronCommand(
+            "printf 'cron-ready\\n'",
+            timeoutSeconds: 3
+        )
+
+        #expect(result.0 == 0)
+        #expect(result.1 == "cron-ready")
+    }
+
     @Test func kanbanCronCommandHasABoundedTimeout() {
         let startedAt = Date()
         let result = InstallerViewModel.runKanbanCronCommand(
-            "exec /bin/sleep 6",
+            "exec /bin/sleep 8",
             timeoutSeconds: 1
         )
 
+        #expect(result.0 == 124)
+        #expect(result.1.contains("Cron command timed out after 1s"))
+        #expect(Date().timeIntervalSince(startedAt) < 5.5)
+    }
+
+    @Test func kanbanCronTimeoutDoesNotWaitForAnInheritedOutputPipe() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("localclaw-cron-timeout-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        let childPIDFile = directory.appendingPathComponent("child.pid")
+        defer {
+            if let text = try? String(contentsOf: childPIDFile, encoding: .utf8),
+               let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 1 {
+                _ = Darwin.kill(pid, SIGTERM)
+            }
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        let command = "/usr/bin/nohup /bin/sleep 8 & print -r -- $! > \(InstallerViewModel.shellSingleQuote(childPIDFile.path)); wait"
+        let startedAt = Date()
+        let result = InstallerViewModel.runKanbanCronCommand(command, timeoutSeconds: 1)
+
+        #expect(FileManager.default.fileExists(atPath: childPIDFile.path))
         #expect(result.0 == 124)
         #expect(result.1.contains("Cron command timed out after 1s"))
         #expect(Date().timeIntervalSince(startedAt) < 5.5)

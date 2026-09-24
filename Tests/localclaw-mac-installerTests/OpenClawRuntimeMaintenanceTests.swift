@@ -531,15 +531,20 @@ struct OpenClawRuntimeMaintenanceTests {
         let fixture = try Fixture(schemaMismatch: false)
         defer { fixture.cleanUp() }
         let messages = MessageLog()
+        let backupPulse = DispatchSemaphore(value: 0)
+        let updatePulse = DispatchSemaphore(value: 0)
         let maintenance = OpenClawRuntimeMaintenance(
             home: fixture.home,
             run: { command in
-                if command.contains("backup create") || command.contains("--yes --json") {
-                    Thread.sleep(forTimeInterval: 1.0)
-                }
+                if command.contains("backup create") { _ = backupPulse.wait(timeout: .now() + 5) }
+                if command.contains("--yes --json") { _ = updatePulse.wait(timeout: .now() + 5) }
                 return fixture.execute(command)
             },
-            report: messages.append,
+            report: { message in
+                messages.append(message)
+                if message.contains("Recovery backup is still running") { backupPulse.signal() }
+                if message.contains("OpenClaw update and verification are still running") { updatePulse.signal() }
+            },
             wait: { _ in },
             progressInterval: 0.1
         )
@@ -1075,6 +1080,68 @@ struct OpenClawRuntimeMaintenanceTests {
         })
     }
 
+    @Test func quickRepairLeavesHealthyNineOneRunningWhenNineSixIsAvailable() throws {
+        let fixture = try Fixture(schemaMismatch: false, installedVersion: "2026.9.1", targetVersion: "2026.9.6")
+        defer { fixture.cleanUp() }
+
+        let result = InstallerEngine().quickRepairOpenClawGateway(maintenance: fixture.maintenance())
+
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(fixture.commands.contains { $0.contains("gateway status --json --require-rpc") })
+        #expect(!fixture.commands.contains {
+            $0.contains("npm view") || $0.contains("--dry-run") || $0.contains("--yes --json") ||
+                $0.contains("backup create") || $0.contains("/usr/bin/tar") ||
+                $0.contains("gateway stop --force")
+        })
+        #expect((try OpenClawRuntimeInstallation.managed(home: fixture.home))?.version == "2026.9.1")
+    }
+
+    @Test func quickRepairUsesCurrentCoreForInvalidConfiguration() throws {
+        let fixture = try Fixture(schemaMismatch: false, invalidConfig: true,
+                                  installedVersion: "2026.9.1", targetVersion: "2026.9.6")
+        defer { fixture.cleanUp() }
+
+        let result = InstallerEngine().quickRepairOpenClawGateway(maintenance: fixture.maintenance())
+
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(fixture.commands.contains { $0.contains("update repair --yes --json") })
+        #expect(!fixture.commands.contains { $0.contains("update --tag") || $0.contains("npm view") })
+        #expect((try OpenClawRuntimeInstallation.managed(home: fixture.home))?.version == "2026.9.1")
+    }
+
+    @Test func quickRepairUpgradesWhenOnlyGatewayStartReportsSchemaMismatch() throws {
+        let fixture = try Fixture(schemaMismatch: false, failure: .startSchemaMismatch,
+                                  installedVersion: "2026.9.1", targetVersion: "2026.9.6")
+        defer { fixture.cleanUp() }
+        fixture.gatewayRunning = false
+
+        let result = InstallerEngine().quickRepairOpenClawGateway(maintenance: fixture.maintenance())
+
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(fixture.commands.contains { $0.contains("gateway start --json") })
+        #expect(fixture.commands.contains { $0.contains("update --tag") })
+        #expect(!fixture.commands.contains { $0.contains("update repair --yes --json") })
+        #expect((try OpenClawRuntimeInstallation.managed(home: fixture.home))?.version == "2026.9.6")
+    }
+
+    @Test func quickRepairInstallsMissingSelectedServiceWithoutCoreUpdate() throws {
+        let fixture = try Fixture(schemaMismatch: false,
+                                  installedVersion: "2026.9.1", targetVersion: "2026.9.6")
+        defer { fixture.cleanUp() }
+        try fixture.removeManagedService()
+
+        let result = InstallerEngine().quickRepairOpenClawGateway(maintenance: fixture.maintenance(environment: [:]))
+
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(fixture.commands.contains { $0.contains("gateway install --force --json") })
+        #expect(fixture.commands.contains { $0.contains("gateway start --json") })
+        #expect(!fixture.commands.contains {
+            $0.contains("update --tag") || $0.contains("update repair --yes --json") ||
+                $0.contains("backup create") || $0.contains("npm view")
+        })
+        #expect((try OpenClawRuntimeInstallation.managed(home: fixture.home))?.version == "2026.9.1")
+    }
+
     @Test func advisoryRepairChecksDoctorMigrationsAndTwoRPCsBeforeActivation() throws {
         let fixture = try Fixture(schemaMismatch: false, failure: .advisoryWarning,
                                   installedVersion: "2026.9.6", targetVersion: "2026.9.6")
@@ -1607,7 +1674,7 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(OpenClawUpdateCheckpoint.load(home: fixture.home, runtime: second) != nil)
     }
 
-    enum Failure: String, Sendable { case backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, pluginWarning, configRemains, registryUnavailable, registryNoSpace, invalidRegistryVersion, newerRegistry, approvalsMigration, unverifiedApprovalsMigration, consent, malformedResult, wrongRepairMode, wrongResultRoot, nonzeroSuccess, restart, agentOwner, unsafeRecovery, safeRollback, detachedHandoff, advisoryWarning, advisoryRisky, advisoryPending, advisoryPendingStuck, advisoryFinalizedUpgrade, incompleteUpgradeReceipt, wrongUpgradeMode, failedUpgradeStep }
+    enum Failure: String, Sendable { case backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, startSchemaMismatch, pluginWarning, configRemains, registryUnavailable, registryNoSpace, invalidRegistryVersion, newerRegistry, approvalsMigration, unverifiedApprovalsMigration, consent, malformedResult, wrongRepairMode, wrongResultRoot, nonzeroSuccess, restart, agentOwner, unsafeRecovery, safeRollback, detachedHandoff, advisoryWarning, advisoryRisky, advisoryPending, advisoryPendingStuck, advisoryFinalizedUpgrade, incompleteUpgradeReceipt, wrongUpgradeMode, failedUpgradeStep }
 
     private final class Fixture {
         let home: URL
@@ -1665,10 +1732,7 @@ struct OpenClawRuntimeMaintenanceTests {
                 ],
             ] : ["gateway": ["mode": "local"]]
             try JSONSerialization.data(withJSONObject: config).write(to: home.appendingPathComponent(".openclaw/openclaw.json"))
-            let data = try PropertyListSerialization.data(fromPropertyList: [
-                "Label": "ai.openclaw.gateway", "ProgramArguments": [node.path, package.appendingPathComponent("dist/index.js").path, "gateway", "--port", "18789"]
-            ], format: .xml, options: 0)
-            try data.write(to: plist)
+            try writeManagedService()
         }
 
         func maintenance(
@@ -1681,6 +1745,25 @@ struct OpenClawRuntimeMaintenanceTests {
         func writeVersion(_ version: String) throws {
             try JSONSerialization.data(withJSONObject: ["name": "openclaw", "version": version]).write(to: package.appendingPathComponent("package.json"))
             gatewayVersion = version
+        }
+
+        func writeManagedService() throws {
+            let node = home.appendingPathComponent(".hermes/node/bin/node")
+            let plist = home.appendingPathComponent("Library/LaunchAgents/ai.openclaw.gateway.plist")
+            let data = try PropertyListSerialization.data(fromPropertyList: [
+                "Label": "ai.openclaw.gateway",
+                "ProgramArguments": [node.path, package.appendingPathComponent("dist/index.js").path,
+                                     "gateway", "--port", "18789"],
+            ], format: .xml, options: 0)
+            try data.write(to: plist)
+        }
+
+        func removeManagedService() throws {
+            let entry = home.appendingPathComponent(".local/bin/openclaw")
+            try FileManager.default.createDirectory(at: entry.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(at: entry, withDestinationURL: package.appendingPathComponent("openclaw.mjs"))
+            try FileManager.default.removeItem(at: home.appendingPathComponent("Library/LaunchAgents/ai.openclaw.gateway.plist"))
+            gatewayRunning = false
         }
 
         func systemAgentOwner() throws -> String? {
@@ -1736,6 +1819,8 @@ struct OpenClawRuntimeMaintenanceTests {
         func execute(_ command: String) -> (Int32, String) {
             commands.append(command)
             do {
+                if command == "command -v openclaw" { return (0, home.appendingPathComponent(".local/bin/openclaw").path) }
+                if command == "command -v node" { return (0, home.appendingPathComponent(".hermes/node/bin/node").path) }
                 if command.contains("node' --version") { return (0, nodeVersion) }
                 if command.contains("config validate --json") {
                     if invalidConfig && !didUpdate || failure == .configRemains {
@@ -1791,6 +1876,9 @@ struct OpenClawRuntimeMaintenanceTests {
                     if failure == .agentOwner, try systemAgentOwner() == nil {
                         return (1, "AgentSelectionRequiredError: Multiple agents are configured, but session agent resolution has no explicit owner.")
                     }
+                    if failure == .startSchemaMismatch && !didUpdate {
+                        return (1, "OpenClaw state database uses newer schema version 15; this OpenClaw build supports 1.")
+                    }
                     gatewayRunning = true
                     return (0, #"{"ok":true}"#)
                 }
@@ -1832,7 +1920,12 @@ struct OpenClawRuntimeMaintenanceTests {
                 if command.contains("doctor --post-upgrade --json") {
                     return (0, #"{"probesRun":["plugin.index_unavailable","plugin.entry_unresolved","plugin.manifest_unavailable","plugin.manifest_drift","plugin.version_drift"],"findings":[]}"#)
                 }
-                if command.contains("gateway install --force --json") { return (0, #"{"ok":true}"#) }
+                if command.contains("gateway install --force --json") {
+                    if !FileManager.default.fileExists(atPath: home.appendingPathComponent("Library/LaunchAgents/ai.openclaw.gateway.plist").path) {
+                        try writeManagedService()
+                    }
+                    return (0, #"{"ok":true}"#)
+                }
                 if command.contains("gateway restart --json") {
                     if failure == .restart { return (1, "restart refused") }
                     gatewayRunning = true

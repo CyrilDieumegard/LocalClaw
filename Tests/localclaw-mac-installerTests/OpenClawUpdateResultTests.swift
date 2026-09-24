@@ -3,6 +3,25 @@ import Testing
 @testable import localclaw_mac_installer
 
 struct OpenClawUpdateResultTests {
+    private final class CommandResult: @unchecked Sendable {
+        let finished = DispatchSemaphore(value: 0)
+        private let lock = NSLock()
+        private var value: (Int32, String)?
+
+        func store(_ result: (Int32, String)) {
+            lock.lock()
+            value = result
+            lock.unlock()
+            finished.signal()
+        }
+
+        func snapshot() -> (Int32, String)? {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+    }
+
     @Test func doctorExamplesAndNestedSuccessDoNotReplaceFinalEnvelope() throws {
         let transcript = #"openclaw config set commands.ownerAllowFrom '["telegram:123456789"]'"# + "\n" +
             #"{"status":"ok","step":"doctor"}"# + "\n" +
@@ -206,8 +225,19 @@ struct OpenClawUpdateResultTests {
     }
 
     @Test func maintenanceOutputKeepsJSONIntactAndDrainsLargeDiagnostics() throws {
-        let command = #"/usr/bin/perl -e '$|=1; print "{\"status\":\"ok\","; print STDERR "Doctor: " . ("x" x 150000) . "\n"; print "\"mode\":\"npm\",\"root\":\"/fixture\",\"steps\":[]}";'"#
-        let result = InstallerEngine().maintenanceShell(command)
+        // Fill stderr before completing stdout. A reader scheduled on an
+        // exhausted shared executor must fail this test within seconds rather
+        // than leave the entire test runner waiting indefinitely.
+        let command = #"/usr/bin/perl -e 'alarm 5; $|=1; print "{\"status\":\"ok\","; print STDERR "Doctor: " . ("x" x 150000) . "\n"; print "\"mode\":\"npm\",\"root\":\"/fixture\",\"steps\":[]}";'"#
+        let captured = CommandResult()
+        Thread.detachNewThread {
+            captured.store(InstallerEngine().maintenanceShell(command))
+        }
+        guard captured.finished.wait(timeout: .now() + 8) == .success else {
+            Issue.record("Maintenance command did not drain both output pipes within 8 seconds")
+            return
+        }
+        let result = try #require(captured.snapshot())
         #expect(result.0 == 0)
         #expect(result.1.contains(String(repeating: "x", count: 150000)))
         #expect(OpenClawUpdateResult.envelope(in: result.1)?["status"] as? String == "ok")

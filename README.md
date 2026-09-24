@@ -42,8 +42,20 @@ swift test
 From 1.0.207, **Updates > App update > Update** downloads the release, checks its
 SHA-256, Apple signature, signing team, bundle identity, exact version/build and
 Gatekeeper assessment, then installs and relaunches LocalClaw automatically.
-**Update all** finishes dependencies and OpenClaw first, then installs the app
-update last. A failed prerequisite stops the operation and reports its cause.
+**Update all** changes only components reported as needing an update: an
+incompatible Node runtime, a newer OpenClaw release, and/or the LocalClaw app.
+Homebrew and LM Studio upgrades remain optional maintenance. The app replacement
+runs last. A failed prerequisite stops the operation and reports its cause.
+
+**Quick Repair** first checks the existing Gateway. A healthy Gateway stays on
+its installed version without a full state backup or core reinstall. Ordinary
+configuration/startup failures use native repair of that version; a confirmed
+state-schema mismatch may require a runtime upgrade. A pending unsafe update
+still requires recovery before Gateway activation.
+
+Subprocess diagnostics drain on a dedicated thread to avoid pipe backpressure
+when worker queues are busy. Timed chat/developer commands use a monotonic
+process deadline, including when a child inherits the output pipe.
 
 The updater runs from `/Applications/LocalClaw.app` or
 `~/Applications/LocalClaw.app` when the account can write to that Applications

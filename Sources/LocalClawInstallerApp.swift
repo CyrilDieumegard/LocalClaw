@@ -6688,7 +6688,7 @@ final class InstallerViewModel: ObservableObject {
         let engine = self.engine
         Task.detached {
             await OpenClawGoalBridge.shared.invalidateRuntime()
-            let repair = engine.finalizeOpenClawRuntime()
+            let repair = engine.quickRepairOpenClawGateway()
             await OpenClawGoalBridge.shared.invalidateRuntime()
             await MainActor.run {
                 self.isRunning = false
@@ -10667,44 +10667,14 @@ final class InstallerViewModel: ObservableObject {
             return (1, "Failed command: \(command)\n\(error.localizedDescription)")
         }
 
-        let timeoutLock = NSLock()
-        var timedOut = false
-        let timer: DispatchSourceTimer?
-        if let timeoutSeconds, timeoutSeconds > 0 {
-            let source = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-            source.schedule(deadline: .now() + .seconds(timeoutSeconds))
-            source.setEventHandler {
-                timeoutLock.lock()
-                timedOut = true
-                timeoutLock.unlock()
-                if process.isRunning {
-                    process.terminate()
-                    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
-                        if process.isRunning {
-                            _ = try? Process.run(URL(fileURLWithPath: "/bin/kill"), arguments: ["-9", "\(process.processIdentifier)"])
-                        }
-                    }
-                }
-            }
-            source.resume()
-            timer = source
-        } else {
-            timer = nil
-        }
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        timer?.cancel()
-        let output = String(data: data, encoding: .utf8) ?? ""
-        timeoutLock.lock()
-        let didTimeout = timedOut
-        timeoutLock.unlock()
+        let result = BoundedProcessRunner.collect(process, pipe: pipe, timeoutSeconds: timeoutSeconds)
+        let output = String(data: result.output, encoding: .utf8) ?? ""
         let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        if didTimeout {
+        if result.timedOut {
             let suffix = "LocalClaw stopped this developer request after \(timeoutSeconds ?? 0)s because it exceeded the time budget. OpenClaw itself may still be running; check Gateway status before restarting."
             return (124, trimmed.isEmpty ? suffix : "\(trimmed)\n\n\(suffix)")
         }
-        return (process.terminationStatus, trimmed)
+        return (result.exitCode, trimmed)
     }
 
     nonisolated static func writePromptParts(_ parts: [String], toPath path: String) throws {
@@ -17333,11 +17303,11 @@ struct ContentView: View {
                 updateGroupsPanel
 
                 VStack(spacing: 8) {
-                    versionRow("OpenClaw", vm.openclawInstalledVersion, vm.openclawLatestVersion, isUpToDate: vm.openclawUpdateStatus == "Up to date", installedLabel: vm.openclawUpdateStatus == "Checking..." ? "Checking..." : nil)
+                    versionRow("OpenClaw", vm.openclawInstalledVersion, vm.openclawLatestVersion, isUpToDate: vm.openclawUpdateStatus == "Up to date", installedLabel: vm.openclawUpdateStatus)
                     versionRow("Homebrew", vm.brewVersion, "Optional maintenance", isUpToDate: vm.brewUpToDate, installedLabel: "Installed")
                     versionRow("Node", vm.nodeVersion, InstallerEngine.nodeRequirementDescription, isUpToDate: vm.nodeUpToDate, installedLabel: vm.nodeUpToDate ? "Compatible" : nil)
                     versionRow("LM Studio", vm.lmStudioVersion, "Optional Homebrew cask update", isUpToDate: vm.lmStudioUpToDate, installedLabel: "Installed")
-                    versionRow("LocalClaw", "\(vm.installerCurrentVersion) (build \(vm.installerBuildNumber))", vm.installerLatestBuild.isEmpty ? vm.installerLatestVersion : "\(vm.installerLatestVersion) (build \(vm.installerLatestBuild))", isUpToDate: vm.installerUpdateStatus == "Up to date", installedLabel: vm.installerUpdateStatus == "Checking..." ? "Checking..." : nil)
+                    versionRow("LocalClaw", "\(vm.installerCurrentVersion) (build \(vm.installerBuildNumber))", vm.installerLatestBuild.isEmpty ? vm.installerLatestVersion : "\(vm.installerLatestVersion) (build \(vm.installerLatestBuild))", isUpToDate: vm.installerUpdateStatus == "Up to date", installedLabel: vm.installerUpdateStatus)
                 }
 
                 updateChangePlanPanel
@@ -21691,8 +21661,9 @@ struct ContentView: View {
         let actuallyInstalled = installed != "Not installed" && installed != "Checking..."
         let showGreen = actuallyInstalled && (isUpToDate == true)
         let checking = installedLabel == "Checking..."
-        let statusIcon = checking ? "arrow.clockwise" : (showGreen ? "checkmark.circle.fill" : (actuallyInstalled ? "arrow.up.circle" : "xmark.circle"))
-        let statusColor: Color = checking ? UI.muted : (showGreen ? Color(NSColor.systemGreen) : (actuallyInstalled ? Color(NSColor.systemOrange) : UI.muted.opacity(0.45)))
+        let statusUnverified = installedLabel == "Unknown" || installedLabel?.hasPrefix("Manifest ") == true
+        let statusIcon = checking ? "arrow.clockwise" : (statusUnverified ? "questionmark.circle" : (showGreen ? "checkmark.circle.fill" : (actuallyInstalled ? "arrow.up.circle" : "xmark.circle")))
+        let statusColor: Color = checking || statusUnverified ? UI.muted : (showGreen ? Color(NSColor.systemGreen) : (actuallyInstalled ? Color(NSColor.systemOrange) : UI.muted.opacity(0.45)))
         let statusLabel = checking ? "Checking..." : (!actuallyInstalled ? "Not installed" : (installedLabel ?? (showGreen ? "Up to date" : "Needs update")))
 
         return HStack(alignment: .firstTextBaseline) {
