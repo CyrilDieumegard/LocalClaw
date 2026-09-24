@@ -535,13 +535,13 @@ struct OpenClawRuntimeMaintenanceTests {
             home: fixture.home,
             run: { command in
                 if command.contains("backup create") || command.contains("--yes --json") {
-                    Thread.sleep(forTimeInterval: 0.04)
+                    Thread.sleep(forTimeInterval: 1.0)
                 }
                 return fixture.execute(command)
             },
             report: messages.append,
             wait: { _ in },
-            progressInterval: 0.01
+            progressInterval: 0.1
         )
 
         let result = maintenance.update()
