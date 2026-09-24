@@ -8,6 +8,12 @@ struct RoutedChatReply: Sendable {
     let modelMatched: Bool
 }
 
+enum RoutedChatRecovery: Sendable {
+    case recovered(RoutedChatReply)
+    case running
+    case unmatched
+}
+
 struct RoutedModelOption: Identifiable, Hashable, Sendable {
     let id: String
     let name: String
@@ -18,6 +24,11 @@ struct RoutedModelOption: Identifiable, Hashable, Sendable {
 /// Gateway plugin refuses to evaluate unless its selected provider is ONNX.
 struct RoutedChatService: Sendable {
     private let decisionModel = "onnx/gliner2.5-small-v1"
+    static let recommendedGPT6 = RoutedModelMapping(
+        economical: "openai/gpt-6-luna",
+        reasoning: "openai/gpt-6-astra",
+        coding: "openai/gpt-6-sol"
+    )
 
     static func isMissingRouterMethod(_ output: String) -> Bool {
         output.range(of: "unknown method: localclaw.router.classify", options: .caseInsensitive) != nil
@@ -145,6 +156,68 @@ struct RoutedChatService: Sendable {
         }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    /// Add three exact OpenAI refs to an existing OpenClaw model policy. The
+    /// global default and all existing allowed models remain unchanged.
+    func enableGPT6Options() throws {
+        let engine = InstallerEngine()
+        guard let agentID = engine.resolvedChatAgentID() else { throw RoutedChatError.noAgent }
+        let desired = Self.recommendedGPT6.modelIDs
+        let catalog = try command(["models", "list", "--all", "--agent", agentID,
+                                   "--provider", "openai", "--json"], timeout: 45).output
+        guard let catalogObject = InstallerEngine.firstJSONObject(in: catalog),
+              let rows = catalogObject["models"] as? [[String: Any]],
+              desired.allSatisfy({ id in rows.contains(where: {
+                  ($0["key"] as? String) == id && ($0["available"] as? Bool) != false
+              }) }) else {
+            throw RoutedChatError.commandFailed("OpenClaw does not list all three GPT-6 models for the connected OpenAI route. No model policy was changed.")
+        }
+        let configURL = try OpenClawRuntimeInstallation.selectedConfig()
+        guard let config = engine.readOpenClawConfig(),
+              let agents = config["agents"] as? [String: Any],
+              let defaults = agents["defaults"] as? [String: Any] else {
+            throw RoutedChatError.commandFailed("OpenClaw's model policy could not be read. No setting was changed.")
+        }
+        let entries = agents["entries"] as? [String: Any] ?? [:]
+        let selectedAgent = entries[agentID] as? [String: Any] ?? [:]
+        let agentPolicy = selectedAgent["modelPolicy"] as? [String: Any]
+        let defaultPolicy = defaults["modelPolicy"] as? [String: Any]
+        let hasAgentPolicy = (agentPolicy?["allow"] as? [String])?.isEmpty == false
+        let path = hasAgentPolicy ? "agents.entries.\(agentID).modelPolicy.allow"
+                                  : "agents.defaults.modelPolicy.allow"
+        let allowed = (hasAgentPolicy ? agentPolicy : defaultPolicy)?["allow"] as? [String] ?? []
+        guard !allowed.isEmpty else {
+            throw RoutedChatError.commandFailed("This agent has no explicit model allowlist to extend. Refresh the model list instead.")
+        }
+        let additions = desired.filter { !allowed.contains($0) }
+        guard !additions.isEmpty else { return }
+        let updated = allowed + additions
+        func json(_ value: [String]) throws -> String {
+            String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self)
+        }
+
+        let backupDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/LocalClaw/runtime-backups", isDirectory: true)
+        try FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let backup = backupDir.appendingPathComponent("openclaw-config-before-routed-gpt6-\(UUID().uuidString).json")
+        try FileManager.default.copyItem(at: configURL, to: backup)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backup.path)
+
+        _ = try command(["config", "set", path, try json(updated), "--strict-json",
+                         "--expect-current-json", try json(allowed)], timeout: 120)
+        let validation = try command(["config", "validate", "--json"], timeout: 60).output
+        guard InstallerEngine.firstJSONObject(in: validation)?["valid"] as? Bool == true else {
+            throw RoutedChatError.commandFailed("The GPT-6 model policy was saved but could not be validated. Restore the small configuration backup before using it: \(backup.path)")
+        }
+        for attempt in 0..<5 {
+            if let models = try? availableChatModels(), desired.allSatisfy({ id in models.contains(where: { $0.id == id }) }) {
+                return
+            }
+            if attempt < 4 { Thread.sleep(forTimeInterval: [1.0, 2.0, 3.0, 5.0][attempt]) }
+        }
+        throw RoutedChatError.commandFailed("GPT-6 was added to OpenClaw's model policy. Its catalog is still refreshing; click Refresh in Routed Chat shortly.")
+    }
+
     func send(prompt: String, modelID: String, sessionID: String) throws -> RoutedChatReply {
         let engine = InstallerEngine()
         guard let agentID = engine.resolvedChatAgentID() else { throw RoutedChatError.noAgent }
@@ -180,6 +253,72 @@ struct RoutedChatService: Sendable {
             outputTokens: usage.output,
             modelMatched: actual == modelID
         )
+    }
+
+    /// A CLI turn may finish in the Gateway after LocalClaw's window closes.
+    /// Read only the exact routed session; never replay its prompt on recovery.
+    func recoverPendingReply(sessionID: String, createdAt: Date,
+                             expectedModelID: String) throws -> RoutedChatRecovery {
+        let prefix = "localclaw-routed-"
+        guard sessionID.hasPrefix(prefix),
+              UUID(uuidString: String(sessionID.dropFirst(prefix.count))) != nil else {
+            return .unmatched
+        }
+        let engine = InstallerEngine()
+        guard let agentID = engine.resolvedChatAgentID() else { throw RoutedChatError.noAgent }
+        let sessionKey = "agent:\(agentID):explicit:\(sessionID.lowercased())"
+        let params: [String: Any] = ["sessionKey": sessionKey, "agentId": agentID, "limit": 2]
+        let data = try JSONSerialization.data(withJSONObject: params)
+        let output = try command(["gateway", "call", "chat.history", "--params",
+                                  String(decoding: data, as: UTF8.self), "--json", "--timeout", "15000"],
+                                 timeout: 20).output
+        guard let object = InstallerEngine.firstJSONObject(in: output) else {
+            throw RoutedChatError.commandFailed("OpenClaw did not return the routed conversation history.")
+        }
+        return Self.recovery(from: object, sessionKey: sessionKey,
+                             createdAt: createdAt, expectedModelID: expectedModelID)
+    }
+
+    static func recovery(from response: [String: Any], sessionKey: String, createdAt: Date,
+                         expectedModelID: String) -> RoutedChatRecovery {
+        guard let session = response["sessionInfo"] as? [String: Any],
+              (session["key"] as? String)?.lowercased() == sessionKey.lowercased() else {
+            return .unmatched
+        }
+        if session["hasActiveRun"] as? Bool == true { return .running }
+        guard session["status"] as? String == "done",
+              let lastRunID = session["lastRunId"] as? String,
+              let messages = response["messages"] as? [[String: Any]], messages.count >= 2 else {
+            return .unmatched
+        }
+        let user = messages[messages.count - 2]
+        let assistant = messages[messages.count - 1]
+        guard user["role"] as? String == "user", assistant["role"] as? String == "assistant",
+              let userMs = (user["timestamp"] as? NSNumber)?.doubleValue,
+              let assistantMs = (assistant["timestamp"] as? NSNumber)?.doubleValue,
+              abs(userMs - createdAt.timeIntervalSince1970 * 1_000) <= 45_000,
+              assistantMs >= userMs,
+              let metadata = assistant["__openclaw"] as? [String: Any],
+              metadata["runId"] as? String == lastRunID,
+              let provider = assistant["provider"] as? String, !provider.isEmpty,
+              let model = assistant["model"] as? String, !model.isEmpty,
+              let blocks = assistant["content"] as? [[String: Any]] else {
+            return .unmatched
+        }
+        let actual = model.hasPrefix(provider + "/") ? model : provider + "/" + model
+        guard actual == expectedModelID else { return .unmatched }
+        let text = blocks.compactMap { block -> String? in
+            guard block["type"] as? String == "text" else { return nil }
+            return block["text"] as? String
+        }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return .unmatched }
+        let usage = assistant["usage"] as? [String: Any] ?? [:]
+        return .recovered(RoutedChatReply(
+            text: text, actualModelID: actual,
+            inputTokens: (usage["input"] as? NSNumber)?.intValue,
+            outputTokens: (usage["output"] as? NSNumber)?.intValue,
+            modelMatched: true
+        ))
     }
 
     private func verifyAvailable(modelID: String, agentID: String) throws {

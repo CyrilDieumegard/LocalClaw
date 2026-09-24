@@ -22,9 +22,20 @@ final class RoutedChatViewModel: ObservableObject {
     @Published private(set) var isBusy = false
     @Published private(set) var isRefreshing = false
     @Published private(set) var isSettingUp = false
+    @Published private(set) var isEnablingGPT6 = false
     @Published private(set) var status = "Checking the local router…"
     @Published private(set) var preview: RoutedSelection?
     @Published private(set) var previewPrompt = ""
+
+    var hasPendingTurn: Bool {
+        guard let last = turns.last else { return false }
+        return last.reply == nil && last.error == nil
+    }
+
+    var hasGPT6Options: Bool {
+        let ids = Set(availableModels.map(\.id))
+        return RoutedChatService.recommendedGPT6.modelIDs.allSatisfy(ids.contains)
+    }
 
     private static let storageKey = "localclaw.routedChat.beta.v1"
     private let service = RoutedChatService()
@@ -71,6 +82,7 @@ final class RoutedChatViewModel: ObservableObject {
                 routerReady = false
                 status = error.localizedDescription
             }
+            await recoverPendingTurn()
             isRefreshing = false
         }
     }
@@ -101,6 +113,23 @@ final class RoutedChatViewModel: ObservableObject {
         }
     }
 
+    func enableGPT6Options() {
+        guard !isEnablingGPT6 && !isBusy && !isRefreshing && !isSettingUp else { return }
+        isEnablingGPT6 = true
+        status = "Adding GPT-6 Luna, Sol and Astra to this agent's model choices…"
+        let service = self.service
+        Task {
+            do {
+                try await Task.detached(priority: .utility) { try service.enableGPT6Options() }.value
+                isEnablingGPT6 = false
+                refresh()
+            } catch {
+                status = error.localizedDescription
+                isEnablingGPT6 = false
+            }
+        }
+    }
+
     func previewRoute(mapping: RoutedModelMapping) {
         guard !isBusy && !isSettingUp && !isRefreshing else { return }
         let prompt = draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -125,6 +154,10 @@ final class RoutedChatViewModel: ObservableObject {
 
     func send(mapping: RoutedModelMapping) {
         guard !isBusy && !isSettingUp && !isRefreshing else { return }
+        guard !hasPendingTurn else {
+            status = "Check the previous turn with Refresh before sending another request."
+            return
+        }
         let prompt = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { status = "Write a message first."; return }
         isBusy = true
@@ -207,6 +240,39 @@ final class RoutedChatViewModel: ObservableObject {
             decision: decision, mapping: mapping,
             availableModelIDs: available, prompt: prompt, excerpted: excerpt.excerpted
         )
+    }
+
+    private func recoverPendingTurn() async {
+        guard let index = turns.indices.last,
+              turns[index].reply == nil, turns[index].error == nil else { return }
+        let turn = turns[index]
+        let sessionID = self.sessionID
+        let service = self.service
+        do {
+            let outcome = try await Task.detached(priority: .utility) {
+                try service.recoverPendingReply(sessionID: sessionID, createdAt: turn.createdAt,
+                                                expectedModelID: turn.selection.modelID)
+            }.value
+            guard turns.indices.contains(index), turns[index].id == turn.id else { return }
+            switch outcome {
+            case .recovered(let reply):
+                turns[index].reply = reply.text
+                turns[index].actualModelID = reply.actualModelID
+                turns[index].inputTokens = reply.inputTokens
+                turns[index].outputTokens = reply.outputTokens
+                turns[index].modelMatched = reply.modelMatched
+                status = "Recovered the completed reply from OpenClaw. No request was repeated."
+                save()
+            case .running:
+                status = "The previous request is still running in OpenClaw. Click Refresh later."
+            case .unmatched:
+                turns[index].error = "The previous reply could not be matched safely. No request was repeated. Check OpenClaw history before sending it again."
+                status = "Previous routed turn needs review"
+                save()
+            }
+        } catch {
+            status = "Could not check the previous turn: \(error.localizedDescription). Click Refresh to try again."
+        }
     }
 
     private func save() {

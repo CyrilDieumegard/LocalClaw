@@ -63,8 +63,7 @@ enum RoutedChatPolicy {
     static let currentPromptByteLimit = 224
     static let priorPromptByteLimit = 56
 
-    // Conservative local checks protect against observed high-score mistakes
-    // in the beta classifier. They can only move work away from the cheap slot.
+    // Local checks protect against observed high-score mistakes in the beta classifier.
     private static let codeTerms = [
         "swiftui", "python", "javascript", "typescript", "sql", "node.js",
         "debug", "bug", "endpoint", "api", "code", "coding", "programming",
@@ -78,6 +77,9 @@ enum RoutedChatPolicy {
         "probabilite", "probability", "calculate", "calculation", "calcul",
         "churn", "growth", "croissance", "pourcentage", "%",
         "multi-step", "plusieurs etapes"
+    ]
+    private static let shortTranslationTerms = [
+        "traduis", "traduire", "traduction", "translate", "translation"
     ]
 
     static func excerpt(_ text: String) -> (text: String, excerpted: Bool) {
@@ -150,12 +152,18 @@ enum RoutedChatPolicy {
         let words = request.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
         let codeGuard = containsTerm(in: request, terms: codeTerms)
         let analysisGuard = containsTerm(in: request, terms: analysisTerms)
+        let shortTranslation = !excerpted && prompt.utf8.count <= 160 &&
+            words.count <= 24 && !analysisGuard &&
+            containsTerm(in: request, terms: shortTranslationTerms)
         let lacksContext = words.count <= 3 && !codeGuard
         let effectiveTask: RoutedTask
         let explanation: String
         if codeGuard {
             effectiveTask = .coding
             explanation = task == .coding ? task.explanation : "ONNX proposed \(task.label), but the request includes software terms. Your code model is selected."
+        } else if shortTranslation {
+            effectiveTask = .economical
+            explanation = task == .economical ? task.explanation : "ONNX proposed \(task.label), but this is a short translation. Your economical model is selected."
         } else if ambiguous || lacksContext {
             effectiveTask = .unclear
             explanation = "The request lacks context or local scores are close. Your analysis model is selected."

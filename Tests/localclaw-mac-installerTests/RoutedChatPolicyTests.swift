@@ -43,6 +43,23 @@ final class RoutedChatPolicyTests: XCTestCase {
         XCTAssertTrue(selected.wasAmbiguous)
     }
 
+    func testShortTranslationUsesEconomicalModelDespitePreviousContextBias() throws {
+        let decision = RoutedDecision(
+            status: "ok", route: .coding,
+            probabilities: ["economical": 0.47, "reasoning": 0.02, "coding": 0.51],
+            routerModel: "gliner2.5-small-v1", providerId: "onnx",
+            rubricVersion: "localclaw-route-v2", reason: nil
+        )
+        let selected = try RoutedChatPolicy.select(
+            decision: decision, mapping: mapping, availableModelIDs: available,
+            prompt: "Traduis en français : Hello.", excerpted: false
+        )
+        XCTAssertEqual(selected.routerTask, .coding)
+        XCTAssertEqual(selected.task, .economical)
+        XCTAssertEqual(selected.modelID, mapping.economical)
+        XCTAssertFalse(selected.wasAmbiguous)
+    }
+
     func testHostedDecisionResultAndUnavailableModelFailClosed() {
         let decision = RoutedDecision(
             status: "ok", route: .coding,
@@ -153,5 +170,43 @@ final class RoutedChatPolicyTests: XCTestCase {
         XCTAssertTrue(RoutedChatService.canRetryPluginReload(temporary))
         XCTAssertFalse(RoutedChatService.canRetryPluginReload("Plugin operation failed during prepare: replacement not applied."))
         XCTAssertFalse(RoutedChatService.canRetryPluginReload("Plugin onnx still has active retained work; replacement may have applied."))
+    }
+
+    func testInterruptedTurnRecoversOnlyMatchingCompletedGatewayReply() {
+        let key = "agent:main:explicit:localclaw-routed-00000000-0000-0000-0000-000000000001"
+        let created = Date(timeIntervalSince1970: 1_790_244_777.521)
+        let response: [String: Any] = [
+            "sessionInfo": ["key": key, "status": "done", "hasActiveRun": false, "lastRunId": "run-1"],
+            "messages": [
+                ["role": "user", "timestamp": 1_790_244_779_638 as NSNumber],
+                ["role": "assistant", "timestamp": 1_790_244_780_331 as NSNumber,
+                 "provider": "openrouter", "model": "openai/gpt-5.3-codex",
+                 "__openclaw": ["runId": "run-1"],
+                 "content": [["type": "text", "text": "A completed reply"]],
+                 "usage": ["input": 10, "output": 4]]
+            ]
+        ]
+        switch RoutedChatService.recovery(from: response, sessionKey: key, createdAt: created,
+                                          expectedModelID: "openrouter/openai/gpt-5.3-codex") {
+        case .recovered(let reply):
+            XCTAssertEqual(reply.text, "A completed reply")
+            XCTAssertEqual(reply.actualModelID, "openrouter/openai/gpt-5.3-codex")
+            XCTAssertEqual(reply.outputTokens, 4)
+        default: XCTFail("The exact finished turn should be recovered")
+        }
+        XCTAssertTrue({
+            if case .unmatched = RoutedChatService.recovery(from: response, sessionKey: key,
+                                                             createdAt: created,
+                                                             expectedModelID: "openai/gpt-6-sol") { return true }
+            return false
+        }())
+        var running = response
+        running["sessionInfo"] = ["key": key, "status": "running", "hasActiveRun": true]
+        XCTAssertTrue({
+            if case .running = RoutedChatService.recovery(from: running, sessionKey: key,
+                                                           createdAt: created,
+                                                           expectedModelID: "openrouter/openai/gpt-5.3-codex") { return true }
+            return false
+        }())
     }
 }

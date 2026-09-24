@@ -5,6 +5,7 @@ struct RoutedChatView: View {
     @AppStorage("localclaw.routedChat.economicalModel.v1") private var economicalModel = ""
     @AppStorage("localclaw.routedChat.reasoningModel.v1") private var reasoningModel = ""
     @AppStorage("localclaw.routedChat.codingModel.v1") private var codingModel = ""
+    @State private var expandedReplies = Set<UUID>()
 
     private var mapping: RoutedModelMapping {
         RoutedModelMapping(economical: economicalModel, reasoning: reasoningModel, coding: codingModel)
@@ -18,6 +19,10 @@ struct RoutedChatView: View {
         let ids = Set(model.availableModels.map(\.id))
         return !economicalModel.isEmpty && !reasoningModel.isEmpty && !codingModel.isEmpty &&
             economicalModel != reasoningModel && mapping.modelIDs.allSatisfy(ids.contains)
+    }
+
+    private var usesRecommendedGPT6: Bool {
+        mapping == RoutedChatService.recommendedGPT6
     }
 
     var body: some View {
@@ -64,7 +69,9 @@ struct RoutedChatView: View {
                 .scrollIndicators(.hidden)
                 .onChange(of: model.turns.count) { _ in
                     if let last = model.turns.last?.id {
-                        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .bottom) }
+                        // Animated layout over a long code reply can keep
+                        // SwiftUI measuring the full history indefinitely.
+                        proxy.scrollTo(last, anchor: .bottom)
                     }
                 }
             }
@@ -89,7 +96,7 @@ struct RoutedChatView: View {
                 .font(AppFont.body(11))
                 .foregroundStyle(UI.muted)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("Each turn shows the ONNX proposal, any conservative local adjustment, the requested chat model and the model OpenClaw actually used. Routing scores compare categories; they are not probabilities that an answer will be correct.")
+            Text("This beta routes text conversations. Browser control is not connected here yet. Each turn shows the ONNX proposal, any local adjustment, the requested chat model and the model OpenClaw actually used. Routing scores compare categories, not answer accuracy.")
                 .font(AppFont.body(11))
                 .foregroundStyle(UI.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -131,6 +138,36 @@ struct RoutedChatView: View {
             }
             .font(AppFont.bodySemi(12))
             .foregroundStyle(UI.text)
+
+            if model.routerReady {
+                HStack(alignment: .center, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("GPT-6 routing")
+                            .font(AppFont.bodySemi(11))
+                        Text("Luna for simple requests · Astra for analysis · Sol for code. The decision stays on this Mac; chat usage follows your OpenAI account or API billing.")
+                            .font(AppFont.body(10))
+                            .foregroundStyle(UI.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                    if model.hasGPT6Options {
+                        Button(usesRecommendedGPT6 ? "GPT-6 selected" : "Use GPT-6 routing") {
+                            economicalModel = RoutedChatService.recommendedGPT6.economical
+                            reasoningModel = RoutedChatService.recommendedGPT6.reasoning
+                            codingModel = RoutedChatService.recommendedGPT6.coding
+                        }
+                        .buttonStyle(CompactChatButton(primary: false))
+                        .disabled(usesRecommendedGPT6 || model.isBusy || model.isRefreshing)
+                    } else {
+                        Button(model.isEnablingGPT6 ? "Adding GPT-6…" : "Enable GPT-6 choices") {
+                            model.enableGPT6Options()
+                        }
+                        .buttonStyle(CompactChatButton(primary: false))
+                        .disabled(model.isEnablingGPT6 || model.isBusy || model.isRefreshing)
+                    }
+                }
+                .padding(.top, 4)
+            }
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 12).fill(UI.card))
@@ -184,7 +221,7 @@ struct RoutedChatView: View {
             }
 
             HStack(spacing: 10) {
-                Text("Text prompts only in this beta. Long prompts use their beginning and end for the local decision; the complete message goes to the selected chat model.")
+            Text("Text chat only: this beta cannot open websites for you. Long prompts use their beginning and end for the local decision; the complete message goes to the selected chat model.")
                     .font(AppFont.body(10))
                     .foregroundStyle(UI.muted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -195,7 +232,7 @@ struct RoutedChatView: View {
                 Button("Send") { model.send(mapping: mapping) }
                     .buttonStyle(CompactChatButton(primary: true))
                     .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(!model.routerReady || !selectedModelsAvailable || draftTrimmed.isEmpty || model.isBusy || model.isRefreshing)
+                    .disabled(!model.routerReady || !selectedModelsAvailable || draftTrimmed.isEmpty || model.isBusy || model.isRefreshing || model.hasPendingTurn)
             }
         }
     }
@@ -228,6 +265,17 @@ struct RoutedChatView: View {
                     .font(AppFont.body(13))
                     .foregroundStyle(UI.text)
                     .textSelection(.enabled)
+                    .lineLimit(expandedReplies.contains(turn.id) ? nil : 18)
+                if reply.count > 1_600 {
+                    Button(expandedReplies.contains(turn.id) ? "Show less" : "Show full reply") {
+                        if expandedReplies.contains(turn.id) {
+                            expandedReplies.remove(turn.id)
+                        } else {
+                            expandedReplies.insert(turn.id)
+                        }
+                    }
+                    .buttonStyle(CompactChatButton(primary: false))
+                }
                 if turn.modelMatched == false {
                     Label("OpenClaw used a different model than the local route selected. Review this turn.", systemImage: "exclamationmark.triangle.fill")
                         .font(AppFont.body(11))
