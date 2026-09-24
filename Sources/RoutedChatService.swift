@@ -116,7 +116,9 @@ struct RoutedChatService: Sendable {
     }
 
     func classify(prompt: String, prior: String?) throws -> RoutedDecision {
-        try checkPrerequisites()
+        // Setup validates the OpenClaw version. Every decision still checks
+        // the selected Gateway is local, and the bridge verifies ONNX itself.
+        // Starting `openclaw --version` for every draft adds avoidable latency.
         let port = try localGatewayPort()
         var params: [String: String] = ["prompt": prompt]
         if let prior, !prior.isEmpty { params["prior"] = prior }

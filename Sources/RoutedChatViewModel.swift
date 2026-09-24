@@ -44,6 +44,14 @@ final class RoutedChatViewModel: ObservableObject {
     private var previewMapping: RoutedModelMapping?
     private var previewContextTurnID: UUID?
     private var previewTime: Date?
+    private var backgroundRoute: Task<Void, Never>?
+    private struct DecisionKey: Equatable {
+        let excerpt: String
+        let prior: String?
+    }
+    private var decisionKey: DecisionKey?
+    private var decisionTask: Task<RoutedDecision, Error>?
+    private var recentDecision: (key: DecisionKey, value: RoutedDecision, at: Date)?
 
     private struct StoredChat: Codable {
         let sessionID: String
@@ -67,6 +75,36 @@ final class RoutedChatViewModel: ObservableObject {
               previewContextTurnID == turns.last?.id,
               let previewTime, Date().timeIntervalSince(previewTime) < 120 else { return nil }
         return preview
+    }
+
+    /// Start the local-only decision after typing settles. Send can await the
+    /// same in-flight decision, but only an exact draft/context match is reused.
+    func prepareRouteWhileTyping(mapping: RoutedModelMapping) {
+        backgroundRoute?.cancel()
+        guard routerReady && !isBusy && !isRefreshing && !isSettingUp else { return }
+        let prompt = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty, previewForCurrentDraft(mapping: mapping) == nil else { return }
+        let prior = turns.last.flatMap { RoutedChatPolicy.priorContext($0.prompt) }
+        let contextTurnID = turns.last?.id
+        backgroundRoute = Task {
+            do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+            guard !Task.isCancelled, !isBusy, !isRefreshing,
+                  draft.trimmingCharacters(in: .whitespacesAndNewlines) == prompt,
+                  turns.last?.id == contextTurnID else { return }
+            do {
+                let selection = try await decide(prompt: prompt, mapping: mapping, prior: prior)
+                guard !Task.isCancelled, !isBusy, !isRefreshing,
+                      draft.trimmingCharacters(in: .whitespacesAndNewlines) == prompt,
+                      turns.last?.id == contextTurnID else { return }
+                preview = selection
+                previewPrompt = prompt
+                previewMapping = mapping
+                previewContextTurnID = contextTurnID
+                previewTime = Date()
+            } catch {
+                // A background hint never blocks typing; Send reports errors.
+            }
+        }
     }
 
     func refresh() {
@@ -146,6 +184,10 @@ final class RoutedChatViewModel: ObservableObject {
         guard !isBusy && !isSettingUp && !isRefreshing else { return }
         let prompt = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { status = "Write a message first."; return }
+        if previewForCurrentDraft(mapping: mapping) != nil {
+            status = "Local preview complete. No chat request was sent."
+            return
+        }
         isBusy = true
         status = "Classifying on this Mac…"
         Task {
@@ -244,6 +286,7 @@ final class RoutedChatViewModel: ObservableObject {
 
     func newConversation() {
         guard !isBusy else { return }
+        backgroundRoute?.cancel()
         sessionID = "localclaw-routed-\(UUID().uuidString)"
         turns = []
         draft = ""
@@ -267,9 +310,34 @@ final class RoutedChatViewModel: ObservableObject {
         }
         let excerpt = RoutedChatPolicy.excerpt(prompt)
         let service = self.service
-        let decision = try await Task.detached(priority: .userInitiated) {
-            try service.classify(prompt: excerpt.text, prior: prior)
-        }.value
+        let key = DecisionKey(excerpt: excerpt.text, prior: prior)
+        if let cached = recentDecision, cached.key == key,
+           Date().timeIntervalSince(cached.at) < 120 {
+            return try RoutedChatPolicy.select(
+                decision: cached.value, mapping: mapping,
+                availableModelIDs: available, prompt: prompt, excerpted: excerpt.excerpted
+            )
+        }
+        let task: Task<RoutedDecision, Error>
+        if decisionKey == key, let existing = decisionTask {
+            task = existing
+        } else {
+            task = Task.detached(priority: .userInitiated) {
+                try service.classify(prompt: excerpt.text, prior: prior)
+            }
+            decisionKey = key
+            decisionTask = task
+        }
+        defer {
+            if decisionKey == key {
+                decisionKey = nil
+                decisionTask = nil
+            }
+        }
+        let decision = try await task.value
+        if decision.status == "ok" && decision.providerId == "onnx" {
+            recentDecision = (key, decision, Date())
+        }
         return try RoutedChatPolicy.select(
             decision: decision, mapping: mapping,
             availableModelIDs: available, prompt: prompt, excerpted: excerpt.excerpted

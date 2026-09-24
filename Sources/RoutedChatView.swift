@@ -97,6 +97,11 @@ struct RoutedChatView: View {
         }
         .padding(18)
         .onAppear { model.refresh() }
+        .onChange(of: model.draft) { _ in model.prepareRouteWhileTyping(mapping: mapping) }
+        .onChange(of: mapping) { _ in model.prepareRouteWhileTyping(mapping: mapping) }
+        .onChange(of: model.routerReady) { ready in
+            if ready { model.prepareRouteWhileTyping(mapping: mapping) }
+        }
     }
 
     private var introduction: some View {
