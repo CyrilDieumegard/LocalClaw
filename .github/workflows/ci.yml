@@ -23,5 +23,14 @@ jobs:
       - name: Build release
         run: swift build -c release
 
-      - name: Run tests
-        run: swift test
+      - name: Test Gateway recovery
+        timeout-minutes: 10
+        run: swift test --filter GatewayConnectionRecoveryTests
+
+      - name: Test OpenClaw maintenance
+        timeout-minutes: 10
+        run: swift test --filter OpenClawRuntimeMaintenanceTests --skip GatewayConnectionRecoveryTests
+
+      - name: Test remaining app paths
+        timeout-minutes: 10
+        run: swift test --skip OpenClawRuntimeMaintenanceTests
