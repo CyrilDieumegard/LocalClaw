@@ -221,7 +221,9 @@ struct RoutedChatService: Sendable {
     func send(prompt: String, modelID: String, sessionID: String) throws -> RoutedChatReply {
         let engine = InstallerEngine()
         guard let agentID = engine.resolvedChatAgentID() else { throw RoutedChatError.noAgent }
-        try verifyAvailable(modelID: modelID, agentID: agentID)
+        guard Self.supportsChatModel(modelID) else {
+            throw RoutedChatError.commandFailed("This beta routes to explicitly chosen cloud or OAuth models only. No message was sent.")
+        }
 
         let messageFile = FileManager.default.temporaryDirectory
             .appendingPathComponent("localclaw-routed-chat-\(UUID().uuidString).txt")
@@ -319,18 +321,6 @@ struct RoutedChatService: Sendable {
             outputTokens: (usage["output"] as? NSNumber)?.intValue,
             modelMatched: true
         ))
-    }
-
-    private func verifyAvailable(modelID: String, agentID: String) throws {
-        guard Self.supportsChatModel(modelID) else {
-            throw RoutedChatError.commandFailed("This beta routes to explicitly chosen cloud or OAuth models only. No message was sent.")
-        }
-        let output = try command(["models", "list", "--agent", agentID, "--json"], timeout: 45).output
-        guard let object = InstallerEngine.firstJSONObject(in: output),
-              let models = object["models"] as? [[String: Any]],
-              models.contains(where: { ($0["key"] as? String) == modelID && ($0["available"] as? Bool) != false }) else {
-            throw RoutedChatError.commandFailed("The selected model is not currently available to this OpenClaw agent. No message was sent.")
-        }
     }
 
     private func reloadRouterPlugins(report: @Sendable (String) -> Void) throws {

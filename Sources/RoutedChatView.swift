@@ -206,22 +206,21 @@ struct RoutedChatView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 9) {
-            TextEditor(text: $model.draft)
-                .font(AppFont.body(13))
-                .foregroundStyle(UI.text)
-                .scrollContentBackground(.hidden)
+            RoutedChatComposer(text: $model.draft,
+                               isEditable: !model.isBusy && !model.isSettingUp) {
+                model.send(mapping: mapping)
+            }
                 .padding(8)
                 .frame(height: 86)
                 .background(RoundedRectangle(cornerRadius: 10).fill(UI.cardSoft))
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
-                .disabled(model.isBusy || model.isSettingUp)
 
             if let preview = model.previewForCurrentDraft(mapping: mapping) {
                 routeCard(preview, actualModel: nil, inputTokens: nil, outputTokens: nil)
             }
 
             HStack(spacing: 10) {
-            Text("Text chat only: this beta cannot open websites for you. Long prompts use their beginning and end for the local decision; the complete message goes to the selected chat model.")
+                Text("Enter to send · Shift+Enter for a new line. Text chat only: this beta cannot open websites for you. Long prompts use their beginning and end for the local decision; the complete message goes to the selected chat model.")
                     .font(AppFont.body(10))
                     .foregroundStyle(UI.muted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -231,7 +230,6 @@ struct RoutedChatView: View {
                     .disabled(!model.routerReady || !selectedModelsAvailable || draftTrimmed.isEmpty || model.isBusy || model.isRefreshing)
                 Button("Send") { model.send(mapping: mapping) }
                     .buttonStyle(CompactChatButton(primary: true))
-                    .keyboardShortcut(.return, modifiers: .command)
                     .disabled(!model.routerReady || !selectedModelsAvailable || draftTrimmed.isEmpty || model.isBusy || model.isRefreshing || model.hasPendingTurn)
             }
         }

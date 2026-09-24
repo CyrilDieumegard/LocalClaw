@@ -41,6 +41,8 @@ final class RoutedChatViewModel: ObservableObject {
     private let service = RoutedChatService()
     private var sessionID = "localclaw-routed-\(UUID().uuidString)"
     private var previewMapping: RoutedModelMapping?
+    private var previewContextTurnID: UUID?
+    private var previewTime: Date?
 
     private struct StoredChat: Codable {
         let sessionID: String
@@ -58,7 +60,9 @@ final class RoutedChatViewModel: ObservableObject {
 
     func previewForCurrentDraft(mapping: RoutedModelMapping) -> RoutedSelection? {
         let prompt = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard previewPrompt == prompt, previewMapping == mapping else { return nil }
+        guard previewPrompt == prompt, previewMapping == mapping,
+              previewContextTurnID == turns.last?.id,
+              let previewTime, Date().timeIntervalSince(previewTime) < 120 else { return nil }
         return preview
     }
 
@@ -66,14 +70,19 @@ final class RoutedChatViewModel: ObservableObject {
         guard !isBusy && !isSettingUp && !isRefreshing else { return }
         isRefreshing = true
         status = "Checking the local router and chat models…"
+        preview = nil
+        previewMapping = nil
+        previewTime = nil
         let service = self.service
         Task {
             do {
-                let models = try await Task.detached(priority: .utility) { try service.availableChatModels() }.value
-                availableModels = models
-                let check = try await Task.detached(priority: .utility) {
+                async let loadedModels = Task.detached(priority: .utility) { try service.availableChatModels() }.value
+                async let decision = Task.detached(priority: .utility) {
                     try service.classify(prompt: "Translate this short sentence.", prior: nil)
                 }.value
+                let models = try await loadedModels
+                availableModels = models
+                let check = try await decision
                 routerReady = check.status == "ok" && check.providerId == "onnx"
                 status = routerReady
                     ? "Local router ready · \(models.count) available chat models"
@@ -142,10 +151,13 @@ final class RoutedChatViewModel: ObservableObject {
                 preview = selection
                 previewPrompt = prompt
                 previewMapping = mapping
+                previewContextTurnID = turns.last?.id
+                previewTime = Date()
                 status = "Local preview complete. No chat request was sent."
             } catch {
                 preview = nil
                 previewMapping = nil
+                previewTime = nil
                 status = error.localizedDescription
             }
             isBusy = false
@@ -162,11 +174,18 @@ final class RoutedChatViewModel: ObservableObject {
         guard !prompt.isEmpty else { status = "Write a message first."; return }
         isBusy = true
         status = "Choosing a model on this Mac…"
+        let savedPreview = previewForCurrentDraft(mapping: mapping)
         Task {
             do {
-                // Re-evaluate at send time so a preview cannot become a stale
-                // authorization to send after the router configuration changes.
-                let selection = try await decide(prompt: prompt, mapping: mapping)
+                // The preview is bound to this exact draft, mapping and last
+                // turn, and expires quickly. OpenClaw still enforces its model
+                // policy when the actual request is sent.
+                let selection: RoutedSelection
+                if let savedPreview {
+                    selection = savedPreview
+                } else {
+                    selection = try await decide(prompt: prompt, mapping: mapping)
+                }
                 let turnID = UUID()
                 turns.append(RoutedChatTurn(
                     id: turnID, prompt: prompt, createdAt: Date(), selection: selection,
@@ -178,6 +197,7 @@ final class RoutedChatViewModel: ObservableObject {
                 preview = nil
                 previewPrompt = ""
                 previewMapping = nil
+                previewTime = nil
                 status = "Sending to \(selection.modelID)…"
                 let service = self.service
                 let sessionID = self.sessionID
@@ -218,6 +238,7 @@ final class RoutedChatViewModel: ObservableObject {
         preview = nil
         previewPrompt = ""
         previewMapping = nil
+        previewTime = nil
         save()
         status = routerReady ? "New routed conversation ready" : "Set up the local router to begin"
     }
