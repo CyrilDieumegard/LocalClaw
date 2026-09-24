@@ -4,7 +4,7 @@ import Testing
 @testable import localclaw_mac_installer
 
 extension RuntimeRecoveryTests.OpenClawRuntimeMaintenanceTests {
-@Suite(.serialized)
+@Suite
 struct GatewayConnectionRecoveryTests {
     @Test func exactCustomerErrorOffersRecoveryWithoutResending() {
       let error = #"""

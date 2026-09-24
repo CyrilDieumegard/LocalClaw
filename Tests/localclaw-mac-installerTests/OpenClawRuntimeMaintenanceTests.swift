@@ -7,7 +7,7 @@ import Testing
 struct RuntimeRecoveryTests {}
 
 extension RuntimeRecoveryTests {
-@Suite(.serialized)
+@Suite
 struct OpenClawRuntimeMaintenanceTests {
     private let mismatch = "OpenClaw state database /Users/bot/.openclaw/state/openclaw.sqlite uses newer schema version 15; this OpenClaw build supports 1."
 
