@@ -7,7 +7,7 @@ import WebKit
 
 @MainActor
 final class InstallerViewModel: ObservableObject {
-    enum Screen { case license, onboarding, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, agents, cronJobs, kanban, healthCenter, usageCenter, chat, goals, models, skills, developer }
+    enum Screen { case license, onboarding, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, agents, cronJobs, kanban, healthCenter, usageCenter, chat, routedChat, goals, models, skills, developer }
     enum InstallMode: String {
         case llmOnly = "Install Local LLM only"
         case openClawOnly = "Install OpenClaw only"
@@ -11019,7 +11019,7 @@ final class InstallerViewModel: ObservableObject {
         return nil
     }
 
-    nonisolated private static func extractAgentReply(from raw: String) -> String {
+    nonisolated static func extractAgentReply(from raw: String) -> String {
         let clean = stripANSI(raw)
         guard let data = clean.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -11074,7 +11074,7 @@ final class InstallerViewModel: ObservableObject {
         return parts.joined(separator: " • ")
     }
 
-    nonisolated private static func extractAgentUsage(from raw: String) -> (input: Int?, output: Int?, total: Int?) {
+    nonisolated static func extractAgentUsage(from raw: String) -> (input: Int?, output: Int?, total: Int?) {
         let clean = stripANSI(raw)
 
         func regexNumber(_ pattern: String) -> Int? {
@@ -11120,7 +11120,7 @@ final class InstallerViewModel: ObservableObject {
         return (input, output, total)
     }
 
-    nonisolated private static func extractAgentRuntimeModel(from raw: String) -> String? {
+    nonisolated static func extractAgentRuntimeModel(from raw: String) -> String? {
         let clean = stripANSI(raw)
         guard let data = clean.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -12821,6 +12821,7 @@ struct ProgressSteps: View {
         case .healthCenter: return 0
         case .usageCenter: return 0
         case .chat: return 0
+        case .routedChat: return 0
         case .goals: return 0
         case .models: return 0
         case .skills: return 0
@@ -12944,6 +12945,7 @@ struct ContentView: View {
                             case .healthCenter: healthCenter
                             case .usageCenter: usageCenter
                             case .chat: openClawChat
+                            case .routedChat: RoutedChatView()
                             case .goals: GoalCenterView(vm: vm, goal: goalCenter)
                             case .models: modelsCenter
                             case .skills: skillsCenter
@@ -13217,6 +13219,7 @@ struct ContentView: View {
 
                     sidebarSectionLabel("Work")
                     sidebarButton("OpenClaw Chat", icon: "message.badge.waveform", isActive: vm.screen == .chat) { vm.screen = .chat }
+                    sidebarButton("Routed Chat · BETA", icon: "point.3.connected.trianglepath.dotted", isActive: vm.screen == .routedChat) { vm.screen = .routedChat }
                     sidebarButton("Goals", icon: "target", isActive: vm.screen == .goals) { vm.screen = .goals }
                     sidebarButton("Developer", icon: "curlybraces.square", isActive: vm.screen == .developer) { vm.screen = .developer }
 
@@ -20364,6 +20367,7 @@ struct ContentView: View {
                 modelsHeader
                 modelsSummaryRow
                 modelsConfigAndEstimator
+                decisionModelsGuide
                 modelsHealthAndRecommendations
                 modelsInventoryPanel
             }
@@ -20412,6 +20416,87 @@ struct ContentView: View {
             configuredModelsCard
             currentModelCard
         }
+    }
+
+    var decisionModelsGuide: some View {
+        let supported = (InstallerEngine.compareVersion(vm.openclawInstalledVersion, "2026.9.6") ?? -1) >= 0
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Decision models").font(AppFont.bodySemi(16)).foregroundStyle(UI.text)
+                Text("OpenClaw 2026.9.6+")
+                    .font(AppFont.bodySemi(10))
+                    .foregroundStyle(UI.accent)
+                Spacer()
+                Link("How it works", destination: URL(string: "https://docs.openclaw.ai/concepts/decision-models")!)
+                    .font(AppFont.bodySemi(11))
+            }
+
+            Text("A Decision model evaluates supplied evidence against a rubric and returns a choice, score, or yes/no probability. For example, it can classify a support request as billing or technical.")
+                .font(AppFont.body(12))
+                .foregroundStyle(UI.muted)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Can a Decision model choose the chat model for each prompt?")
+                    .font(AppFont.bodySemi(13))
+                    .foregroundStyle(UI.text)
+                Text("OpenClaw does not do this automatically. LocalClaw's separate Routed Chat beta calls a small ONNX Decision model on this Mac, applies a conservative local routing policy, and requests the chosen chat model for each turn. Your normal Fast, Deep, Local, and Cloud modes remain direct user choices.")
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Try Routed Chat · BETA") { vm.screen = .routedChat }
+                    .buttonStyle(CTAButton(primary: false))
+            }
+            .padding(11)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+
+            HStack(alignment: .top, spacing: 10) {
+                decisionSetupStep("1", title: "Update OpenClaw", detail: supported ? "Installed: \(vm.openclawInstalledVersion). This version supports Decision plugins." : "Installed: \(vm.openclawInstalledVersion). Version 2026.9.6 or newer is required.") {
+                    Button("Open Updates") { vm.screen = .updates }
+                        .buttonStyle(CTAButton(primary: false))
+                }
+                decisionSetupStep("2", title: "Choose where it runs", detail: "ONNX runs on this Mac. Jev uses TypeSafe's hosted, billed API. Kev needs a local server.") {
+                    HStack(spacing: 8) {
+                        Link("ONNX guide", destination: URL(string: "https://docs.openclaw.ai/plugins/onnx")!)
+                        Link("TypeSafe / Kev guide", destination: URL(string: "https://docs.openclaw.ai/plugins/typesafe")!)
+                    }
+                    .font(AppFont.bodySemi(11))
+                }
+                decisionSetupStep("3", title: "Enable and select", detail: "For general OpenClaw use, follow the provider guide and its separate Decision picker. Routed Chat's Set up button prepares its own local role without changing your default choice.") {
+                    Button("Open OpenClaw") { vm.openDashboard() }
+                        .buttonStyle(CTAButton(primary: false))
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private func decisionSetupStep<Actions: View>(_ number: String, title: String, detail: String, @ViewBuilder actions: () -> Actions) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Text(number)
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(UI.accent)
+                    .frame(width: 22, height: 22)
+                    .background(Circle().fill(UI.cardSoft))
+                Text(title).font(AppFont.bodySemi(12)).foregroundStyle(UI.text)
+            }
+            Text(detail)
+                .font(AppFont.body(11))
+                .foregroundStyle(UI.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            actions()
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, minHeight: 130, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     var configuredModelsCard: some View {

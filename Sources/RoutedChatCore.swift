@@ -1,0 +1,189 @@
+import Foundation
+
+enum RoutedTask: String, Codable, CaseIterable, Sendable {
+    case economical
+    case reasoning
+    case coding
+    case unclear
+
+    var label: String {
+        switch self {
+        case .economical: "Simple"
+        case .reasoning: "Analysis"
+        case .coding: "Code"
+        case .unclear: "Unclear"
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .economical: "The request looks routine. Your economical chat model is selected."
+        case .reasoning: "The request appears to need several reasoning steps. Your analysis model is selected."
+        case .coding: "The request concerns software or debugging. Your code model is selected."
+        case .unclear: "The router lacks enough context. Your analysis model is selected conservatively."
+        }
+    }
+}
+
+struct RoutedDecision: Decodable, Sendable {
+    let status: String
+    let route: RoutedTask?
+    let probabilities: [String: Double]?
+    let routerModel: String?
+    let providerId: String?
+    let rubricVersion: String?
+    let reason: String?
+}
+
+struct RoutedModelMapping: Sendable, Equatable {
+    let economical: String
+    let reasoning: String
+    let coding: String
+
+    var modelIDs: [String] { [economical, reasoning, coding] }
+}
+
+struct RoutedSelection: Codable, Sendable {
+    let routerTask: RoutedTask
+    let task: RoutedTask
+    let modelID: String
+    let explanation: String
+    let routeMargin: Double?
+    let wasAmbiguous: Bool
+    let excerpted: Bool
+    let routerModel: String
+    let probabilities: [String: Double]
+}
+
+enum RoutedChatPolicy {
+    static let minimumMargin = 0.12
+
+    // Conservative local checks protect against observed high-score mistakes
+    // in the beta classifier. They can only move work away from the cheap slot.
+    private static let codeTerms = [
+        "swiftui", "python", "javascript", "typescript", "sql", "node.js",
+        "debug", "bug", "endpoint", "api", "code", "coding", "programming",
+        "programmation", "composant", "function", "fonction", "script", "react"
+    ]
+    private static let analysisTerms = [
+        "plan strategique", "strategic plan", "strategie", "strategy",
+        "risque", "risques", "risk", "risks", "tradeoff", "tradeoffs", "compromis",
+        "compare", "comparer", "comparaison", "comparison", "comparing",
+        "analyse", "analyser", "analysez", "analysis", "analyze", "analyzing",
+        "probabilite", "probability", "calculate", "calculation", "calcul",
+        "churn", "growth", "croissance", "pourcentage", "%",
+        "multi-step", "plusieurs etapes"
+    ]
+
+    static func excerpt(_ text: String) -> (text: String, excerpted: Bool) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 1_400 else { return (trimmed, false) }
+        return (String(trimmed.prefix(680)) + "\n[Middle omitted for local routing]\n" + String(trimmed.suffix(680)), true)
+    }
+
+    static func select(
+        decision: RoutedDecision,
+        mapping: RoutedModelMapping,
+        availableModelIDs: Set<String>,
+        prompt: String,
+        excerpted: Bool
+    ) throws -> RoutedSelection {
+        guard decision.status == "ok", decision.providerId == "onnx",
+              let task = decision.route,
+              let probabilities = decision.probabilities,
+              let routerModel = decision.routerModel, !routerModel.isEmpty else {
+            throw RoutedChatError.routerUnavailable(decision.reason ?? "invalid-decision")
+        }
+        guard !mapping.economical.isEmpty, !mapping.reasoning.isEmpty,
+              !mapping.coding.isEmpty, mapping.economical != mapping.reasoning,
+              mapping.modelIDs.allSatisfy(availableModelIDs.contains) else {
+            throw RoutedChatError.invalidModelMapping
+        }
+        guard Set([RoutedTask.economical, .reasoning, .coding].map(\.rawValue)) == Set(probabilities.keys),
+              probabilities.values.allSatisfy({ $0.isFinite && (0...1).contains($0) }) else {
+            throw RoutedChatError.routerUnavailable("incomplete-distribution")
+        }
+
+        let sorted = probabilities.values.sorted(by: >)
+        let margin = sorted.count > 1 ? sorted[0] - sorted[1] : nil
+        let ambiguous = margin.map { $0 < minimumMargin } ?? true
+        let request = String(prompt.prefix(220)).folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+        let words = request.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        let codeGuard = containsTerm(in: request, terms: codeTerms)
+        let analysisGuard = containsTerm(in: request, terms: analysisTerms)
+        let lacksContext = words.count <= 3 && !codeGuard
+        let effectiveTask: RoutedTask
+        let explanation: String
+        if codeGuard {
+            effectiveTask = .coding
+            explanation = task == .coding ? task.explanation : "ONNX proposed \(task.label), but the request includes software terms. Your code model is selected."
+        } else if ambiguous || lacksContext {
+            effectiveTask = .unclear
+            explanation = "The request lacks context or local scores are close. Your analysis model is selected."
+        } else if task == .economical && analysisGuard {
+            effectiveTask = .reasoning
+            explanation = "ONNX proposed Simple, but the request includes analysis, calculation or planning. Your analysis model is selected."
+        } else {
+            effectiveTask = task
+            explanation = task.explanation
+        }
+        let modelID: String
+        switch effectiveTask {
+        case .economical: modelID = mapping.economical
+        case .reasoning, .unclear: modelID = mapping.reasoning
+        case .coding: modelID = mapping.coding
+        }
+        return RoutedSelection(
+            routerTask: task,
+            task: effectiveTask,
+            modelID: modelID,
+            explanation: explanation,
+            routeMargin: margin,
+            wasAmbiguous: effectiveTask == .unclear,
+            excerpted: excerpted,
+            routerModel: routerModel,
+            probabilities: probabilities
+        )
+    }
+
+    private static func containsTerm(in text: String, terms: [String]) -> Bool {
+        terms.contains { term in
+            guard let range = text.range(of: term) else { return false }
+            let before = range.lowerBound == text.startIndex ? nil : text[text.index(before: range.lowerBound)]
+            let after = range.upperBound == text.endIndex ? nil : text[range.upperBound]
+            return (before == nil || !before!.isLetter) && (after == nil || !after!.isLetter)
+        }
+    }
+}
+
+enum RoutedChatError: LocalizedError {
+    case requiresOpenClawUpdate
+    case invalidModelMapping
+    case routerUnavailable(String)
+    case gatewayNotLocal
+    case noAgent
+    case commandFailed(String)
+    case unexpectedReply
+    case modelMismatch(expected: String, actual: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .requiresOpenClawUpdate:
+            "Update OpenClaw to 2026.9.6 or newer in Updates before setting up the local router."
+        case .invalidModelMapping:
+            "Choose available models for all three routes, with different models for Simple and Analysis."
+        case .routerUnavailable(let reason):
+            "The local decision model could not classify this request (\(reason)). Nothing was sent to a chat model."
+        case .gatewayNotLocal:
+            "The selected OpenClaw Gateway is not local to this Mac. Local routing is unavailable for this setup."
+        case .noAgent:
+            "LocalClaw could not identify the chat agent. No message was sent."
+        case .commandFailed(let message):
+            message
+        case .unexpectedReply:
+            "OpenClaw did not return a verifiable reply and model identity. Check the Gateway before retrying."
+        case .modelMismatch(let expected, let actual):
+            "OpenClaw used \(actual), although the route selected \(expected). This turn needs review."
+        }
+    }
+}

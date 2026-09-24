@@ -1,0 +1,12 @@
+{
+  "name": "localclaw-router",
+  "version": "0.1.0-beta.1",
+  "private": true,
+  "type": "module",
+  "peerDependencies": { "openclaw": ">=2026.9.6" },
+  "openclaw": {
+    "extensions": ["./index.mjs"],
+    "compat": { "pluginApi": ">=2026.9.6", "minGatewayVersion": "2026.9.6" },
+    "build": { "openclawVersion": "2026.9.6", "pluginSdkVersion": "2026.9.6" }
+  }
+}

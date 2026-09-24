@@ -1,0 +1,129 @@
+import XCTest
+@testable import localclaw_mac_installer
+
+final class RoutedChatPolicyTests: XCTestCase {
+    private let mapping = RoutedModelMapping(
+        economical: "openrouter/example/cheap",
+        reasoning: "openai/example-strong",
+        coding: "openai/example-code"
+    )
+
+    private var available: Set<String> {
+        Set(mapping.modelIDs)
+    }
+
+    func testClearRoutineTaskSelectsEconomicalModel() throws {
+        let decision = RoutedDecision(
+            status: "ok", route: .economical,
+            probabilities: ["economical": 0.84, "reasoning": 0.10, "coding": 0.06],
+            routerModel: "gliner2.5-small-v1", providerId: "onnx",
+            rubricVersion: "localclaw-route-v2", reason: nil
+        )
+        let selected = try RoutedChatPolicy.select(
+            decision: decision, mapping: mapping,
+            availableModelIDs: available, prompt: "Traduis cette phrase en anglais.", excerpted: false
+        )
+        XCTAssertEqual(selected.modelID, mapping.economical)
+        XCTAssertFalse(selected.wasAmbiguous)
+    }
+
+    func testCloseLocalScoresChooseVisibleAnalysisFallback() throws {
+        let decision = RoutedDecision(
+            status: "ok", route: .economical,
+            probabilities: ["economical": 0.37, "reasoning": 0.35, "coding": 0.28],
+            routerModel: "gliner2.5-small-v1", providerId: "onnx",
+            rubricVersion: "localclaw-route-v2", reason: nil
+        )
+        let selected = try RoutedChatPolicy.select(
+            decision: decision, mapping: mapping,
+            availableModelIDs: available, prompt: "Please summarize this short paragraph.", excerpted: false
+        )
+        XCTAssertEqual(selected.modelID, mapping.reasoning)
+        XCTAssertEqual(selected.task, .unclear)
+        XCTAssertTrue(selected.wasAmbiguous)
+    }
+
+    func testHostedDecisionResultAndUnavailableModelFailClosed() {
+        let decision = RoutedDecision(
+            status: "ok", route: .coding,
+            probabilities: ["economical": 0.03, "reasoning": 0.07, "coding": 0.90],
+            routerModel: "other", providerId: "hosted",
+            rubricVersion: "localclaw-route-v2", reason: nil
+        )
+        XCTAssertThrowsError(try RoutedChatPolicy.select(
+            decision: decision, mapping: mapping,
+            availableModelIDs: available, prompt: "Write Python code", excerpted: false
+        ))
+        let local = RoutedDecision(
+            status: "ok", route: .coding, probabilities: decision.probabilities,
+            routerModel: "gliner2.5-small-v1", providerId: "onnx",
+            rubricVersion: "localclaw-route-v2", reason: nil
+        )
+        XCTAssertThrowsError(try RoutedChatPolicy.select(
+            decision: local, mapping: mapping,
+            availableModelIDs: Set([mapping.economical, mapping.reasoning]), prompt: "Write Python code", excerpted: false
+        ))
+    }
+
+    func testComplexPromptCannotUseCheapModelDespiteHighClassifierScore() throws {
+        let decision = RoutedDecision(
+            status: "ok", route: .economical,
+            probabilities: ["economical": 0.94, "reasoning": 0.04, "coding": 0.02],
+            routerModel: "gliner2.5-small-v1", providerId: "onnx",
+            rubricVersion: "localclaw-route-v2", reason: nil
+        )
+        let result = try RoutedChatPolicy.select(
+            decision: decision, mapping: mapping, availableModelIDs: available,
+            prompt: "Construis un plan stratégique sur trois ans et analyse les risques.", excerpted: false
+        )
+        XCTAssertEqual(result.routerTask, .economical)
+        XCTAssertEqual(result.task, .reasoning)
+        XCTAssertEqual(result.modelID, mapping.reasoning)
+    }
+
+    func testCodePromptUsesCodeSlotDespiteClassifierMistake() throws {
+        let decision = RoutedDecision(
+            status: "ok", route: .reasoning,
+            probabilities: ["economical": 0.05, "reasoning": 0.80, "coding": 0.15],
+            routerModel: "gliner2.5-small-v1", providerId: "onnx",
+            rubricVersion: "localclaw-route-v2", reason: nil
+        )
+        let result = try RoutedChatPolicy.select(
+            decision: decision, mapping: mapping, availableModelIDs: available,
+            prompt: "Explique cette requête SQL et propose un index.", excerpted: false
+        )
+        XCTAssertEqual(result.task, .coding)
+        XCTAssertEqual(result.modelID, mapping.coding)
+    }
+
+    func testLongPromptExcerptKeepsBothEnds() {
+        let input = "BEGIN" + String(repeating: "x", count: 2_000) + "END"
+        let excerpt = RoutedChatPolicy.excerpt(input)
+        XCTAssertTrue(excerpt.excerpted)
+        XCTAssertTrue(excerpt.text.hasPrefix("BEGIN"))
+        XCTAssertTrue(excerpt.text.hasSuffix("END"))
+        XCTAssertLessThan(excerpt.text.count, input.count)
+    }
+
+    func testRouterBridgeResourcesAreBundled() {
+        let testBundle = Bundle(for: Self.self)
+        for name in ["localclaw-router-index.mjs", "localclaw-router-plugin.json", "localclaw-router-package.json"] {
+            let candidates = GoalControllerResourceLocator.candidateURLs(
+                bundleURL: testBundle.bundleURL,
+                resourceURL: testBundle.resourceURL,
+                executableURL: testBundle.executableURL,
+                scriptName: name
+            )
+            XCTAssertTrue(candidates.contains { FileManager.default.fileExists(atPath: $0.path) },
+                          "Missing bundled resource: \(name)")
+        }
+    }
+
+    func testCloudModelPickerExcludesLocalAndDelegatedRoutes() {
+        XCTAssertTrue(RoutedChatService.supportsChatModel("openrouter/deepseek/deepseek-v4-flash"))
+        XCTAssertTrue(RoutedChatService.supportsChatModel("openai-codex/gpt-5.4"))
+        XCTAssertFalse(RoutedChatService.supportsChatModel("lmstudio/google/gemma-4-e2b"))
+        XCTAssertFalse(RoutedChatService.supportsChatModel("ollama/llama3:latest"))
+        XCTAssertFalse(RoutedChatService.supportsChatModel("openrouter/auto"))
+    }
+}
