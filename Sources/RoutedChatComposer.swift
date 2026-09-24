@@ -6,7 +6,7 @@ import SwiftUI
 struct RoutedChatComposer: NSViewRepresentable {
     @Binding var text: String
     let isEditable: Bool
-    let onSend: () -> Void
+    let onSend: (String) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
 
@@ -58,7 +58,7 @@ struct RoutedChatComposer: NSViewRepresentable {
 }
 
 private final class SendingTextView: NSTextView {
-    var onSend: (() -> Void)?
+    var onSend: ((String) -> Void)?
 
     override func keyDown(with event: NSEvent) {
         let isReturn = event.keyCode == 36 || event.keyCode == 76
@@ -66,9 +66,19 @@ private final class SendingTextView: NSTextView {
         if isReturn && !hasMarkedText() &&
             !modifiers.contains(.shift) && !modifiers.contains(.option) &&
             !modifiers.contains(.control) {
-            onSend?()
+            onSend?(string)
             return
         }
         super.keyDown(with: event)
+    }
+
+    override func insertNewline(_ sender: Any?) {
+        let modifiers = NSApp.currentEvent?.modifierFlags.intersection(.deviceIndependentFlagsMask) ?? []
+        if !hasMarkedText() && !modifiers.contains(.shift) &&
+            !modifiers.contains(.option) && !modifiers.contains(.control) {
+            onSend?(string)
+        } else {
+            super.insertNewline(sender)
+        }
     }
 }

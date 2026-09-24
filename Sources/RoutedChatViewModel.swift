@@ -26,6 +26,7 @@ final class RoutedChatViewModel: ObservableObject {
     @Published private(set) var status = "Checking the local router…"
     @Published private(set) var preview: RoutedSelection?
     @Published private(set) var previewPrompt = ""
+    @Published private(set) var pendingPrompt: String?
 
     var hasPendingTurn: Bool {
         guard let last = turns.last else { return false }
@@ -47,6 +48,7 @@ final class RoutedChatViewModel: ObservableObject {
     private struct StoredChat: Codable {
         let sessionID: String
         let turns: [RoutedChatTurn]
+        let pendingPrompt: String?
     }
 
     init() {
@@ -55,6 +57,7 @@ final class RoutedChatViewModel: ObservableObject {
            stored.sessionID.hasPrefix("localclaw-routed-") {
             sessionID = stored.sessionID
             turns = stored.turns
+            draft = stored.pendingPrompt ?? ""
         }
     }
 
@@ -147,7 +150,8 @@ final class RoutedChatViewModel: ObservableObject {
         status = "Classifying on this Mac…"
         Task {
             do {
-                let selection = try await decide(prompt: prompt, mapping: mapping)
+                let prior = turns.last.flatMap { RoutedChatPolicy.priorContext($0.prompt) }
+                let selection = try await decide(prompt: prompt, mapping: mapping, prior: prior)
                 preview = selection
                 previewPrompt = prompt
                 previewMapping = mapping
@@ -164,17 +168,26 @@ final class RoutedChatViewModel: ObservableObject {
         }
     }
 
-    func send(mapping: RoutedModelMapping) {
+    func send(mapping: RoutedModelMapping, submittedText: String? = nil) {
         guard !isBusy && !isSettingUp && !isRefreshing else { return }
         guard !hasPendingTurn else {
             status = "Check the previous turn with Refresh before sending another request."
             return
         }
+        if let submittedText { draft = submittedText }
         let prompt = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { status = "Write a message first."; return }
+        let prior = turns.last.flatMap { RoutedChatPolicy.priorContext($0.prompt) }
+        let savedPreview = previewForCurrentDraft(mapping: mapping)
         isBusy = true
         status = "Choosing a model on this Mac…"
-        let savedPreview = previewForCurrentDraft(mapping: mapping)
+        pendingPrompt = prompt
+        save()
+        draft = ""
+        preview = nil
+        previewPrompt = ""
+        previewMapping = nil
+        previewTime = nil
         Task {
             do {
                 // The preview is bound to this exact draft, mapping and last
@@ -184,7 +197,7 @@ final class RoutedChatViewModel: ObservableObject {
                 if let savedPreview {
                     selection = savedPreview
                 } else {
-                    selection = try await decide(prompt: prompt, mapping: mapping)
+                    selection = try await decide(prompt: prompt, mapping: mapping, prior: prior)
                 }
                 let turnID = UUID()
                 turns.append(RoutedChatTurn(
@@ -192,12 +205,8 @@ final class RoutedChatViewModel: ObservableObject {
                     reply: nil, actualModelID: nil, inputTokens: nil, outputTokens: nil,
                     modelMatched: nil, error: nil
                 ))
+                pendingPrompt = nil
                 save()
-                draft = ""
-                preview = nil
-                previewPrompt = ""
-                previewMapping = nil
-                previewTime = nil
                 status = "Sending to \(selection.modelID)…"
                 let service = self.service
                 let sessionID = self.sessionID
@@ -224,6 +233,9 @@ final class RoutedChatViewModel: ObservableObject {
                     status = error.localizedDescription
                 }
             } catch {
+                pendingPrompt = nil
+                draft = prompt
+                save()
                 status = error.localizedDescription
             }
             isBusy = false
@@ -235,6 +247,7 @@ final class RoutedChatViewModel: ObservableObject {
         sessionID = "localclaw-routed-\(UUID().uuidString)"
         turns = []
         draft = ""
+        pendingPrompt = nil
         preview = nil
         previewPrompt = ""
         previewMapping = nil
@@ -243,7 +256,8 @@ final class RoutedChatViewModel: ObservableObject {
         status = routerReady ? "New routed conversation ready" : "Set up the local router to begin"
     }
 
-    private func decide(prompt: String, mapping: RoutedModelMapping) async throws -> RoutedSelection {
+    private func decide(prompt: String, mapping: RoutedModelMapping,
+                        prior: String?) async throws -> RoutedSelection {
         guard routerReady else { throw RoutedChatError.routerUnavailable("not-ready") }
         let available = Set(availableModels.map(\.id))
         guard !mapping.economical.isEmpty, !mapping.reasoning.isEmpty,
@@ -252,7 +266,6 @@ final class RoutedChatViewModel: ObservableObject {
             throw RoutedChatError.invalidModelMapping
         }
         let excerpt = RoutedChatPolicy.excerpt(prompt)
-        let prior = turns.last.flatMap { RoutedChatPolicy.priorContext($0.prompt) }
         let service = self.service
         let decision = try await Task.detached(priority: .userInitiated) {
             try service.classify(prompt: excerpt.text, prior: prior)
@@ -297,7 +310,7 @@ final class RoutedChatViewModel: ObservableObject {
     }
 
     private func save() {
-        let stored = StoredChat(sessionID: sessionID, turns: turns)
+        let stored = StoredChat(sessionID: sessionID, turns: turns, pendingPrompt: pendingPrompt)
         if let data = try? JSONEncoder().encode(stored) {
             UserDefaults.standard.set(data, forKey: Self.storageKey)
         }

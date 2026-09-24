@@ -77,6 +77,22 @@ struct RoutedChatView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
+            if let pendingPrompt = model.pendingPrompt {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("YOU · Choosing a model on this Mac…")
+                        .font(AppFont.bodySemi(10))
+                        .foregroundStyle(UI.accent)
+                    Text(pendingPrompt)
+                        .font(AppFont.body(12))
+                        .foregroundStyle(UI.text)
+                        .lineLimit(3)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
+                .accessibilityIdentifier("routed.pendingPrompt")
+            }
+
             composer
         }
         .padding(18)
@@ -207,8 +223,8 @@ struct RoutedChatView: View {
     private var composer: some View {
         VStack(alignment: .leading, spacing: 9) {
             RoutedChatComposer(text: $model.draft,
-                               isEditable: !model.isBusy && !model.isSettingUp) {
-                model.send(mapping: mapping)
+                               isEditable: !model.isBusy && !model.isSettingUp) { text in
+                model.send(mapping: mapping, submittedText: text)
             }
                 .padding(8)
                 .frame(height: 86)
