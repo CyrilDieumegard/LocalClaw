@@ -6,6 +6,7 @@ struct RoutedChatView: View {
     @AppStorage("localclaw.routedChat.reasoningModel.v1") private var reasoningModel = ""
     @AppStorage("localclaw.routedChat.codingModel.v1") private var codingModel = ""
     @State private var expandedReplies = Set<UUID>()
+    @State private var focusMode = false
 
     private var mapping: RoutedModelMapping {
         RoutedModelMapping(economical: economicalModel, reasoning: reasoningModel, coding: codingModel)
@@ -41,6 +42,8 @@ struct RoutedChatView: View {
                     .padding(.vertical, 5)
                     .background(Capsule().fill(UI.accent))
                 Spacer()
+                Button(focusMode ? "Exit focus view" : "Focus view") { focusMode.toggle() }
+                    .buttonStyle(CompactChatButton(primary: false))
                 Button("New conversation") { model.newConversation() }
                     .buttonStyle(CompactChatButton(primary: false))
                     .disabled(model.isBusy)
@@ -49,8 +52,12 @@ struct RoutedChatView: View {
                     .disabled(model.isBusy || model.isSettingUp || model.isRefreshing)
             }
 
-            introduction
-            configuration
+            if focusMode {
+                focusSummary
+            } else {
+                introduction
+                configuration
+            }
 
             ScrollViewReader { proxy in
                 ScrollView {
@@ -93,7 +100,7 @@ struct RoutedChatView: View {
                 .accessibilityIdentifier("routed.pendingPrompt")
             }
 
-            composer
+            if !focusMode { composer }
         }
         .padding(18)
         .onAppear { model.refresh() }
@@ -102,6 +109,53 @@ struct RoutedChatView: View {
         .onChange(of: model.routerReady) { ready in
             if ready { model.prepareRouteWhileTyping(mapping: mapping) }
         }
+    }
+
+    private var focusSummary: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 20) {
+                focusDescription
+                Spacer(minLength: 12)
+                focusModel("SIMPLE", id: economicalModel)
+                focusModel("ANALYSIS", id: reasoningModel)
+                focusModel("CODE", id: codingModel)
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                focusDescription
+                HStack(spacing: 18) {
+                    focusModel("SIMPLE", id: economicalModel)
+                    focusModel("ANALYSIS", id: reasoningModel)
+                    focusModel("CODE", id: codingModel)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 12).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private var focusDescription: some View {
+        HStack(spacing: 10) {
+            Label("DECISION ON THIS MAC", systemImage: "cpu")
+                .font(AppFont.bodySemi(11))
+                .foregroundStyle(UI.accent)
+            Text("Local ONNX routing · the chat request goes to the selected model")
+                .font(AppFont.body(11))
+                .foregroundStyle(UI.muted)
+        }
+    }
+
+    private func focusModel(_ task: String, id: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(task)
+                .font(AppFont.bodySemi(9))
+                .foregroundStyle(UI.muted)
+            Text(id.split(separator: "/").last.map(String.init) ?? "Choose model")
+                .font(AppFont.bodySemi(11))
+                .foregroundStyle(UI.text)
+        }
+        .frame(minWidth: 110, alignment: .leading)
     }
 
     private var introduction: some View {

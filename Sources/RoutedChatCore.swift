@@ -81,6 +81,14 @@ enum RoutedChatPolicy {
     private static let shortTranslationTerms = [
         "traduis", "traduire", "traduction", "translate", "translation"
     ]
+    private static let briefConversation = Set([
+        "tu es la", "tu est la", "es tu la", "vous etes la", "t es la",
+        "est ce que tu es la", "est ce que tu est la", "tu m entends",
+        "are you there", "you there", "can you hear me",
+        "salut", "bonjour", "coucou", "hello", "hi", "hey",
+        "merci", "thanks", "thank you", "ok", "oui", "yes"
+    ])
+    private static let briefClarificationOpeners = Set(["euh", "heuu", "heu", "hein", "pardon", "hmm"])
 
     static func excerpt(_ text: String) -> (text: String, excerpted: Bool) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -155,6 +163,10 @@ enum RoutedChatPolicy {
         let shortTranslation = !excerpted && prompt.utf8.count <= 160 &&
             words.count <= 24 && !analysisGuard &&
             containsTerm(in: request, terms: shortTranslationTerms)
+        let normalizedWords = words.map(String.init)
+        let briefChat = !excerpted && words.count <= 7 && !analysisGuard && !codeGuard &&
+            (briefConversation.contains(normalizedWords.joined(separator: " ")) ||
+             (words.count <= 4 && normalizedWords.first.map(briefClarificationOpeners.contains) == true))
         let lacksContext = words.count <= 3 && !codeGuard
         let effectiveTask: RoutedTask
         let explanation: String
@@ -164,6 +176,9 @@ enum RoutedChatPolicy {
         } else if shortTranslation {
             effectiveTask = .economical
             explanation = task == .economical ? task.explanation : "ONNX proposed \(task.label), but this is a short translation. Your economical model is selected."
+        } else if briefChat {
+            effectiveTask = .economical
+            explanation = task == .economical ? task.explanation : "ONNX proposed \(task.label), but this is a brief conversational message. Your economical model is selected."
         } else if ambiguous || lacksContext {
             effectiveTask = .unclear
             explanation = "The request lacks context or local scores are close. Your analysis model is selected."

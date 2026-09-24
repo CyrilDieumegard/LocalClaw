@@ -60,6 +60,42 @@ final class RoutedChatPolicyTests: XCTestCase {
         XCTAssertFalse(selected.wasAmbiguous)
     }
 
+    func testBriefPresenceQuestionUsesEconomicalModelDespiteShortContextFallback() throws {
+        let decision = RoutedDecision(
+            status: "ok", route: .economical,
+            probabilities: ["economical": 0.80, "reasoning": 0.07, "coding": 0.13],
+            routerModel: "gliner2.5-small-v1", providerId: "onnx",
+            rubricVersion: "localclaw-route-v2", reason: nil
+        )
+        for prompt in ["tu est la?", "Tu es là ?", "Are you there?"] {
+            let selected = try RoutedChatPolicy.select(
+                decision: decision, mapping: mapping,
+                availableModelIDs: available, prompt: prompt, excerpted: false
+            )
+            XCTAssertEqual(selected.task, .economical, prompt)
+            XCTAssertEqual(selected.modelID, mapping.economical, prompt)
+        }
+    }
+
+    func testBriefClarificationUsesEconomicalModelButAnalysisStaysStrong() throws {
+        let decision = RoutedDecision(
+            status: "ok", route: .reasoning,
+            probabilities: ["economical": 0.38, "reasoning": 0.46, "coding": 0.16],
+            routerModel: "gliner2.5-small-v1", providerId: "onnx",
+            rubricVersion: "localclaw-route-v2", reason: nil
+        )
+        let clarification = try RoutedChatPolicy.select(
+            decision: decision, mapping: mapping,
+            availableModelIDs: available, prompt: "heuu astra ?!?", excerpted: false
+        )
+        XCTAssertEqual(clarification.modelID, mapping.economical)
+        let analysis = try RoutedChatPolicy.select(
+            decision: decision, mapping: mapping,
+            availableModelIDs: available, prompt: "Analyse les risques", excerpted: false
+        )
+        XCTAssertEqual(analysis.modelID, mapping.reasoning)
+    }
+
     func testHostedDecisionResultAndUnavailableModelFailClosed() {
         let decision = RoutedDecision(
             status: "ok", route: .coding,
