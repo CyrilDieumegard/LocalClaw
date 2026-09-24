@@ -33,4 +33,4 @@ jobs:
 
       - name: Test remaining app paths
         timeout-minutes: 10
-        run: swift test --skip OpenClawRuntimeMaintenanceTests
+        run: swift test --no-parallel --skip OpenClawRuntimeMaintenanceTests
