@@ -621,11 +621,14 @@ final class OpenClawRuntimeMaintenance {
         if requiresOfflineBackup || repairingConfiguration || pendingLegacyApprovals || schemaMismatch {
             return true
         }
-        // 2026.8.1 is the one-time OpenClaw 2.0 state transition. Once that
-        // boundary has been crossed, same-schema updates use OpenClaw's native
-        // config snapshot and package rollback instead of another full archive.
-        return current.compare("2026.8.1", options: .numeric) == .orderedAscending &&
-            target.compare("2026.8.1", options: .numeric) != .orderedAscending
+        // Full state snapshots belong to actual schema transitions, not every
+        // patch release. 2026.9.6 advances session/state storage beyond 9.1;
+        // its package rollback alone cannot restore a migrated database.
+        let boundaries = ["2026.8.1", "2026.9.6"]
+        return boundaries.contains { boundary in
+            current.compare(boundary, options: .numeric) == .orderedAscending &&
+                target.compare(boundary, options: .numeric) != .orderedAscending
+        }
     }
 
     static func hasUnsafeSharedRuntimeConsumer(
@@ -693,8 +696,11 @@ final class OpenClawRuntimeMaintenance {
         do {
             var runtime = try installation()
             if OpenClawActivationBlock.isPresent(home: home, runtime: runtime) {
-                return allowRuntimeUpdate ? updateUnlocked(requiresOfflineBackup: true)
-                    : StepResult(state: .fail, message: "OpenClaw post-update repair is pending because the updater could not verify safe Gateway activation. Use Repair Gateway to finish verification before starting it. No request was sent.")
+                if OpenClawActivationBlock.requiresManualRecovery(home: home, runtime: runtime) {
+                    return StepResult(state: .fail, message: "OpenClaw's last update left an unverified or unsafe runtime state. Automatic retry and Gateway activation are blocked. Preserve the existing recovery backup and inspect the native update result before manual recovery. No request was sent.")
+                }
+                return allowRuntimeUpdate ? updateUnlocked()
+                    : StepResult(state: .fail, message: "OpenClaw plugin repair is pending. Review Plugin Permissions, then use Repair Gateway to finish verification. No request was sent.")
             }
             if OpenClawUpdateCheckpoint.load(home: home, runtime: runtime) != nil {
                 return allowRuntimeUpdate ? updateUnlocked()
@@ -979,6 +985,12 @@ final class OpenClawRuntimeMaintenance {
             report("Checking free disk space before contacting npm...")
             try OpenClawStorageRecovery.requireSpace(at: home, freeBytes: freeBytes)
             let runtime = try installation()
+            guard runtime.serviceLabel != nil else {
+                throw MaintenanceError("OpenClaw has no selected managed Gateway service. Use Repair Gateway to bind this installation before updating it; no package or database was changed.")
+            }
+            if OpenClawActivationBlock.requiresManualRecovery(home: home, runtime: runtime) {
+                throw MaintenanceError("OpenClaw's last update left an unverified or unsafe runtime state. Automatic retry and Gateway activation are blocked. Preserve the existing recovery backup and inspect the native update result before manual recovery. No package, database, or service was changed.", allowsServiceRecovery: false)
+            }
             let nodeVersion = try checked(
                 bounded(runtime.environmentPrefix + q(runtime.node.path) + " --version", seconds: 15),
                 stage: "Check Gateway Node runtime"
@@ -1029,10 +1041,13 @@ final class OpenClawRuntimeMaintenance {
             report("Checking the Gateway installation: \(runtime.package.path)")
             let validation = validateConfiguration(runtime)
             var repairingConfig = repairConfiguration || OpenClawRecoveryDiagnostic.hasInvalidConfiguration(validation.1)
-            let pendingApprovals = hasLegacyExecApprovals(runtime)
             guard let current = runtime.version else {
                 throw MaintenanceError("The installed OpenClaw version could not be verified. No database or runtime was replaced.")
             }
+            // exec-approvals.json remains a normal state file after the 2.0
+            // transition. Its presence only requires migration on old cores.
+            let pendingApprovals = current.compare("2026.8.1", options: .numeric) != .orderedDescending &&
+                hasLegacyExecApprovals(runtime)
             let isolatedSharedRepair = unsafeSharedRuntime && repairingConfig && !pendingApprovals &&
                 Self.supportsPostCoreRepair(current) && Self.isSupportedUpdateTarget(current) &&
                 Self.canSafelyRepairSelectedStateInSharedRuntime(
@@ -1087,16 +1102,20 @@ final class OpenClawRuntimeMaintenance {
             let status = probeGateway(runtime).1
             let schemaMismatch = OpenClawSchemaMismatch.detect(in: status) != nil
             let activationBlocked = OpenClawActivationBlock.isPresent(home: home, runtime: runtime)
-            var mismatch = requiresOfflineBackup || repairingConfig || pendingApprovals || schemaMismatch || activationBlocked
             let directory = home.appendingPathComponent("Library/Application Support/LocalClaw/runtime-backups")
             let needsFullBackup = Self.requiresFullStateBackup(
                 current: current,
                 target: target,
-                requiresOfflineBackup: requiresOfflineBackup || activationBlocked,
+                requiresOfflineBackup: requiresOfflineBackup,
                 repairingConfiguration: repairingConfig,
                 pendingLegacyApprovals: pendingApprovals,
                 schemaMismatch: schemaMismatch
             )
+            // A verified same-version plugin repair block is resumable with
+            // native finalization. Its presence alone does not justify another
+            // full state archive on every retry.
+            var mismatch = requiresOfflineBackup || repairingConfig || pendingApprovals || schemaMismatch ||
+                (needsFullBackup && activationBlocked)
             if needsFullBackup {
                 try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
                 let archive = directory.appendingPathComponent("openclaw-\(UUID().uuidString).tar.gz")
@@ -1217,13 +1236,12 @@ final class OpenClawRuntimeMaintenance {
     private func finishUpdate(_ runtime: OpenClawRuntimeInstallation, target: String, updater: URL, repairOnly: Bool) throws -> StepResult {
         report(repairOnly ? "Finishing Doctor and plugin repair without reinstalling OpenClaw..."
                : "Updating the Gateway, synchronizing plugins and checking startup...")
-        if repairOnly {
-            // OpenClaw 2026.8.2 Doctor still acquires the gateway-lifecycle
-            // coordinator when service repair is externally managed. The selected
-            // Gateway must therefore be stopped by its actual service owner before
-            // entering native repair. Never delete coordinator files: an active
-            // Gateway legitimately owns that lock.
-            report("Stopping the selected Gateway before Doctor acquires maintenance ownership...")
+        // The native updater hands a running managed Gateway to a detached
+        // process. LocalClaw cannot safely restart or compensate that service
+        // until the detached update has finished. Own the service lifecycle
+        // here, and let Doctor acquire its database coordinators while stopped.
+        if runtime.serviceLabel != nil || repairOnly {
+            report("Stopping the selected Gateway before OpenClaw maintenance...")
             _ = try checked(
                 bounded(runtime.command("gateway stop --force --json"), seconds: 90),
                 stage: "Stop selected Gateway for repair"
@@ -1240,15 +1258,15 @@ final class OpenClawRuntimeMaintenance {
                 }
             }
             guard confirmedStopped else {
-                throw MaintenanceError("The selected Gateway did not confirm a stopped service before Doctor. No lock file was deleted.\n\(lastStatus)")
+                throw MaintenanceError("The selected Gateway did not confirm a stopped service before maintenance. No lock file was deleted.\n\(lastStatus)")
             }
         }
-        let arguments = repairOnly ? "update repair --yes --json" : "update --tag \(q(target)) --yes --json"
+        let arguments = repairOnly ? "update repair --yes --json" : "update --tag \(q(target)) --yes --json --no-restart"
         let update = runWithProgressPulse(
             bounded(runtime.command(
                 arguments + " --timeout 600",
                 cli: updater,
-                externalServiceRepair: repairOnly
+                externalServiceRepair: true
             ), seconds: 1800),
             status: "OpenClaw update and verification are still running"
         )
@@ -1256,7 +1274,13 @@ final class OpenClawRuntimeMaintenance {
         guard let result = OpenClawUpdateResult.envelope(in: output),
               let root = result["root"] as? String,
               URL(fileURLWithPath: root).resolvingSymlinksInPath() == runtime.package.resolvingSymlinksInPath() else {
-            throw MaintenanceError("OpenClaw maintenance returned no verifiable result for this installation (exit \(update.0)).\n\(output)")
+            throw unverifiedNativeUpdate(runtime,
+                "OpenClaw maintenance returned no verifiable result for this installation (exit \(update.0)).\n\(output)")
+        }
+        if result["status"] as? String == "skipped",
+           result["reason"] as? String == "managed-service-handoff-started" {
+            throw unverifiedNativeUpdate(runtime,
+                "OpenClaw transferred this update to a background process. Wait for its final result before starting the Gateway or retrying.\n\(output)")
         }
         if let refusal = OpenClawUpdateResult.serviceRecoveryRefusal(in: result) {
             do {
@@ -1267,37 +1291,118 @@ final class OpenClawRuntimeMaintenance {
             }
             throw MaintenanceError(refusal + "\n" + output, allowsServiceRecovery: false)
         }
-        // Keep a resumable checkpoint when the selected core is installed, but
-        // never turn an explicit native activation refusal into a resume receipt.
-        if runtime.version == target, let backupPath {
-            try OpenClawUpdateCheckpoint.save(home: home, runtime: runtime, target: target, archive: URL(fileURLWithPath: backupPath))
+        let advisoryFinalization = OpenClawUpdateResult.isStructurallyAdvisoryFinalization(result, exitCode: update.0)
+        let resumablePluginConsent = Self.isStructurallyResumablePluginConsent(result, exitCode: update.0)
+        if result["status"] as? String != "ok" && !advisoryFinalization && !resumablePluginConsent {
+            if result["status"] as? String == "error",
+               let recovery = result["recovery"] as? [String: Any],
+               recovery["serviceRestartSafe"] as? Bool == true,
+               let version = recovery["version"] as? String,
+               runtime.version == version {
+                throw MaintenanceError("OpenClaw did not complete the update, but verified that the previous Gateway can be restored.\n\(output)")
+            }
+            throw unverifiedNativeUpdate(runtime,
+                "OpenClaw did not confirm a completed update (exit \(update.0)).\n\(output)")
         }
         if repairOnly {
             guard result["mode"] as? String == "finalize", result["restart"] as? Bool == false else {
-                throw MaintenanceError("OpenClaw repair did not confirm finalize-only mode with service restart disabled. The shared core was not approved for replacement.\n\(output)")
+                throw unverifiedNativeUpdate(runtime,
+                    "OpenClaw repair did not confirm finalize-only mode with service restart disabled. The shared core was not approved for replacement.\n\(output)")
+            }
+        }
+        // Keep a resumable checkpoint when the selected core is installed, but
+        // never turn an explicit native activation refusal into a resume receipt.
+        if runtime.version == target, let backupPath {
+            do {
+                try OpenClawUpdateCheckpoint.save(home: home, runtime: runtime, target: target, archive: URL(fileURLWithPath: backupPath))
+            } catch {
+                throw unverifiedNativeUpdate(runtime, "The native update finished, but its verified recovery checkpoint could not be saved: \(error.localizedDescription)")
             }
         }
         guard runtime.version == target else {
-            throw MaintenanceError("The Gateway package is not version \(target) after updating. No task was replayed.\n\(output)")
+            throw unverifiedNativeUpdate(runtime,
+                "The Gateway package is not version \(target) after updating. No task was replayed.\n\(output)")
         }
-        if let pluginFailure = OpenClawUpdateResult.pluginFailure(in: result) {
-            throw MaintenanceError(pluginFailure)
+        if resumablePluginConsent {
+            let guidance = OpenClawUpdateResult.pluginFailure(in: result) ??
+                "Plugin approval is required before this Gateway can start. Review Plugin Permissions, then Finish Repair."
+            throw unverifiedNativeUpdate(runtime, guidance,
+                                         reason: OpenClawActivationBlock.pluginRepairPendingReason)
         }
-        guard update.0 == 0, result["status"] as? String == "ok" else {
-            throw MaintenanceError("OpenClaw \(target) is installed, but post-update maintenance did not finish (exit \(update.0)).\n\(output)")
+        if !advisoryFinalization, let pluginFailure = OpenClawUpdateResult.pluginFailure(in: result) {
+            throw unverifiedNativeUpdate(runtime, pluginFailure,
+                                         reason: OpenClawActivationBlock.pluginRepairPendingReason)
+        }
+        guard update.0 == 0 else {
+            throw unverifiedNativeUpdate(runtime,
+                "OpenClaw \(target) is installed, but post-update maintenance did not finish (exit \(update.0)).\n\(output)")
+        }
+        if !repairOnly && !advisoryFinalization && !Self.isStructurallyCompletedPackageUpgrade(result) {
+            throw unverifiedNativeUpdate(runtime,
+                "OpenClaw installed \(target), but its final package-update receipt was incomplete or unsafe. No Gateway activation was attempted.\n\(output)")
+        }
+        if advisoryFinalization {
+            report("OpenClaw finished with advisory warnings. Checking plugin migrations and final Doctor before activation...")
+            let database = runtime.state.appendingPathComponent("state/openclaw.sqlite")
+            let sql = "SELECT COUNT(*) FROM migration_runs WHERE id LIKE 'deferred-plugin-migration:%' AND status = 'pending';"
+            let pendingCommand = bounded("/usr/bin/sqlite3 -readonly -batch -noheader \(q(database.path)) \(q(sql))", seconds: 30)
+            let initialPending = run(pendingCommand)
+            guard initialPending.0 == 0,
+                  let pendingCount = Int(initialPending.1.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  pendingCount >= 0 else {
+                throw unverifiedNativeUpdate(runtime,
+                    "The pending plugin migration query could not be verified: \(String(initialPending.1.suffix(1_000)))")
+            }
+            if pendingCount > 0 {
+                report("Finishing \(pendingCount) pending plugin data migration(s) with one non-interactive Doctor pass...")
+                let doctorRepair = runWithProgressPulse(
+                    bounded(runtime.command("doctor --fix --non-interactive", externalServiceRepair: true), seconds: 900),
+                    status: "OpenClaw Doctor is completing pending plugin migrations"
+                )
+                guard doctorRepair.0 == 0 else {
+                    throw unverifiedNativeUpdate(runtime,
+                        "Doctor could not complete pending plugin migrations (exit \(doctorRepair.0)).\n\(doctorRepair.1)")
+                }
+                let remaining = run(pendingCommand)
+                guard remaining.0 == 0,
+                      remaining.1.trimmingCharacters(in: .whitespacesAndNewlines) == "0" else {
+                    throw unverifiedNativeUpdate(runtime,
+                        "Plugin data migrations remain pending after one Doctor pass: \(String(remaining.1.suffix(1_000)))")
+                }
+            }
+            let finalDoctor = run(bounded(runtime.command("doctor --post-upgrade --json", externalServiceRepair: true), seconds: 120))
+            let doctorReport = InstallerEngine.firstJSONObject(in: finalDoctor.1)
+            let probes = doctorReport?["probesRun"] as? [String]
+            let findings = doctorReport?["findings"] as? [[String: Any]]
+            guard finalDoctor.0 == 0,
+                  Set(["plugin.index_unavailable", "plugin.entry_unresolved", "plugin.manifest_unavailable",
+                       "plugin.manifest_drift", "plugin.version_drift"]).isSubset(of: Set(probes ?? [])),
+                  findings?.isEmpty == true else {
+                throw unverifiedNativeUpdate(runtime,
+                    "Final post-upgrade Doctor did not confirm healthy plugins (exit \(finalDoctor.0)).\n\(String(finalDoctor.1.suffix(1_000)))")
+            }
+            let stopped = run(bounded(runtime.command("gateway status --json --no-probe"), seconds: 25))
+            guard InstallerEngine.gatewayIsStopped(statusOutput: stopped.1) else {
+                throw unverifiedAfterGatewayAction(runtime,
+                    "The Gateway was no longer confirmed stopped after final Doctor.\n\(stopped.1)")
+            }
         }
         let configCheck = validateConfiguration(runtime)
         guard configCheck.0 == 0, InstallerEngine.firstJSONObject(in: configCheck.1)?["valid"] as? Bool == true else {
-            throw MaintenanceError("Configuration validation failed after updating OpenClaw.\n\(configCheck.1)")
+            throw unverifiedNativeUpdate(runtime,
+                "Configuration validation failed after updating OpenClaw.\n\(configCheck.1)")
         }
-        if repairOnly {
-            // Unlike `update`, native `update repair` deliberately never restarts.
-            report("Installing the repaired Gateway service and restarting it...")
-            _ = try checked(bounded(runtime.command("gateway install --force --json"), seconds: 90), stage: "Install repaired Gateway")
+        if runtime.serviceLabel != nil || repairOnly {
+            report("Installing the updated Gateway service...")
+            do {
+                _ = try checked(bounded(runtime.command("gateway install --force --json"), seconds: 90), stage: "Install updated Gateway")
+            } catch {
+                throw unverifiedAfterGatewayAction(runtime, error.localizedDescription)
+            }
         }
         if runtime.serviceLabel != nil || repairOnly {
             let selectedEnvironment = runtime.applying(to: environment)
-            guard let installed = try OpenClawRuntimeInstallation.managed(home: home, environment: selectedEnvironment),
+            guard let installed = try? OpenClawRuntimeInstallation.managed(home: home, environment: selectedEnvironment),
                   installed.package.resolvingSymlinksInPath() == runtime.package.resolvingSymlinksInPath(),
                   installed.node.resolvingSymlinksInPath() == runtime.node.resolvingSymlinksInPath(),
                   installed.state.resolvingSymlinksInPath() == runtime.state.resolvingSymlinksInPath(),
@@ -1305,36 +1410,177 @@ final class OpenClawRuntimeMaintenance {
                 let actual = (try? OpenClawRuntimeInstallation.managed(home: home, environment: selectedEnvironment)).map {
                     "package=\($0.package.path), node=\($0.node.path), state=\($0.state.path), config=\($0.config.path), label=\($0.serviceLabel ?? "none")"
                 } ?? "no uniquely selected managed Gateway"
-                throw MaintenanceError("The Gateway service points to a different installation after updating. Expected package=\(runtime.package.path), node=\(runtime.node.path), state=\(runtime.state.path), config=\(runtime.config.path), label=\(runtime.serviceLabel ?? "none"); found \(actual).")
+                throw unverifiedAfterGatewayAction(runtime,
+                    "The Gateway service points to a different installation after updating. Expected package=\(runtime.package.path), node=\(runtime.node.path), state=\(runtime.state.path), config=\(runtime.config.path), label=\(runtime.serviceLabel ?? "none"); found \(actual).")
             }
         }
-        if repairOnly {
-            _ = try checked(bounded(runtime.command("gateway restart --json"), seconds: 90), stage: "Restart repaired Gateway")
+        if runtime.serviceLabel != nil || repairOnly {
+            let activation = repairOnly ? "gateway restart --json" : "gateway start --json"
+            let stage = repairOnly ? "Restart repaired Gateway" : "Start updated Gateway"
+            do {
+                _ = try checked(bounded(runtime.command(activation), seconds: 90), stage: stage)
+            } catch {
+                throw unverifiedAfterGatewayAction(runtime, error.localizedDescription)
+            }
         }
         report("Verifying Gateway version and RPC health...")
         var samples = 0
         var verified = ""
-        for delay in [0.0, 1.0, 2.0, 3.0, 5.0, 5.0] {
-            wait(delay)
+        let healthDeadline = Date().addingTimeInterval(90)
+        // Large session stores can take tens of seconds to open even after
+        // launchd accepts the service. Bound both wall time and probe count.
+        for delay in [0.0, 1.0, 2.0, 3.0] + Array(repeating: 5.0, count: 20) {
+            if Date() >= healthDeadline && samples == 0 { break }
+            wait(samples == 1 ? 0 : min(delay, max(0, healthDeadline.timeIntervalSinceNow)))
             let probe = probeGateway(runtime)
             verified = probe.1
             samples = probe.0 == 0 && Self.verifiedGateway(probe.1, expectedVersion: target) ? samples + 1 : 0
             if samples == 2 {
-                try OpenClawActivationBlock.remove(home: home, runtime: runtime)
-                try OpenClawUpdateCheckpoint.remove(home: home, runtime: runtime)
+                do {
+                    try OpenClawUpdateCheckpoint.remove(home: home, runtime: runtime)
+                    try OpenClawActivationBlock.remove(home: home, runtime: runtime)
+                } catch {
+                    throw unverifiedAfterGatewayAction(runtime, "The Gateway passed two RPC checks, but LocalClaw could not clear its recovery markers: \(error.localizedDescription)")
+                }
                 let backup = backupPath.map { "Recovery backup: \($0)" }
                     ?? "Full state backup: not required for this same-schema OpenClaw 2.0 maintenance."
-                return StepResult(state: .ok, message: "OpenClaw \(target) ready; configuration, Gateway version and two RPC checks verified.\n\(backup)\nNo chat request was replayed.")
+                let advisory = advisoryFinalization
+                    ? " OpenClaw reported advisory Doctor warnings; final Doctor and plugin migrations were checked. Review those warnings separately."
+                    : ""
+                return StepResult(state: .ok, message: "OpenClaw \(target) ready; configuration, Gateway version and two RPC checks verified.\(advisory)\n\(backup)\nNo chat request was replayed.")
             }
         }
-        throw MaintenanceError("The Gateway is not running the expected version with healthy RPC.\n\(verified)")
+        throw unverifiedAfterGatewayAction(runtime, "The Gateway is not running the expected version with healthy RPC.\n\(verified)")
+    }
+
+    private static func isStructurallyCompletedPackageUpgrade(_ result: [String: Any]) -> Bool {
+        guard result["status"] as? String == "ok",
+              let mode = result["mode"] as? String, ["npm", "pnpm", "bun"].contains(mode),
+              result["restart"] == nil || result["restart"] as? Bool == false,
+              result["reason"] == nil, result["recovery"] == nil,
+              emptyOrAbsentUpdateFacts(result["failureFacts"]),
+              let steps = result["steps"] as? [[String: Any]], !steps.isEmpty,
+              steps.allSatisfy({ step in
+                  (step["exitCode"] == nil || step["exitCode"] as? Int == 0) &&
+                      !["error", "failed", "blocked"].contains(step["status"] as? String ?? "") &&
+                      emptyOrAbsentUpdateFacts(step["failureFacts"])
+              }),
+              let postUpdate = result["postUpdate"] as? [String: Any],
+              let plugins = postUpdate["plugins"] as? [String: Any],
+              plugins["status"] as? String == "ok",
+              let assessment = plugins["assessment"] as? [String: Any],
+              assessment["kind"] as? String == "no-payload-repair",
+              emptyOrAbsentUpdateFacts(plugins["failureFacts"]),
+              emptyOrAbsentUpdateFacts(plugins["warnings"]),
+              emptyOrAbsentUpdateFacts(plugins["integrityDrifts"]),
+              let sync = plugins["sync"] as? [String: Any],
+              emptyOrAbsentUpdateFacts(sync["errors"]),
+              emptyOrAbsentUpdateFacts(sync["warnings"]),
+              let npm = plugins["npm"] as? [String: Any],
+              let outcomes = npm["outcomes"] as? [[String: Any]],
+              !outcomes.contains(where: { ["error", "failed", "blocked"].contains($0["status"] as? String ?? "") }),
+              let lint = plugins["doctorLint"] as? [String: Any],
+              lint["exitCode"] as? Int == 0,
+              lint["termination"] as? String == "exit",
+              lint["outputLimitExceeded"] as? Bool != true,
+              emptyOrAbsentUpdateFacts(lint["doctorLintFindings"]),
+              emptyOrAbsentUpdateFacts(lint["failureFacts"]) else { return false }
+        if let doctor = postUpdate["doctor"] as? [String: Any] {
+            guard doctor["status"] as? String == "ok",
+                  emptyOrAbsentUpdateFacts(doctor["failureFacts"]) else { return false }
+        }
+        return true
+    }
+
+    private static func isStructurallyResumablePluginConsent(_ result: [String: Any], exitCode: Int32) -> Bool {
+        guard exitCode == 0,
+              result["status"] as? String == "warning",
+              result["mode"] as? String == "finalize",
+              result["restart"] as? Bool == false,
+              result["reason"] == nil, result["recovery"] == nil, result["verification"] == nil,
+              emptyOrAbsentUpdateFacts(result["failureFacts"]),
+              let phases = result["phaseTimings"] as? [[String: Any]],
+              phases.allSatisfy({ $0["outcome"] as? String == "completed" }),
+              Set(["preflight", "targetConfigValidation", "configSnapshot", "doctor",
+                   "plugins", "targetConfigConvergence", "completionCache"]).isSubset(
+                of: Set(phases.compactMap { $0["phase"] as? String })
+              ),
+              let postUpdate = result["postUpdate"] as? [String: Any],
+              let doctor = postUpdate["doctor"] as? [String: Any],
+              let doctorStatus = doctor["status"] as? String,
+              ["ok", "warning"].contains(doctorStatus),
+              emptyOrAbsentUpdateFacts(doctor["failureFacts"]),
+              let plugins = postUpdate["plugins"] as? [String: Any],
+              plugins["status"] as? String == "warning",
+              let assessment = plugins["assessment"] as? [String: Any],
+              assessment["kind"] as? String == "unsafe",
+              assessment["reason"] as? String == "capability-consent-required",
+              plugins["reason"] == nil,
+              emptyOrAbsentUpdateFacts(plugins["failureFacts"]),
+              emptyOrAbsentUpdateFacts(plugins["integrityDrifts"]),
+              let sync = plugins["sync"] as? [String: Any],
+              emptyOrAbsentUpdateFacts(sync["errors"]),
+              emptyOrAbsentUpdateFacts(sync["warnings"]),
+              let npm = plugins["npm"] as? [String: Any],
+              let outcomes = npm["outcomes"] as? [[String: Any]],
+              let warnings = plugins["warnings"] as? [[String: Any]],
+              let lint = plugins["doctorLint"] as? [String: Any],
+              lint["exitCode"] as? Int == 0,
+              lint["termination"] as? String == "exit",
+              lint["outputLimitExceeded"] as? Bool != true,
+              emptyOrAbsentUpdateFacts(lint["doctorLintFindings"]),
+              emptyOrAbsentUpdateFacts(lint["failureFacts"]) else { return false }
+        if doctorStatus == "warning" {
+            guard let doctorWarnings = doctor["warnings"] as? [String], !doctorWarnings.isEmpty else { return false }
+        }
+        let consentFailures = outcomes.filter { $0["status"] as? String == "error" }
+        guard !consentFailures.isEmpty,
+              consentFailures.allSatisfy({ $0["code"] as? String == "PLUGIN_CAPABILITY_CONSENT_REQUIRED" }),
+              !outcomes.contains(where: { ["failed", "blocked"].contains($0["status"] as? String ?? "") }) else { return false }
+        let consentIds = consentFailures.compactMap { $0["pluginId"] as? String }
+        let consentWarnings = warnings.filter { $0["reason"] as? String != "doctor-advisory" }
+        return consentIds.count == consentFailures.count &&
+            consentWarnings.count == consentFailures.count &&
+            Set(consentWarnings.compactMap { $0["pluginId"] as? String }) == Set(consentIds) &&
+            consentWarnings.allSatisfy { $0["pluginId"] is String }
+    }
+
+    private static func emptyOrAbsentUpdateFacts(_ value: Any?) -> Bool {
+        value == nil || (value as? [Any])?.isEmpty == true
+    }
+
+    private func unverifiedAfterGatewayAction(_ runtime: OpenClawRuntimeInstallation, _ message: String) -> MaintenanceError {
+        let stop = run(bounded(runtime.command("gateway stop --force --json"), seconds: 90))
+        let status = run(bounded(runtime.command("gateway status --json --no-probe"), seconds: 25))
+        let stopped = stop.0 == 0 && InstallerEngine.gatewayIsStopped(statusOutput: status.1)
+        let detail = stopped
+            ? "The selected Gateway was stopped after this failure."
+            : "The selected Gateway could not be confirmed stopped; inspect its process before recovery. Stop: \(String(stop.1.suffix(800))) Status: \(String(status.1.suffix(800)))"
+        return unverifiedNativeUpdate(runtime, message + "\n" + detail)
+    }
+
+    private func unverifiedNativeUpdate(_ runtime: OpenClawRuntimeInstallation, _ message: String,
+                                        reason: String = "native-update-unverified") -> MaintenanceError {
+        do {
+            try OpenClawActivationBlock.save(home: home, runtime: runtime, reason: reason)
+            return MaintenanceError(message + "\nAutomatic Gateway activation is blocked until its update result can be verified.",
+                                    allowsServiceRecovery: false)
+        } catch {
+            return MaintenanceError(message + "\nAutomatic Gateway activation was not verified, and its activation block could not be saved: \(error.localizedDescription)",
+                                    allowsServiceRecovery: false)
+        }
     }
 
     private func updateTarget(_ runtime: OpenClawRuntimeInstallation, cli: URL, tag: String) throws -> String {
         let output = try checked(bounded(runtime.command("update --tag \(q(tag)) --dry-run --json", cli: cli), seconds: 90), stage: "Check update target")
-        guard let plan = InstallerEngine.firstJSONObject(in: output), plan["dryRun"] as? Bool == true,
-              let root = plan["root"] as? String,
-              URL(fileURLWithPath: root).resolvingSymlinksInPath().path == runtime.package.path,
+        guard let plan = InstallerEngine.firstJSONObject(in: output), plan["dryRun"] as? Bool == true else {
+            throw MaintenanceError("The updater did not confirm a read-only update plan. No package was replaced.\n\(output)")
+        }
+        if let root = plan["root"] as? String,
+           URL(fileURLWithPath: root).resolvingSymlinksInPath() != runtime.package.resolvingSymlinksInPath() {
+            throw MaintenanceError("OpenClaw's updater would change a different installation (\(root)) instead of the selected Gateway (\(runtime.package.path)). Automatic recovery stopped before any package or service change. This older installation needs supervised package-manager recovery; keep the reported backup and send a support diagnostic. No chat request was replayed.")
+        }
+        guard plan["root"] as? String != nil,
               let version = plan["targetVersion"] as? String,
               Self.isSupportedUpdateTarget(version) else {
             throw MaintenanceError("The updater could not confirm the target version and Gateway package location. No package was replaced.\n\(output)")

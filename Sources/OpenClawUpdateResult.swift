@@ -62,6 +62,69 @@ enum OpenClawUpdateResult {
         return message + " Diagnose the selected installation with openclaw triage before restarting it."
     }
 
+    /// OpenClaw 2026.9.6 reports completed finalization with advisory Doctor
+    /// findings as `warning` and exit 0. This checks only its native receipt;
+    /// LocalClaw must still run a final Doctor, prove no plugin migration is
+    /// pending, and verify the selected Gateway before accepting it.
+    static func isStructurallyAdvisoryFinalization(_ result: [String: Any], exitCode: Int32) -> Bool {
+        guard exitCode == 0,
+              result["status"] as? String == "warning",
+              result["mode"] as? String == "finalize",
+              result["restart"] as? Bool == false,
+              result["reason"] == nil,
+              result["recovery"] == nil,
+              result["verification"] == nil,
+              emptyOrAbsent(result["failureFacts"]),
+              let phases = result["phaseTimings"] as? [[String: Any]], !phases.isEmpty,
+              phases.allSatisfy({ $0["outcome"] as? String == "completed" }),
+              Set(["preflight", "targetConfigValidation", "configSnapshot", "doctor",
+                   "plugins", "targetConfigConvergence", "completionCache"]).isSubset(
+                of: Set(phases.compactMap { $0["phase"] as? String })
+              ),
+              let postUpdate = result["postUpdate"] as? [String: Any],
+              let doctor = postUpdate["doctor"] as? [String: Any],
+              let doctorStatus = doctor["status"] as? String,
+              ["ok", "warning"].contains(doctorStatus),
+              emptyOrAbsent(doctor["failureFacts"]),
+              let plugins = postUpdate["plugins"] as? [String: Any],
+              let pluginStatus = plugins["status"] as? String,
+              ["ok", "warning"].contains(pluginStatus),
+              doctorStatus == "warning" || pluginStatus == "warning",
+              let assessment = plugins["assessment"] as? [String: Any],
+              assessment["kind"] as? String == "no-payload-repair",
+              plugins["reason"] == nil,
+              emptyOrAbsent(plugins["failureFacts"]),
+              emptyOrAbsent(plugins["integrityDrifts"]),
+              let sync = plugins["sync"] as? [String: Any],
+              emptyOrAbsent(sync["errors"]),
+              emptyOrAbsent(sync["warnings"]),
+              let npm = plugins["npm"] as? [String: Any],
+              let outcomes = npm["outcomes"] as? [[String: Any]],
+              !outcomes.contains(where: { outcome in
+                  ["error", "failed", "blocked"].contains(outcome["status"] as? String ?? "") ||
+                      outcome["code"] as? String == "PLUGIN_CAPABILITY_CONSENT_REQUIRED"
+              }),
+              let lint = plugins["doctorLint"] as? [String: Any],
+              lint["exitCode"] as? Int == 0,
+              lint["termination"] as? String == "exit",
+              lint["outputLimitExceeded"] as? Bool != true,
+              emptyOrAbsent(lint["doctorLintFindings"]),
+              emptyOrAbsent(lint["failureFacts"]) else { return false }
+
+        if doctorStatus == "warning" {
+            guard let warnings = doctor["warnings"] as? [String], !warnings.isEmpty else { return false }
+        }
+        if pluginStatus == "warning" {
+            guard let warnings = plugins["warnings"] as? [[String: Any]], !warnings.isEmpty,
+                  warnings.allSatisfy({ $0["reason"] as? String == "doctor-advisory" }) else { return false }
+        }
+        return true
+    }
+
+    private static func emptyOrAbsent(_ value: Any?) -> Bool {
+        value == nil || (value as? [Any])?.isEmpty == true
+    }
+
     static func pluginFailure(in result: [String: Any]) -> String? {
         guard let plugins = (result["postUpdate"] as? [String: Any])?["plugins"] as? [String: Any],
               let status = plugins["status"] as? String, ["error", "warning"].contains(status) else { return nil }
@@ -78,6 +141,8 @@ enum OpenClawUpdateResult {
 /// upgrades that do not require a full backup/checkpoint. Only verified repair
 /// clears this record; changing the installed version alone is not health proof.
 enum OpenClawActivationBlock {
+    static let pluginRepairPendingReason = "plugin-repair-pending"
+
     private static func location(home: URL, runtime: OpenClawRuntimeInstallation) -> URL {
         // Replacing Node cannot prove that a partially migrated package/state is
         // runnable. Keep the refusal stable across a Node upgrade or relink.
@@ -93,6 +158,20 @@ enum OpenClawActivationBlock {
         let path = location(home: home, runtime: runtime).path
         return FileManager.default.fileExists(atPath: path) ||
             (try? FileManager.default.destinationOfSymbolicLink(atPath: path)) != nil
+    }
+
+    /// A native update with an unknown or explicitly unsafe outcome cannot be
+    /// made safe by automatically repeating it. A verified-core plugin repair
+    /// is the sole resumable activation block: native `update repair` handles it.
+    static func requiresManualRecovery(home: URL, runtime: OpenClawRuntimeInstallation) -> Bool {
+        guard isPresent(home: home, runtime: runtime) else { return false }
+        let file = location(home: home, runtime: runtime)
+        guard let data = try? Data(contentsOf: file),
+              let record = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let reason = record["reason"] as? String,
+              let blockedVersion = record["version"] as? String,
+              blockedVersion == runtime.version else { return true }
+        return reason != pluginRepairPendingReason
     }
 
     static func save(home: URL, runtime: OpenClawRuntimeInstallation, reason: String) throws {

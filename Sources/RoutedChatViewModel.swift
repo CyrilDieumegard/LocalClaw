@@ -1,0 +1,386 @@
+import Foundation
+
+struct RoutedChatTurn: Identifiable, Codable, Sendable {
+    let id: UUID
+    let prompt: String
+    let createdAt: Date
+    let selection: RoutedSelection
+    var reply: String?
+    var actualModelID: String?
+    var inputTokens: Int?
+    var outputTokens: Int?
+    var modelMatched: Bool?
+    var error: String?
+}
+
+@MainActor
+final class RoutedChatViewModel: ObservableObject {
+    @Published var draft = ""
+    @Published private(set) var turns: [RoutedChatTurn] = []
+    @Published private(set) var availableModels: [RoutedModelOption] = []
+    @Published private(set) var routerReady = false
+    @Published private(set) var isBusy = false
+    @Published private(set) var isRefreshing = false
+    @Published private(set) var isSettingUp = false
+    @Published private(set) var isEnablingGPT6 = false
+    @Published private(set) var status = "Checking the local router…"
+    @Published private(set) var preview: RoutedSelection?
+    @Published private(set) var previewPrompt = ""
+    @Published private(set) var pendingPrompt: String?
+
+    var hasPendingTurn: Bool {
+        guard let last = turns.last else { return false }
+        return last.reply == nil && last.error == nil
+    }
+
+    var hasGPT6Options: Bool {
+        let ids = Set(availableModels.map(\.id))
+        return RoutedChatService.recommendedGPT6.modelIDs.allSatisfy(ids.contains)
+    }
+
+    private static let storageKey = "localclaw.routedChat.beta.v1"
+    private let service = RoutedChatService()
+    private var sessionID = "localclaw-routed-\(UUID().uuidString)"
+    private var previewMapping: RoutedModelMapping?
+    private var previewContextTurnID: UUID?
+    private var previewTime: Date?
+    private var backgroundRoute: Task<Void, Never>?
+    private struct DecisionKey: Equatable {
+        let excerpt: String
+        let prior: String?
+    }
+    private var decisionKey: DecisionKey?
+    private var decisionTask: Task<RoutedDecision, Error>?
+    private var recentDecision: (key: DecisionKey, value: RoutedDecision, at: Date)?
+
+    private struct StoredChat: Codable {
+        let sessionID: String
+        let turns: [RoutedChatTurn]
+        let pendingPrompt: String?
+    }
+
+    init() {
+        if let data = UserDefaults.standard.data(forKey: Self.storageKey),
+           let stored = try? JSONDecoder().decode(StoredChat.self, from: data),
+           stored.sessionID.hasPrefix("localclaw-routed-") {
+            sessionID = stored.sessionID
+            turns = stored.turns
+            draft = stored.pendingPrompt ?? ""
+        }
+    }
+
+    func previewForCurrentDraft(mapping: RoutedModelMapping) -> RoutedSelection? {
+        let prompt = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard previewPrompt == prompt, previewMapping == mapping,
+              previewContextTurnID == turns.last?.id,
+              let previewTime, Date().timeIntervalSince(previewTime) < 120 else { return nil }
+        return preview
+    }
+
+    /// Start the local-only decision after typing settles. Send can await the
+    /// same in-flight decision, but only an exact draft/context match is reused.
+    func prepareRouteWhileTyping(mapping: RoutedModelMapping) {
+        backgroundRoute?.cancel()
+        guard routerReady && !isBusy && !isRefreshing && !isSettingUp else { return }
+        let prompt = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty, previewForCurrentDraft(mapping: mapping) == nil else { return }
+        let prior = turns.last.flatMap { RoutedChatPolicy.priorContext($0.prompt) }
+        let contextTurnID = turns.last?.id
+        backgroundRoute = Task {
+            do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+            guard !Task.isCancelled, !isBusy, !isRefreshing,
+                  draft.trimmingCharacters(in: .whitespacesAndNewlines) == prompt,
+                  turns.last?.id == contextTurnID else { return }
+            do {
+                let selection = try await decide(prompt: prompt, mapping: mapping, prior: prior)
+                guard !Task.isCancelled, !isBusy, !isRefreshing,
+                      draft.trimmingCharacters(in: .whitespacesAndNewlines) == prompt,
+                      turns.last?.id == contextTurnID else { return }
+                preview = selection
+                previewPrompt = prompt
+                previewMapping = mapping
+                previewContextTurnID = contextTurnID
+                previewTime = Date()
+            } catch {
+                // A background hint never blocks typing; Send reports errors.
+            }
+        }
+    }
+
+    func refresh() {
+        guard !isBusy && !isSettingUp && !isRefreshing else { return }
+        isRefreshing = true
+        status = "Checking the local router and chat models…"
+        preview = nil
+        previewMapping = nil
+        previewTime = nil
+        let service = self.service
+        Task {
+            do {
+                async let loadedModels = Task.detached(priority: .utility) { try service.availableChatModels() }.value
+                async let decision = Task.detached(priority: .utility) {
+                    try service.classify(prompt: "Translate this short sentence.", prior: nil)
+                }.value
+                let models = try await loadedModels
+                availableModels = models
+                let check = try await decision
+                routerReady = check.status == "ok" && check.providerId == "onnx"
+                status = routerReady
+                    ? "Local router ready · \(models.count) available chat models"
+                    : "Local router needs setup: \(check.reason ?? "unknown result")"
+            } catch {
+                routerReady = false
+                status = error.localizedDescription
+            }
+            await recoverPendingTurn()
+            isRefreshing = false
+        }
+    }
+
+    func setupRouter() {
+        guard !isSettingUp && !isBusy && !isRefreshing else { return }
+        isSettingUp = true
+        status = "Preparing the local decision model…"
+        let service = self.service
+        Task {
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try service.setup { [weak self] message in
+                        Task { @MainActor [weak self] in
+                            if self?.isSettingUp == true { self?.status = message }
+                        }
+                    }
+                }.value
+                routerReady = true
+                status = "Local router ready. Decisions stay on this Mac."
+                isSettingUp = false
+                refresh()
+            } catch {
+                routerReady = false
+                status = error.localizedDescription
+                isSettingUp = false
+            }
+        }
+    }
+
+    func enableGPT6Options() {
+        guard !isEnablingGPT6 && !isBusy && !isRefreshing && !isSettingUp else { return }
+        isEnablingGPT6 = true
+        status = "Adding GPT-6 Luna, Sol and Astra to this agent's model choices…"
+        let service = self.service
+        Task {
+            do {
+                try await Task.detached(priority: .utility) { try service.enableGPT6Options() }.value
+                isEnablingGPT6 = false
+                refresh()
+            } catch {
+                status = error.localizedDescription
+                isEnablingGPT6 = false
+            }
+        }
+    }
+
+    func previewRoute(mapping: RoutedModelMapping) {
+        guard !isBusy && !isSettingUp && !isRefreshing else { return }
+        let prompt = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else { status = "Write a message first."; return }
+        if previewForCurrentDraft(mapping: mapping) != nil {
+            status = "Local preview complete. No chat request was sent."
+            return
+        }
+        isBusy = true
+        status = "Classifying on this Mac…"
+        Task {
+            do {
+                let prior = turns.last.flatMap { RoutedChatPolicy.priorContext($0.prompt) }
+                let selection = try await decide(prompt: prompt, mapping: mapping, prior: prior)
+                preview = selection
+                previewPrompt = prompt
+                previewMapping = mapping
+                previewContextTurnID = turns.last?.id
+                previewTime = Date()
+                status = "Local preview complete. No chat request was sent."
+            } catch {
+                preview = nil
+                previewMapping = nil
+                previewTime = nil
+                status = error.localizedDescription
+            }
+            isBusy = false
+        }
+    }
+
+    func send(mapping: RoutedModelMapping, submittedText: String? = nil) {
+        guard !isBusy && !isSettingUp && !isRefreshing else { return }
+        guard !hasPendingTurn else {
+            status = "Check the previous turn with Refresh before sending another request."
+            return
+        }
+        if let submittedText { draft = submittedText }
+        let prompt = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else { status = "Write a message first."; return }
+        let prior = turns.last.flatMap { RoutedChatPolicy.priorContext($0.prompt) }
+        let savedPreview = previewForCurrentDraft(mapping: mapping)
+        isBusy = true
+        status = "Choosing a model on this Mac…"
+        pendingPrompt = prompt
+        save()
+        draft = ""
+        preview = nil
+        previewPrompt = ""
+        previewMapping = nil
+        previewTime = nil
+        Task {
+            do {
+                // The preview is bound to this exact draft, mapping and last
+                // turn, and expires quickly. OpenClaw still enforces its model
+                // policy when the actual request is sent.
+                let selection: RoutedSelection
+                if let savedPreview {
+                    selection = savedPreview
+                } else {
+                    selection = try await decide(prompt: prompt, mapping: mapping, prior: prior)
+                }
+                let turnID = UUID()
+                turns.append(RoutedChatTurn(
+                    id: turnID, prompt: prompt, createdAt: Date(), selection: selection,
+                    reply: nil, actualModelID: nil, inputTokens: nil, outputTokens: nil,
+                    modelMatched: nil, error: nil
+                ))
+                pendingPrompt = nil
+                save()
+                status = "Sending to \(selection.modelID)…"
+                let service = self.service
+                let sessionID = self.sessionID
+                do {
+                    let reply = try await Task.detached(priority: .userInitiated) {
+                        try service.send(prompt: prompt, modelID: selection.modelID, sessionID: sessionID)
+                    }.value
+                    if let index = turns.firstIndex(where: { $0.id == turnID }) {
+                        turns[index].reply = reply.text
+                        turns[index].actualModelID = reply.actualModelID
+                        turns[index].inputTokens = reply.inputTokens
+                        turns[index].outputTokens = reply.outputTokens
+                        turns[index].modelMatched = reply.modelMatched
+                        save()
+                    }
+                    status = reply.modelMatched
+                        ? "Completed with \(reply.actualModelID)"
+                        : "Model mismatch: review this turn before continuing"
+                } catch {
+                    if let index = turns.firstIndex(where: { $0.id == turnID }) {
+                        turns[index].error = error.localizedDescription
+                        save()
+                    }
+                    status = error.localizedDescription
+                }
+            } catch {
+                pendingPrompt = nil
+                draft = prompt
+                save()
+                status = error.localizedDescription
+            }
+            isBusy = false
+        }
+    }
+
+    func newConversation() {
+        guard !isBusy else { return }
+        backgroundRoute?.cancel()
+        sessionID = "localclaw-routed-\(UUID().uuidString)"
+        turns = []
+        draft = ""
+        pendingPrompt = nil
+        preview = nil
+        previewPrompt = ""
+        previewMapping = nil
+        previewTime = nil
+        save()
+        status = routerReady ? "New routed conversation ready" : "Set up the local router to begin"
+    }
+
+    private func decide(prompt: String, mapping: RoutedModelMapping,
+                        prior: String?) async throws -> RoutedSelection {
+        guard routerReady else { throw RoutedChatError.routerUnavailable("not-ready") }
+        let available = Set(availableModels.map(\.id))
+        guard !mapping.economical.isEmpty, !mapping.reasoning.isEmpty,
+              !mapping.coding.isEmpty, mapping.economical != mapping.reasoning,
+              mapping.modelIDs.allSatisfy(available.contains) else {
+            throw RoutedChatError.invalidModelMapping
+        }
+        let excerpt = RoutedChatPolicy.excerpt(prompt)
+        let service = self.service
+        let key = DecisionKey(excerpt: excerpt.text, prior: prior)
+        if let cached = recentDecision, cached.key == key,
+           Date().timeIntervalSince(cached.at) < 120 {
+            return try RoutedChatPolicy.select(
+                decision: cached.value, mapping: mapping,
+                availableModelIDs: available, prompt: prompt, excerpted: excerpt.excerpted
+            )
+        }
+        let task: Task<RoutedDecision, Error>
+        if decisionKey == key, let existing = decisionTask {
+            task = existing
+        } else {
+            task = Task.detached(priority: .userInitiated) {
+                try service.classify(prompt: excerpt.text, prior: prior)
+            }
+            decisionKey = key
+            decisionTask = task
+        }
+        defer {
+            if decisionKey == key {
+                decisionKey = nil
+                decisionTask = nil
+            }
+        }
+        let decision = try await task.value
+        if decision.status == "ok" && decision.providerId == "onnx" {
+            recentDecision = (key, decision, Date())
+        }
+        return try RoutedChatPolicy.select(
+            decision: decision, mapping: mapping,
+            availableModelIDs: available, prompt: prompt, excerpted: excerpt.excerpted
+        )
+    }
+
+    private func recoverPendingTurn() async {
+        guard let index = turns.indices.last,
+              turns[index].reply == nil, turns[index].error == nil else { return }
+        let turn = turns[index]
+        let sessionID = self.sessionID
+        let service = self.service
+        do {
+            let outcome = try await Task.detached(priority: .utility) {
+                try service.recoverPendingReply(sessionID: sessionID, createdAt: turn.createdAt,
+                                                expectedModelID: turn.selection.modelID)
+            }.value
+            guard turns.indices.contains(index), turns[index].id == turn.id else { return }
+            switch outcome {
+            case .recovered(let reply):
+                turns[index].reply = reply.text
+                turns[index].actualModelID = reply.actualModelID
+                turns[index].inputTokens = reply.inputTokens
+                turns[index].outputTokens = reply.outputTokens
+                turns[index].modelMatched = reply.modelMatched
+                status = "Recovered the completed reply from OpenClaw. No request was repeated."
+                save()
+            case .running:
+                status = "The previous request is still running in OpenClaw. Click Refresh later."
+            case .unmatched:
+                turns[index].error = "The previous reply could not be matched safely. No request was repeated. Check OpenClaw history before sending it again."
+                status = "Previous routed turn needs review"
+                save()
+            }
+        } catch {
+            status = "Could not check the previous turn: \(error.localizedDescription). Click Refresh to try again."
+        }
+    }
+
+    private func save() {
+        let stored = StoredChat(sessionID: sessionID, turns: turns, pendingPrompt: pendingPrompt)
+        if let data = try? JSONEncoder().encode(stored) {
+            UserDefaults.standard.set(data, forKey: Self.storageKey)
+        }
+    }
+}

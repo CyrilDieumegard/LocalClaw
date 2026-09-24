@@ -37,7 +37,7 @@ try {
   // Use this exact package's canonical DDL without importing any runtime or
   // touching the host state. Refuse a changed private contract explicitly.
   const schemas = readdirSync(join(updater, "dist"))
-    .filter(name => /^openclaw-state-db(?:-cache)?-.*\.js$/.test(name))
+    .filter(name => /^openclaw-state-db(?:-cache|-read-connection)?-.*\.(?:js|mjs)$/.test(name))
     .flatMap(name => {
       const source = readFileSync(join(updater, "dist", name), "utf8");
       return [...source.matchAll(/const OPENCLAW_STATE_SCHEMA_SQL = ("(?:\\.|[^"\\])*");/g)]
@@ -71,13 +71,18 @@ try {
   assert.equal(result.status, 0, `${result.error?.message ?? ""}\n${result.stdout}\n${result.stderr}`);
   const plan = JSON.parse(result.stdout);
   assert.equal(plan.dryRun, true);
-  assert.equal(plan.root, pkg, "A staged updater must target the Gateway package, not itself or ambient npm");
-  assert.equal(plan.currentVersion, "2026.7.1-2");
+  // Current OpenClaw binds an update to the invoking installation and offers to
+  // rebind a different Gateway service. LocalClaw must reject that plan; it
+  // cannot use a temporarily staged package to replace a customer's core.
+  assert.equal(plan.root, updater);
+  assert.notEqual(plan.root, pkg);
+  assert.equal(plan.currentVersion, target);
   assert.equal(plan.targetVersion, target);
   assert.equal(JSON.parse(readFileSync(join(pkg, "package.json"), "utf8")).version, "2026.7.1-2");
   assert.equal(readFileSync(join(state, "openclaw.json"), "utf8"), configText);
-  console.log(`PASS real OpenClaw ${target} updater targets the isolated Gateway's .local installation with canonical schema ${stateSchema}${legacyConfig ? " and rejected legacy configuration" : ""}.`);
-  console.log("Dry-run with a test-only OS account fixture: no packages replaced, no LaunchAgents loaded and no provider calls.");
+  assert.ok(plan.actions.some(action => action.includes(`Rebind the managed Gateway from ${pkg} to ${updater}`)));
+  console.log(`PASS OpenClaw ${target} staged updater stays bound to its own installation; LocalClaw's package-root guard must reject this cross-installation plan${legacyConfig ? " with legacy configuration" : ""}.`);
+  console.log(`Canonical schema ${stateSchema}; dry-run in a test-only account: no packages replaced, no LaunchAgents loaded and no provider calls.`);
 } finally {
   rmSync(home, { recursive: true, force: true });
 }
