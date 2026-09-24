@@ -37,7 +37,7 @@ try {
   // Use this exact package's canonical DDL without importing any runtime or
   // touching the host state. Refuse a changed private contract explicitly.
   const schemas = readdirSync(join(updater, "dist"))
-    .filter(name => /^openclaw-state-db(?:-cache)?-.*\.js$/.test(name))
+    .filter(name => /^openclaw-state-db(?:-cache|-read-connection)?-.*\.(?:js|mjs)$/.test(name))
     .flatMap(name => {
       const source = readFileSync(join(updater, "dist", name), "utf8");
       return [...source.matchAll(/const OPENCLAW_STATE_SCHEMA_SQL = ("(?:\\.|[^"\\])*");/g)]
