@@ -639,6 +639,10 @@ struct OpenClawRuntimeMaintenanceTests {
         let original = try Data(contentsOf: fixture.database)
         let result = fixture.maintenance().update()
         #expect(result.state == .fail)
+        if failure == .wrongTarget {
+            #expect(result.message.contains("would change a different installation"))
+            #expect(result.message.contains("supervised package-manager recovery"))
+        }
         #expect(!fixture.commands.contains { $0.contains("--yes --json") })
         #expect(try Data(contentsOf: fixture.database) == original)
         let runtime = try OpenClawRuntimeInstallation.managed(home: fixture.home)

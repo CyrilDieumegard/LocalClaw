@@ -1573,9 +1573,14 @@ final class OpenClawRuntimeMaintenance {
 
     private func updateTarget(_ runtime: OpenClawRuntimeInstallation, cli: URL, tag: String) throws -> String {
         let output = try checked(bounded(runtime.command("update --tag \(q(tag)) --dry-run --json", cli: cli), seconds: 90), stage: "Check update target")
-        guard let plan = InstallerEngine.firstJSONObject(in: output), plan["dryRun"] as? Bool == true,
-              let root = plan["root"] as? String,
-              URL(fileURLWithPath: root).resolvingSymlinksInPath().path == runtime.package.path,
+        guard let plan = InstallerEngine.firstJSONObject(in: output), plan["dryRun"] as? Bool == true else {
+            throw MaintenanceError("The updater did not confirm a read-only update plan. No package was replaced.\n\(output)")
+        }
+        if let root = plan["root"] as? String,
+           URL(fileURLWithPath: root).resolvingSymlinksInPath() != runtime.package.resolvingSymlinksInPath() {
+            throw MaintenanceError("OpenClaw's updater would change a different installation (\(root)) instead of the selected Gateway (\(runtime.package.path)). Automatic recovery stopped before any package or service change. This older installation needs supervised package-manager recovery; keep the reported backup and send a support diagnostic. No chat request was replayed.")
+        }
+        guard plan["root"] as? String != nil,
               let version = plan["targetVersion"] as? String,
               Self.isSupportedUpdateTarget(version) else {
             throw MaintenanceError("The updater could not confirm the target version and Gateway package location. No package was replaced.\n\(output)")

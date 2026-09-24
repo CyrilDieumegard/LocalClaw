@@ -248,13 +248,17 @@ node scripts/test-openclaw-update-owner.mjs /path/to/new/node_modules/openclaw -
 
 The legacy migration fixture starts from 2026.8.1 because the restricted
 execution-approvals adapter intentionally supports only that release. All
-successful current end-state and turn checks target OpenClaw 2026.8.2,
+successful current end-state and turn checks target OpenClaw 2026.9.6,
 use a deterministic localhost model and temporary HOME, and create a real file
 through OpenClaw's write tool. They do not use customer accounts or paid models.
 The migration check may resolve official plugins from the network. These checks
 do not replace manual validation of provider logins, external channels, or billing.
 The update-owner check is a dry-run of the real updater with a test-only OS
-account fixture. It checks install targeting, not a live customer migration.
+account fixture. OpenClaw 2026.9.6 binds a staged updater to its own package
+and proposes rebinding a different Gateway to it. LocalClaw rejects that
+cross-installation plan before changing a package or service; an older core
+with invalid configuration needs supervised package-manager recovery. This
+check does not prove a live customer migration.
 The legacy-config turn check runs the real Doctor with both native service
 mutation gates disabled, validates the migrated config, then starts only a
 temporary Gateway and verifies a tool turn. It preserves and checks the fixture's
