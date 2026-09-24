@@ -3439,7 +3439,15 @@ final class InstallerViewModel: ObservableObject {
 
         Task.detached {
             let engine = InstallerEngine()
-            let (code, output) = engine.shell("openclaw --no-color skills list --json 2>&1")
+            guard let agentID = engine.resolvedChatAgentID() else {
+                await MainActor.run {
+                    self.skillsIsLoading = false
+                    self.skillsStatus = "Unable to load skills"
+                    self.skillsLog = "Select a valid OpenClaw system agent for this profile before listing skills."
+                }
+                return
+            }
+            let (code, output) = engine.shell(Self.skillsListCommand(agentID: agentID))
 
             await MainActor.run {
                 self.skillsIsLoading = false
@@ -3502,11 +3510,17 @@ final class InstallerViewModel: ObservableObject {
         installingSkillName = slug
         skillsStatus = "Installing \(slug)..."
         skillsLog = "Running openclaw skills install \(slug)"
-        let safeSlug = shellSingleQuote(slug)
-
         Task.detached {
             let engine = InstallerEngine()
-            let (code, output) = engine.shell("openclaw --no-color skills install \(safeSlug) 2>&1")
+            guard let agentID = engine.resolvedChatAgentID() else {
+                await MainActor.run {
+                    self.installingSkillName = ""
+                    self.skillsStatus = "Install failed for \(slug)"
+                    self.skillsLog = "Select a valid OpenClaw system agent for this profile before installing skills."
+                }
+                return
+            }
+            let (code, output) = engine.shell(Self.skillsInstallCommand(slug: slug, agentID: agentID))
 
             await MainActor.run {
                 self.installingSkillName = ""
@@ -4100,6 +4114,14 @@ final class InstallerViewModel: ObservableObject {
 
     nonisolated static func shellSingleQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+    }
+
+    nonisolated static func skillsListCommand(agentID: String) -> String {
+        "openclaw --no-color skills list --json --agent \(shellSingleQuote(agentID)) 2>&1"
+    }
+
+    nonisolated static func skillsInstallCommand(slug: String, agentID: String) -> String {
+        "openclaw --no-color skills install \(shellSingleQuote(slug)) --agent \(shellSingleQuote(agentID)) 2>&1"
     }
 
     private func shellSingleQuote(_ value: String) -> String {
@@ -17502,6 +17524,7 @@ struct ContentView: View {
     }
 
     private var updateSummaryStatus: String {
+        if vm.isRunning { return "Updating..." }
         if vm.isCheckingUpdates { return "Checking..." }
         if vm.hasAvailableUpdates {
             return "Changes pending"
@@ -17515,7 +17538,7 @@ struct ContentView: View {
 
     private var updateSummaryTint: Color {
         updateSummaryStatus == "No changes" ? Color(NSColor.systemGreen) :
-            (["Checking...", "Status unverified"].contains(updateSummaryStatus) ? UI.muted : UI.accent)
+            (["Updating...", "Checking...", "Status unverified"].contains(updateSummaryStatus) ? UI.muted : UI.accent)
     }
 
     private func updateSafetyRow(_ title: String, ok: Bool, detail: String) -> some View {
