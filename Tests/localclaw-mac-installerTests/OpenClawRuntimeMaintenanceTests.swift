@@ -3,11 +3,11 @@ import CryptoKit
 import Testing
 @testable import localclaw_mac_installer
 
-@Suite(.serialized)
+@Suite
 struct RuntimeRecoveryTests {}
 
 extension RuntimeRecoveryTests {
-@Suite
+@Suite(.serialized)
 struct OpenClawRuntimeMaintenanceTests {
     private let mismatch = "OpenClaw state database /Users/bot/.openclaw/state/openclaw.sqlite uses newer schema version 15; this OpenClaw build supports 1."
 
