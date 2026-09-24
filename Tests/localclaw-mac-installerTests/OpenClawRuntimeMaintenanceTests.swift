@@ -1091,7 +1091,8 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(repair < pending && pending < doctor && doctor < restart)
         #expect(!fixture.commands.contains { $0.contains("doctor --fix") })
         #expect(fixture.commands.suffix(from: restart).filter { $0.contains("gateway status") }.count == 2)
-        #expect(!OpenClawActivationBlock.isPresent(home: fixture.home, runtime: try #require(OpenClawRuntimeInstallation.managed(home: fixture.home))))
+        let runtime = try #require(try OpenClawRuntimeInstallation.managed(home: fixture.home))
+        #expect(!OpenClawActivationBlock.isPresent(home: fixture.home, runtime: runtime))
     }
 
     @Test func pendingAdvisoryPluginMigrationGetsOneDoctorPassBeforeActivation() throws {
@@ -1117,7 +1118,8 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(result.state == .fail)
         #expect(fixture.commands.contains { $0.contains("update repair --yes --json") })
         #expect(!fixture.commands.contains { $0.contains("doctor --post-upgrade") || $0.contains("sqlite3 -readonly") || $0.contains("gateway restart") })
-        #expect(OpenClawActivationBlock.isPresent(home: fixture.home, runtime: try #require(OpenClawRuntimeInstallation.managed(home: fixture.home))))
+        let runtime = try #require(try OpenClawRuntimeInstallation.managed(home: fixture.home))
+        #expect(OpenClawActivationBlock.isPresent(home: fixture.home, runtime: runtime))
     }
 
     @Test func initialUpdateWarningDoesNotTriggerBlindSecondNativeOperation() throws {
@@ -1130,7 +1132,8 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(result.state == .fail)
         #expect(fixture.commands.filter { $0.contains("--yes --json") }.count == 1)
         #expect(!fixture.commands.contains { $0.contains("update repair --yes --json") || $0.contains("gateway start --json") })
-        #expect(OpenClawActivationBlock.isPresent(home: fixture.home, runtime: try #require(OpenClawRuntimeInstallation.managed(home: fixture.home))))
+        let runtime = try #require(try OpenClawRuntimeInstallation.managed(home: fixture.home))
+        #expect(OpenClawActivationBlock.isPresent(home: fixture.home, runtime: runtime))
     }
 
     @Test func completedAdvisoryFinalizeReceiptCanFinishInitialUpgrade() throws {
@@ -1156,7 +1159,8 @@ struct OpenClawRuntimeMaintenanceTests {
 
         #expect(result.state == .fail)
         #expect(!fixture.commands.contains { $0.contains("gateway start --json") })
-        #expect(OpenClawActivationBlock.isPresent(home: fixture.home, runtime: try #require(OpenClawRuntimeInstallation.managed(home: fixture.home))))
+        let runtime = try #require(try OpenClawRuntimeInstallation.managed(home: fixture.home))
+        #expect(OpenClawActivationBlock.isPresent(home: fixture.home, runtime: runtime))
     }
 
     @Test func nativeConsentWarningCanResumeSameVersionRepairAfterReview() throws {
@@ -1190,7 +1194,8 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(fixture.commands.filter { $0.contains("doctor --fix --non-interactive") }.count == 1)
         #expect(fixture.commands.filter { $0.contains("sqlite3 -readonly") }.count == 2)
         #expect(!fixture.commands.contains { $0.contains("gateway restart") })
-        #expect(OpenClawActivationBlock.isPresent(home: fixture.home, runtime: try #require(OpenClawRuntimeInstallation.managed(home: fixture.home))))
+        let runtime = try #require(try OpenClawRuntimeInstallation.managed(home: fixture.home))
+        #expect(OpenClawActivationBlock.isPresent(home: fixture.home, runtime: runtime))
     }
 
     @Test func invalidSelectedProfileRepairsSharedCurrentCoreWithoutMutatingPeerProfile() throws {
