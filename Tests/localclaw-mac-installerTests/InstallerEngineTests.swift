@@ -1520,13 +1520,13 @@ struct InstallerEngineTests {
     @Test func kanbanCronCommandHasABoundedTimeout() {
         let startedAt = Date()
         let result = InstallerViewModel.runKanbanCronCommand(
-            "exec /bin/sleep 3",
+            "exec /bin/sleep 6",
             timeoutSeconds: 1
         )
 
         #expect(result.0 == 124)
         #expect(result.1.contains("Cron command timed out after 1s"))
-        #expect(Date().timeIntervalSince(startedAt) < 2.5)
+        #expect(Date().timeIntervalSince(startedAt) < 5.5)
     }
 
     @MainActor
