@@ -133,13 +133,21 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(!OpenClawRecoveryDiagnostic.needsAmbientAgentOwner("ECONNREFUSED\nHistorical startup log (old):\n" + error))
     }
 
-    @Test func fullStateBackupIsLimitedToTheLegacyBoundaryAndRecoveryCases() {
+    @Test func fullStateBackupOccursOnceAtEachKnownSchemaBoundaryAndForRecovery() {
         #expect(OpenClawRuntimeMaintenance.requiresFullStateBackup(
             current: "2026.7.1-2", target: "2026.8.1", requiresOfflineBackup: false,
             repairingConfiguration: false, pendingLegacyApprovals: false, schemaMismatch: false
         ))
         #expect(!OpenClawRuntimeMaintenance.requiresFullStateBackup(
             current: "2026.8.1", target: "2026.8.2", requiresOfflineBackup: false,
+            repairingConfiguration: false, pendingLegacyApprovals: false, schemaMismatch: false
+        ))
+        #expect(OpenClawRuntimeMaintenance.requiresFullStateBackup(
+            current: "2026.9.1", target: "2026.9.6", requiresOfflineBackup: false,
+            repairingConfiguration: false, pendingLegacyApprovals: false, schemaMismatch: false
+        ))
+        #expect(!OpenClawRuntimeMaintenance.requiresFullStateBackup(
+            current: "2026.9.6", target: "2026.9.7", requiresOfflineBackup: false,
             repairingConfiguration: false, pendingLegacyApprovals: false, schemaMismatch: false
         ))
         #expect(OpenClawRuntimeMaintenance.requiresFullStateBackup(
@@ -490,7 +498,7 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(!fixture.commands.contains { $0.contains("backup create") || $0.contains("/usr/bin/tar") })
     }
 
-    @Test func sameVersionConsentFailureNeedsNoCheckpointOrFullBackup() throws {
+    @Test func sameVersionConsentFailureKeepsActivationBlockedWithoutFullBackup() throws {
         let fixture = try Fixture(
             schemaMismatch: false,
             failure: .consent,
@@ -504,12 +512,19 @@ struct OpenClawRuntimeMaintenanceTests {
 
         #expect(result.state == .fail)
         #expect(ChatRecoveryPlan.classify(error: result.message).kind == .pluginPermissions)
-        #expect(!maintenance.hasPendingUpdate())
-        #expect(!FileManager.default.fileExists(atPath: fixture.backups.path))
+        #expect(maintenance.hasPendingUpdate())
+        #expect(try fixture.archives().isEmpty)
         let runtime = try #require(try OpenClawRuntimeInstallation.managed(home: fixture.home))
+        #expect(!OpenClawActivationBlock.requiresManualRecovery(home: fixture.home, runtime: runtime))
         let review = try OpenClawPluginReview.prepare(home: fixture.home, runtime: runtime)
         #expect(FileManager.default.fileExists(atPath: review.commandURL.path))
         #expect(FileManager.default.fileExists(atPath: review.statusURL.path))
+
+        fixture.commands.removeAll()
+        let retried = maintenance.prepareGateway(allowRuntimeUpdate: true)
+        #expect(retried.state == .fail)
+        #expect(try fixture.archives().isEmpty)
+        #expect(!fixture.commands.contains { $0.contains("backup create") || $0.contains("/usr/bin/tar") })
     }
 
     @Test func longBackupAndUpdateKeepReportingElapsedProgress() throws {
@@ -678,32 +693,29 @@ struct OpenClawRuntimeMaintenanceTests {
         let commandCount = fixture.commands.count
         let nextAttempt = fixture.maintenance().prepareGateway()
         #expect(nextAttempt.state == .fail)
-        #expect(nextAttempt.message.contains("safe Gateway activation"))
+        #expect(nextAttempt.message.contains("Automatic retry and Gateway activation are blocked"))
         #expect(fixture.commands.count == commandCount)
         #expect(try Data(contentsOf: fixture.database) == original)
         if needsOfflineBackup { #expect(try fixture.archives().count == 1) }
     }
 
-    @Test func nativeActivationBlockClearsOnlyAfterACompleteVerifiedRepair() throws {
+    @Test func unsafeNativeActivationRefusalCannotTriggerAnotherAutomaticBackupOrRepair() throws {
         let fixture = try Fixture(schemaMismatch: false, failure: .unsafeRecovery,
                                   installedVersion: "2026.9.1", targetVersion: "2026.9.2")
         defer { fixture.cleanUp() }
         #expect(fixture.maintenance().update().state == .fail)
         #expect(fixture.maintenance().hasPendingUpdate())
 
-        fixture.failure = .restart
-        let incompleteRepair = fixture.maintenance().repairCurrentVersion()
-        #expect(incompleteRepair.state == .fail)
+        let commandCount = fixture.commands.count
+        let archiveCount = try fixture.archives().count
+        fixture.failure = nil
+        let retry = fixture.maintenance().repairCurrentVersion()
+        #expect(retry.state == .fail)
+        #expect(retry.message.contains("Automatic retry"))
+        #expect(fixture.commands.count == commandCount)
+        #expect(try fixture.archives().count == archiveCount)
         #expect(fixture.maintenance().hasPendingUpdate())
         #expect(!fixture.gatewayRunning)
-        #expect(!incompleteRepair.message.contains("RPC health was verified after the failure"))
-
-        fixture.failure = nil
-        let verifiedRepair = fixture.maintenance().repairCurrentVersion()
-        #expect(verifiedRepair.state == .ok, Comment(rawValue: verifiedRepair.message))
-        #expect(!fixture.maintenance().hasPendingUpdate())
-        #expect(fixture.gatewayRunning)
-        #expect(verifiedRepair.message.contains("two RPC checks verified"))
     }
 
     @Test func failedOfflineBackupDoesNotBypassAnEarlierNativeActivationRefusal() throws {
@@ -733,7 +745,7 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(!fixture.maintenance().hasPendingUpdate())
     }
 
-    @Test(arguments: ["v22.22.2", "v23.11.0", "v24.14.0", "v25.8.0", "unreadable"])
+    @Test(arguments: ["v22.22.3", "v23.11.0", "v24.15.0", "v25.9.0", "v26.0.0", "unreadable"])
     func incompatibleSelectedNodeStopsBeforeConfigBackupOrServiceMutation(_ nodeVersion: String) throws {
         let fixture = try Fixture(schemaMismatch: false, installedVersion: "2026.9.1", targetVersion: "2026.9.2")
         defer { fixture.cleanUp() }
@@ -750,7 +762,7 @@ struct OpenClawRuntimeMaintenanceTests {
     @Test func selectedSupportedNodeAllowsNineTwoMaintenance() throws {
         let fixture = try Fixture(schemaMismatch: false, installedVersion: "2026.9.1", targetVersion: "2026.9.2")
         defer { fixture.cleanUp() }
-        fixture.nodeVersion = "v24.15.0"
+        fixture.nodeVersion = "v24.16.0"
         let result = fixture.maintenance().update()
         #expect(result.state == .ok, Comment(rawValue: result.message))
         #expect(result.message.contains("OpenClaw 2026.9.2 ready"))
@@ -916,6 +928,52 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(!fixture.commands.contains { $0.contains("agent --") || $0.contains("approvals set") || $0.contains("doctor --fix") })
     }
 
+    @Test func modernExecApprovalsDoNotRepeatThe2Point0Migration() throws {
+        let fixture = try Fixture(
+            schemaMismatch: false,
+            installedVersion: "2026.9.1",
+            targetVersion: "2026.9.6"
+        )
+        defer { fixture.cleanUp() }
+        let approvals = fixture.home.appendingPathComponent(".openclaw/exec-approvals.json")
+        let original = Data("current approvals".utf8)
+        try original.write(to: approvals)
+
+        let result = fixture.maintenance().update()
+
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(try Data(contentsOf: approvals) == original)
+        #expect(fixture.commands.filter { $0.contains("backup create") }.count == 1)
+        #expect(!fixture.commands.contains { $0.contains("/usr/bin/tar") })
+        #expect(!fixture.commands.contains { $0.contains("exec-approvals-migration.mjs") })
+        #expect(!fixture.commands.contains { $0.contains("npm install") })
+        let stop = try #require(fixture.commands.firstIndex { $0.contains("gateway stop --force --json") })
+        let update = try #require(fixture.commands.firstIndex { $0.contains("update --tag '2026.9.6' --yes --json --no-restart") })
+        let start = try #require(fixture.commands.firstIndex { $0.contains("gateway start --json") })
+        #expect(stop < update && update < start)
+        #expect(fixture.commands[update].contains("OPENCLAW_SERVICE_REPAIR_POLICY=external"))
+    }
+
+    @Test func unexpectedManagedHandoffNeverRestartsGatewayOrStartsSecondUpdate() throws {
+        let fixture = try Fixture(schemaMismatch: false, failure: .detachedHandoff,
+                                  installedVersion: "2026.9.1", targetVersion: "2026.9.6")
+        defer { fixture.cleanUp() }
+
+        let result = fixture.maintenance().update()
+
+        #expect(result.state == .fail)
+        #expect(result.message.contains("transferred this update to a background process"))
+        #expect(!fixture.gatewayRunning)
+        #expect(!fixture.commands.contains { $0.contains("gateway install --force --json") ||
+            $0.contains("gateway start --json") || $0.contains("gateway restart --json") })
+        #expect(fixture.maintenance().hasPendingUpdate())
+        let commandsBeforeRetry = fixture.commands.count
+        let retry = fixture.maintenance().update()
+        #expect(retry.state == .fail)
+        #expect(retry.message.contains("Automatic retry"))
+        #expect(fixture.commands.count == commandsBeforeRetry)
+    }
+
     @Test(arguments: [Failure.approvalsMigration, .unverifiedApprovalsMigration, .activeWriter])
     func migrationFailureKeepsPermissionsAndNeverActivatesUpdate(_ failure: Failure) throws {
         let fixture = try Fixture(schemaMismatch: false, failure: failure)
@@ -1011,6 +1069,124 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(!fixture.commands.contains {
             $0.contains("npm view") || $0.contains("--dry-run") || $0.contains("npm install") || $0.contains("update --tag")
         })
+    }
+
+    @Test func advisoryRepairChecksDoctorMigrationsAndTwoRPCsBeforeActivation() throws {
+        let fixture = try Fixture(schemaMismatch: false, failure: .advisoryWarning,
+                                  installedVersion: "2026.9.6", targetVersion: "2026.9.6")
+        defer { fixture.cleanUp() }
+
+        let result = fixture.maintenance().repairCurrentVersion()
+
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(result.message.contains("advisory Doctor warnings"))
+        let repair = try #require(fixture.commands.firstIndex { $0.contains("update repair --yes --json") })
+        let pending = try #require(fixture.commands.firstIndex { $0.contains("sqlite3 -readonly") })
+        let doctor = try #require(fixture.commands.firstIndex { $0.contains("doctor --post-upgrade --json") })
+        let restart = try #require(fixture.commands.firstIndex { $0.contains("gateway restart --json") })
+        #expect(repair < pending && pending < doctor && doctor < restart)
+        #expect(!fixture.commands.contains { $0.contains("doctor --fix") })
+        #expect(fixture.commands.suffix(from: restart).filter { $0.contains("gateway status") }.count == 2)
+        #expect(!OpenClawActivationBlock.isPresent(home: fixture.home, runtime: try #require(OpenClawRuntimeInstallation.managed(home: fixture.home))))
+    }
+
+    @Test func pendingAdvisoryPluginMigrationGetsOneDoctorPassBeforeActivation() throws {
+        let fixture = try Fixture(schemaMismatch: false, failure: .advisoryPending,
+                                  installedVersion: "2026.9.6", targetVersion: "2026.9.6")
+        defer { fixture.cleanUp() }
+
+        let result = fixture.maintenance().repairCurrentVersion()
+
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(fixture.commands.filter { $0.contains("doctor --fix --non-interactive") }.count == 1)
+        #expect(fixture.commands.filter { $0.contains("sqlite3 -readonly") }.count == 2)
+        #expect(fixture.commands.contains { $0.contains("doctor --post-upgrade --json") })
+    }
+
+    @Test func riskyAdvisoryWarningCannotRestartGateway() throws {
+        let fixture = try Fixture(schemaMismatch: false, failure: .advisoryRisky,
+                                  installedVersion: "2026.9.6", targetVersion: "2026.9.6")
+        defer { fixture.cleanUp() }
+
+        let result = fixture.maintenance().repairCurrentVersion()
+
+        #expect(result.state == .fail)
+        #expect(fixture.commands.contains { $0.contains("update repair --yes --json") })
+        #expect(!fixture.commands.contains { $0.contains("doctor --post-upgrade") || $0.contains("sqlite3 -readonly") || $0.contains("gateway restart") })
+        #expect(OpenClawActivationBlock.isPresent(home: fixture.home, runtime: try #require(OpenClawRuntimeInstallation.managed(home: fixture.home))))
+    }
+
+    @Test func initialUpdateWarningDoesNotTriggerBlindSecondNativeOperation() throws {
+        let fixture = try Fixture(schemaMismatch: false, failure: .advisoryWarning,
+                                  installedVersion: "2026.9.1", targetVersion: "2026.9.6")
+        defer { fixture.cleanUp() }
+
+        let result = fixture.maintenance().update()
+
+        #expect(result.state == .fail)
+        #expect(fixture.commands.filter { $0.contains("--yes --json") }.count == 1)
+        #expect(!fixture.commands.contains { $0.contains("update repair --yes --json") || $0.contains("gateway start --json") })
+        #expect(OpenClawActivationBlock.isPresent(home: fixture.home, runtime: try #require(OpenClawRuntimeInstallation.managed(home: fixture.home))))
+    }
+
+    @Test func completedAdvisoryFinalizeReceiptCanFinishInitialUpgrade() throws {
+        let fixture = try Fixture(schemaMismatch: false, failure: .advisoryFinalizedUpgrade,
+                                  installedVersion: "2026.9.1", targetVersion: "2026.9.6")
+        defer { fixture.cleanUp() }
+
+        let result = fixture.maintenance().update()
+
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(fixture.commands.contains { $0.contains("doctor --post-upgrade --json") })
+        #expect(fixture.commands.contains { $0.contains("gateway start --json") })
+        #expect(fixture.commands.filter { $0.contains("--yes --json") }.count == 1)
+    }
+
+    @Test(arguments: [Failure.incompleteUpgradeReceipt, .wrongUpgradeMode, .failedUpgradeStep])
+    func incompletePackageUpgradeReceiptCannotActivateGateway(failure: Failure) throws {
+        let fixture = try Fixture(schemaMismatch: false, failure: failure,
+                                  installedVersion: "2026.9.1", targetVersion: "2026.9.6")
+        defer { fixture.cleanUp() }
+
+        let result = fixture.maintenance().update()
+
+        #expect(result.state == .fail)
+        #expect(!fixture.commands.contains { $0.contains("gateway start --json") })
+        #expect(OpenClawActivationBlock.isPresent(home: fixture.home, runtime: try #require(OpenClawRuntimeInstallation.managed(home: fixture.home))))
+    }
+
+    @Test func nativeConsentWarningCanResumeSameVersionRepairAfterReview() throws {
+        let fixture = try Fixture(schemaMismatch: false, failure: .consent,
+                                  installedVersion: "2026.9.6", targetVersion: "2026.9.6")
+        defer { fixture.cleanUp() }
+        let first = fixture.maintenance().repairCurrentVersion()
+        #expect(first.state == .fail)
+        #expect(ChatRecoveryPlan.classify(error: first.message).kind == .pluginPermissions)
+        let runtime = try #require(try OpenClawRuntimeInstallation.managed(home: fixture.home))
+        #expect(OpenClawActivationBlock.isPresent(home: fixture.home, runtime: runtime))
+        #expect(!OpenClawActivationBlock.requiresManualRecovery(home: fixture.home, runtime: runtime))
+        #expect(!fixture.commands.contains { $0.contains("gateway restart --json") })
+
+        fixture.failure = nil
+        fixture.commands.removeAll()
+        let resumed = fixture.maintenance().prepareGateway(allowRuntimeUpdate: true)
+        #expect(resumed.state == .ok, Comment(rawValue: resumed.message))
+        #expect(fixture.commands.contains { $0.contains("update repair --yes --json") })
+        #expect(!OpenClawActivationBlock.isPresent(home: fixture.home, runtime: runtime))
+    }
+
+    @Test func advisoryWarningWithUnfinishedMigrationStaysBlockedAfterOneDoctorPass() throws {
+        let fixture = try Fixture(schemaMismatch: false, failure: .advisoryPendingStuck,
+                                  installedVersion: "2026.9.6", targetVersion: "2026.9.6")
+        defer { fixture.cleanUp() }
+
+        let result = fixture.maintenance().repairCurrentVersion()
+
+        #expect(result.state == .fail)
+        #expect(fixture.commands.filter { $0.contains("doctor --fix --non-interactive") }.count == 1)
+        #expect(fixture.commands.filter { $0.contains("sqlite3 -readonly") }.count == 2)
+        #expect(!fixture.commands.contains { $0.contains("gateway restart") })
+        #expect(OpenClawActivationBlock.isPresent(home: fixture.home, runtime: try #require(OpenClawRuntimeInstallation.managed(home: fixture.home))))
     }
 
     @Test func invalidSelectedProfileRepairsSharedCurrentCoreWithoutMutatingPeerProfile() throws {
@@ -1228,7 +1404,7 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(try Data(contentsOf: packageManifest) == originalPackageManifest)
     }
 
-    @Test func resumedCheckpointFailureCompensatesServiceAndVerifiesRPC() throws {
+    @Test func resumedCheckpointFailureDoesNotReactivateUnverifiedService() throws {
         let fixture = try Fixture(failure: .consent)
         defer { fixture.cleanUp() }
         #expect(fixture.maintenance().update().state == .fail)
@@ -1239,10 +1415,10 @@ struct OpenClawRuntimeMaintenanceTests {
         let result = fixture.maintenance().prepareGateway(allowRuntimeUpdate: true)
 
         #expect(result.state == .fail)
-        #expect(fixture.commands.filter { $0.contains("gateway install --force --json") }.count == 2)
-        #expect(fixture.commands.filter { $0.contains("gateway restart --json") }.count == 2)
-        #expect(fixture.commands.contains { $0.contains("gateway start --json") })
-        #expect(result.message.contains("service was reinstalled and RPC health was verified"))
+        #expect(fixture.commands.filter { $0.contains("gateway install --force --json") }.count == 1)
+        #expect(fixture.commands.filter { $0.contains("gateway restart --json") }.count == 1)
+        #expect(!fixture.commands.contains { $0.contains("gateway start --json") })
+        #expect(!fixture.gatewayRunning)
         #expect(fixture.maintenance().hasPendingUpdate())
     }
 
@@ -1359,15 +1535,35 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(FileManager.default.fileExists(atPath: archive.path))
     }
 
-    @Test func failedSameSchemaGatewayRestartDoesNotClaimSuccessOrInventABackupCheckpoint() throws {
+    @Test func failedSameSchemaGatewayRestartBlocksFurtherAutomaticActivation() throws {
         let fixture = try Fixture(schemaMismatch: false, failure: .restart)
         defer { fixture.cleanUp() }
         try fixture.writeVersion("2026.8.1")
         let result = fixture.maintenance().update()
         #expect(result.state == .fail)
         #expect(result.message.contains("Restart repaired Gateway failed"))
-        #expect(!fixture.maintenance().hasPendingUpdate())
+        #expect(fixture.maintenance().hasPendingUpdate())
         #expect(!result.message.contains("Recovery backup:"))
+        #expect(!fixture.commands.contains { $0.contains("gateway start --json") })
+    }
+
+    @Test func failedRPCCheckStopsCandidateAndBlocksAutomaticRetry() throws {
+        let fixture = try Fixture(schemaMismatch: false, failure: .unhealthy,
+                                  installedVersion: "2026.9.6", targetVersion: "2026.9.7")
+        defer { fixture.cleanUp() }
+
+        let result = fixture.maintenance().update()
+
+        #expect(result.state == .fail)
+        #expect(result.message.contains("selected Gateway was stopped after this failure"))
+        #expect(!fixture.gatewayRunning)
+        #expect(fixture.maintenance().hasPendingUpdate())
+        let activation = try #require(fixture.commands.firstIndex { $0.contains("gateway start --json") })
+        let stoppedAgain = try #require(fixture.commands.lastIndex { $0.contains("gateway stop --force --json") })
+        #expect(activation < stoppedAgain)
+        let count = fixture.commands.count
+        #expect(fixture.maintenance().prepareGateway(allowRuntimeUpdate: true).state == .fail)
+        #expect(fixture.commands.count == count)
     }
 
     @Test func pendingUpdateCheckpointsAreNamespacedByRuntimeIdentity() throws {
@@ -1402,7 +1598,7 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(OpenClawUpdateCheckpoint.load(home: fixture.home, runtime: second) != nil)
     }
 
-    enum Failure: String, Sendable { case backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, pluginWarning, configRemains, registryUnavailable, registryNoSpace, invalidRegistryVersion, newerRegistry, approvalsMigration, unverifiedApprovalsMigration, consent, malformedResult, wrongRepairMode, wrongResultRoot, nonzeroSuccess, restart, agentOwner, unsafeRecovery, safeRollback }
+    enum Failure: String, Sendable { case backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, pluginWarning, configRemains, registryUnavailable, registryNoSpace, invalidRegistryVersion, newerRegistry, approvalsMigration, unverifiedApprovalsMigration, consent, malformedResult, wrongRepairMode, wrongResultRoot, nonzeroSuccess, restart, agentOwner, unsafeRecovery, safeRollback, detachedHandoff, advisoryWarning, advisoryRisky, advisoryPending, advisoryPendingStuck, advisoryFinalizedUpgrade, incompleteUpgradeReceipt, wrongUpgradeMode, failedUpgradeStep }
 
     private final class Fixture {
         let home: URL
@@ -1418,8 +1614,9 @@ struct OpenClawRuntimeMaintenanceTests {
         var didUpdate = false
         var gatewayRunning = true
         var gatewayVersion: String
-        var nodeVersion = "v22.22.3"
+        var nodeVersion = "v26.9.0"
         var inspections: [(Int32, String)] = []
+        var pendingPluginMigrations = 0
 
         init(
             schemaMismatch: Bool = true,
@@ -1432,6 +1629,7 @@ struct OpenClawRuntimeMaintenanceTests {
             self.schemaMismatch = schemaMismatch
             self.invalidConfig = invalidConfig
             self.failure = failure
+            pendingPluginMigrations = failure == .advisoryPending || failure == .advisoryPendingStuck ? 1 : 0
             self.installedVersion = installedVersion
             self.targetVersion = targetVersion
             gatewayVersion = installedVersion
@@ -1617,6 +1815,14 @@ struct OpenClawRuntimeMaintenanceTests {
                     return (process.terminationStatus, "")
                 }
                 if command.contains("npm --version") { return (0, "12.0.0") }
+                if command.contains("/usr/bin/sqlite3 -readonly") { return (0, String(pendingPluginMigrations)) }
+                if command.contains("doctor --fix --non-interactive") {
+                    if failure != .advisoryPendingStuck { pendingPluginMigrations = 0 }
+                    return (0, "Doctor complete")
+                }
+                if command.contains("doctor --post-upgrade --json") {
+                    return (0, #"{"probesRun":["plugin.index_unavailable","plugin.entry_unresolved","plugin.manifest_unavailable","plugin.manifest_drift","plugin.version_drift"],"findings":[]}"#)
+                }
                 if command.contains("gateway install --force --json") { return (0, #"{"ok":true}"#) }
                 if command.contains("gateway restart --json") {
                     if failure == .restart { return (1, "restart refused") }
@@ -1644,6 +1850,15 @@ struct OpenClawRuntimeMaintenanceTests {
                     if command.contains("update repair"), gatewayRunning {
                         return (1, "StateDatabaseCoordinatorContentionError: another OpenClaw process owns gateway-lifecycle")
                     }
+                    if !command.contains("update repair"), gatewayRunning {
+                        return (75, #"{"status":"skipped","mode":"npm","root":"/fixture","reason":"managed-service-handoff-started","steps":[]}"#)
+                    }
+                    if failure == .detachedHandoff {
+                        return (75, String(decoding: try JSONSerialization.data(withJSONObject: [
+                            "status": "skipped", "mode": "npm", "root": package.path,
+                            "reason": "managed-service-handoff-started", "steps": [],
+                        ]), as: UTF8.self))
+                    }
                     if failure == .update { return (1, "post-core repair failed") }
                     didUpdate = true
                     if !command.contains("update repair"), failure != .wrongVersion {
@@ -1651,7 +1866,19 @@ struct OpenClawRuntimeMaintenanceTests {
                     }
                     if !command.contains("update repair") { try wrapService() }
                     if failure == .malformedResult { return (0, #"{"status":"ok"}"#) }
-                    var result: [String: Any] = ["status": "ok", "mode": "npm", "root": failure == .wrongResultRoot ? "/wrong/package" : package.path, "steps": []]
+                    let healthyPlugins: [String: Any] = [
+                        "status": "ok", "assessment": ["kind": "no-payload-repair"],
+                        "warnings": [], "sync": ["errors": [], "warnings": []],
+                        "npm": ["outcomes": []], "integrityDrifts": [],
+                        "doctorLint": ["exitCode": 0, "termination": "exit",
+                                       "outputLimitExceeded": false, "doctorLintFindings": []],
+                    ]
+                    var result: [String: Any] = [
+                        "status": "ok", "mode": "npm",
+                        "root": failure == .wrongResultRoot ? "/wrong/package" : package.path,
+                        "steps": [["name": "package-install", "exitCode": 0]],
+                        "postUpdate": ["plugins": healthyPlugins],
+                    ]
                     if command.contains("update repair"), failure != .wrongRepairMode {
                         result["mode"] = "finalize"
                         result.removeValue(forKey: "steps")
@@ -1659,9 +1886,69 @@ struct OpenClawRuntimeMaintenanceTests {
                         result["phaseTimings"] = [["phase": "doctor", "outcome": "completed", "durationMs": 42]]
                         result["postUpdate"] = ["doctor": ["status": "ok"], "plugins": ["status": "ok"]]
                     }
+                    if failure == .advisoryFinalizedUpgrade {
+                        result["mode"] = "finalize"
+                        result.removeValue(forKey: "steps")
+                        result["restart"] = false
+                    }
+                    if let failure, [Failure.advisoryWarning, .advisoryRisky, .advisoryPending, .advisoryPendingStuck,
+                                     .advisoryFinalizedUpgrade].contains(failure) {
+                        result["status"] = "warning"
+                        result["phaseTimings"] = [
+                            ["phase": "preflight", "outcome": "completed"],
+                            ["phase": "targetConfigValidation", "outcome": "completed"],
+                            ["phase": "configSnapshot", "outcome": "completed"],
+                            ["phase": "doctor", "outcome": "completed"],
+                            ["phase": "plugins", "outcome": "completed"],
+                            ["phase": "targetConfigConvergence", "outcome": "completed"],
+                            ["phase": "completionCache", "outcome": "completed"],
+                        ]
+                        var plugins: [String: Any] = [
+                            "status": "warning", "assessment": ["kind": "no-payload-repair"],
+                            "warnings": [["reason": "doctor-advisory", "message": "Stored secret needs review"]],
+                            "sync": ["errors": [], "warnings": []],
+                            "npm": ["outcomes": [["pluginId": "codex", "status": "updated"]]],
+                            "integrityDrifts": [],
+                            "doctorLint": ["exitCode": 0, "termination": "exit", "outputLimitExceeded": false,
+                                           "doctorLintFindings": []],
+                        ]
+                        if failure == .advisoryRisky {
+                            plugins["assessment"] = ["kind": "unsafe", "reason": "capability-consent-required"]
+                            plugins["npm"] = ["outcomes": [["pluginId": "codex", "status": "error",
+                                                             "code": "PLUGIN_CAPABILITY_CONSENT_REQUIRED"]]]
+                        }
+                        result["postUpdate"] = [
+                            "doctor": ["status": "warning", "warnings": ["Secret is stored in plaintext"]],
+                            "plugins": plugins,
+                        ]
+                    }
                     if failure == .pluginWarning { result["postUpdate"] = ["plugins": ["status": "warning"]] }
+                    if failure == .incompleteUpgradeReceipt { result.removeValue(forKey: "postUpdate") }
+                    if failure == .wrongUpgradeMode { result["mode"] = "unknown" }
+                    if failure == .failedUpgradeStep {
+                        result["steps"] = [["name": "package-install", "exitCode": 1]]
+                    }
                     if failure == .consent {
-                        result["postUpdate"] = ["plugins": ["status": "warning", "npm": ["outcomes": [["pluginId": "codex", "status": "error", "code": "PLUGIN_CAPABILITY_CONSENT_REQUIRED"]]]]]
+                        var plugins = healthyPlugins
+                        plugins["status"] = "warning"
+                        plugins["assessment"] = ["kind": "unsafe", "reason": "capability-consent-required"]
+                        plugins["warnings"] = [["pluginId": "codex", "reason": "Plugin codex requires capability consent",
+                                                "message": "Review Plugin Permissions"]]
+                        plugins["npm"] = ["outcomes": [["pluginId": "codex", "status": "error",
+                                                         "code": "PLUGIN_CAPABILITY_CONSENT_REQUIRED"]]]
+                        result["postUpdate"] = ["doctor": ["status": "ok"], "plugins": plugins]
+                        if command.contains("update repair") {
+                            result["status"] = "warning"
+                            result["phaseTimings"] = [
+                                ["phase": "preflight", "outcome": "completed"],
+                                ["phase": "targetConfigValidation", "outcome": "completed"],
+                                ["phase": "configSnapshot", "outcome": "completed"],
+                                ["phase": "doctor", "outcome": "completed"],
+                                ["phase": "plugins", "outcome": "completed"],
+                                ["phase": "targetConfigConvergence", "outcome": "completed"],
+                                ["phase": "completionCache", "outcome": "completed"],
+                            ]
+                        }
                     }
                     if failure == .unsafeRecovery || failure == .safeRollback {
                         gatewayRunning = false
@@ -1669,6 +1956,7 @@ struct OpenClawRuntimeMaintenanceTests {
                         result["recovery"] = [
                             "serviceRestartSafe": failure == .safeRollback,
                             "reason": failure == .safeRollback ? "rollback-verified" : "state-migration-started",
+                            "version": installedVersion,
                         ]
                         if failure == .safeRollback { try writeVersion(installedVersion) }
                     }

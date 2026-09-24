@@ -29,12 +29,18 @@ export default definePluginEntry({
           return;
         }
 
+        const state = params.prior
+          ? `Previous request: ${params.prior.trim()}\nCurrent request: ${params.prompt.trim()}`
+          : params.prompt.trim();
+        if (Buffer.byteLength(state, "utf8") > 320) {
+          respond(true, { status: "unavailable", reason: "input-too-large" });
+          return;
+        }
+
         try {
           const outcome = await api.runtime.decisions.evaluate(
             {
-              state: params.prior
-                ? `Previous request: ${params.prior.trim()}\nCurrent request: ${params.prompt.trim()}`
-                : params.prompt.trim(),
+              state,
               questions: {
                 route: {
                   type: "choice",

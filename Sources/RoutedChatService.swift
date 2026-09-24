@@ -19,6 +19,14 @@ struct RoutedModelOption: Identifiable, Hashable, Sendable {
 struct RoutedChatService: Sendable {
     private let decisionModel = "onnx/gliner2.5-small-v1"
 
+    static func isMissingRouterMethod(_ output: String) -> Bool {
+        output.range(of: "unknown method: localclaw.router.classify", options: .caseInsensitive) != nil
+    }
+
+    static func canRetryPluginReload(_ output: String) -> Bool {
+        output.contains("still has active retained work") && output.contains("replacement not applied")
+    }
+
     static func supportsChatModel(_ id: String) -> Bool {
         [.cloud, .oauth].contains(RuntimeSnapshotResolver.route(for: id)) && id != "openrouter/auto"
     }
@@ -56,12 +64,29 @@ struct RoutedChatService: Sendable {
 
         report("Downloading and verifying the local model…")
         _ = try command(["onnx", "download", "gliner2.5-small-v1"], timeout: 900)
-        _ = try command(["onnx", "verify", "gliner2.5-small-v1"], timeout: 180)
+        // `onnx download` verifies the pinned sizes and hashes; the separate
+        // verify command would re-read the same 300 MB before the smoke probe.
         _ = try command(["onnx", "probe", "gliner2.5-small-v1"], timeout: 180)
 
         if existing.isEmpty {
             report("Selecting ONNX for the beta router only…")
-            _ = try command(["config", "set", "agents.entries.localclaw-router.decisionModel", decisionModel], timeout: 60)
+            do {
+                _ = try command(["config", "set", "agents.entries.localclaw-router.decisionModel", decisionModel], timeout: 60)
+            } catch RoutedChatError.commandTimedOut {
+                // OpenClaw 2026.9.6 can save this new agent and then linger
+                // while resolving its inherited chat model. Verify the exact
+                // write instead of making the user repeat a completed step.
+                report("OpenClaw is slow to finish agent setup; checking the saved configuration…")
+            }
+            let updated = InstallerEngine().readOpenClawConfig()
+            let agent = ((updated?["agents"] as? [String: Any])?["entries"] as? [String: Any])?["localclaw-router"] as? [String: Any]
+            guard agent?["decisionModel"] as? String == decisionModel else {
+                throw RoutedChatError.commandFailed("OpenClaw did not save the local decision model. Router setup stopped before loading the bridge.")
+            }
+            let validation = try command(["config", "validate", "--json"], timeout: 60)
+            guard InstallerEngine.firstJSONObject(in: validation.output)?["valid"] as? Bool == true else {
+                throw RoutedChatError.commandFailed("OpenClaw did not validate the saved router configuration. Router setup stopped before loading the bridge.")
+            }
         }
 
         report("Installing the LocalClaw decision bridge…")
@@ -70,7 +95,7 @@ struct RoutedChatService: Sendable {
         _ = try command(["plugins", "install", staged.path, "--force", "--accept-capabilities"], timeout: 180)
         _ = try command(["plugins", "enable", "localclaw-router"], timeout: 60)
         report("Loading both local plugins in the running Gateway…")
-        _ = try command(["plugins", "reload", "onnx", "localclaw-router", "--accept-capabilities", "--json"], timeout: 120)
+        try reloadRouterPlugins(report: report)
 
         report("Testing a local decision…")
         let smoke = try classify(prompt: "Translate this short sentence into French.", prior: nil)
@@ -169,6 +194,25 @@ struct RoutedChatService: Sendable {
         }
     }
 
+    private func reloadRouterPlugins(report: @Sendable (String) -> Void) throws {
+        let arguments = ["plugins", "reload", "onnx", "localclaw-router", "--accept-capabilities", "--json"]
+        for attempt in 0..<4 {
+            do {
+                _ = try command(arguments, timeout: 120)
+                return
+            } catch RoutedChatError.commandFailed(let message) {
+                // OpenClaw refuses replacement while a just-installed ONNX
+                // worker retains its startup/probe work. It explicitly says
+                // that no generation was applied and asks for a later retry.
+                guard Self.canRetryPluginReload(message), attempt < 3 else {
+                    throw RoutedChatError.commandFailed(message)
+                }
+                report("ONNX is finishing local work; retrying the plugin load…")
+                Thread.sleep(forTimeInterval: [3.0, 6.0, 10.0][attempt])
+            }
+        }
+    }
+
     private func localGatewayPort() throws -> Int {
         let config = InstallerEngine().readOpenClawConfig() ?? [:]
         let gateway = config["gateway"] as? [String: Any] ?? [:]
@@ -236,9 +280,13 @@ struct RoutedChatService: Sendable {
 
         let output = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         if timeoutFlag.didTimeout {
-            throw RoutedChatError.commandFailed("The local router command timed out. Check its status before retrying.")
+            throw RoutedChatError.commandTimedOut
         }
         guard process.terminationStatus == 0 else {
+            if arguments.starts(with: ["gateway", "call", "localclaw.router.classify"]),
+               Self.isMissingRouterMethod(output) {
+                throw RoutedChatError.routerSetupRequired
+            }
             throw RoutedChatError.commandFailed("Local router command failed: \(SecretRedactor.redactConfigText(String(output.suffix(1_000))))")
         }
         return (process.terminationStatus, output)

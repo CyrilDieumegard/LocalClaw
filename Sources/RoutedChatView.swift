@@ -110,11 +110,11 @@ struct RoutedChatView: View {
                     .foregroundStyle(UI.text)
                     .lineLimit(2)
                 Spacer()
-                Button(model.isSettingUp ? "Setting up…" : "Set up local router") {
+                Button(model.isSettingUp ? "Setting up…" : (model.routerReady ? "Router ready" : "Set up local router")) {
                     model.setupRouter()
                 }
                 .buttonStyle(CompactChatButton(primary: true))
-                .disabled(model.isSettingUp || model.isBusy || model.isRefreshing)
+                .disabled(model.routerReady || model.isSettingUp || model.isBusy || model.isRefreshing)
             }
 
             DisclosureGroup("Choose which chat model handles each task") {

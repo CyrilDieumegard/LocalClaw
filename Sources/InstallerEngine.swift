@@ -69,7 +69,7 @@ struct StepResult: Sendable {
     let message: String
 }
 
-struct VersionInfo {
+struct VersionInfo: Sendable {
     let installed: String
     let latest: String
     let updateAvailable: Bool
@@ -136,8 +136,8 @@ final class InstallerEngine: @unchecked Sendable {
             return base + "printf '%s\\n' 'LocalClaw blocked this OpenClaw command because the profile is not uniquely selected.' >&2; exit 78; "
         }
     }
-    static let minimumNodeVersion = "22.22.3"
-    static let nodeRequirementDescription = "Node 22.22.3+, 24.15+, 25.9+, or 26+"
+    static let minimumNodeVersion = "24.16.0"
+    static let nodeRequirementDescription = "Node 24.16.x or 26.1+"
     private let providerAuthCacheLock = NSLock()
     private var providerAuthCache: (scope: String, checkedAt: Date, configuredProviders: Set<String>, oauthProviders: Set<String>)?
 
@@ -417,13 +417,11 @@ final class InstallerEngine: @unchecked Sendable {
     static func isNodeVersionSupported(_ version: String) -> Bool {
         guard let components = versionComponents(from: version) else { return false }
         switch components[0] {
-        case 22:
-            return (compareVersion(version, "22.22.3") ?? -1) >= 0
         case 24:
-            return (compareVersion(version, "24.15.0") ?? -1) >= 0
-        case 25:
-            return (compareVersion(version, "25.9.0") ?? -1) >= 0
-        case 26...:
+            return (compareVersion(version, "24.16.0") ?? -1) >= 0
+        case 26:
+            return (compareVersion(version, "26.1.0") ?? -1) >= 0
+        case 27...:
             return true
         default:
             return false
@@ -2680,7 +2678,10 @@ final class InstallerEngine: @unchecked Sendable {
     }
 
     func installedVersion(for command: String) -> String {
-        let (code, out) = shell("\(command) --version")
+        let versionCommand = command == "openclaw"
+            ? "perl -e 'alarm 15; exec @ARGV' openclaw --version"
+            : "\(command) --version"
+        let (code, out) = shell(versionCommand)
         if command == "openclaw" {
             return Self.reportedOpenClawVersion(exitCode: code, output: out) ?? "Not installed"
         }
@@ -2718,7 +2719,7 @@ final class InstallerEngine: @unchecked Sendable {
     }
 
     func latestOpenClawVersion() -> String {
-        let (code, out) = shell("npm view openclaw version 2>/dev/null")
+        let (code, out) = shell("perl -e 'alarm 25; exec @ARGV' npm view openclaw version --fetch-retries=0 --fetch-timeout=15000 2>/dev/null")
         return (code == 0 && !out.isEmpty) ? out : "Unknown"
     }
 

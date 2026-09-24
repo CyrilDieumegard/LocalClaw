@@ -26,6 +26,51 @@ struct OpenClawUpdateResultTests {
         #expect(OpenClawUpdateResult.envelope(in: output)?["steps"] == nil)
     }
 
+    @Test func completedAdvisoryFinalizationIsDistinctFromStructuredPluginFailure() {
+        let plugins: [String: Any] = [
+            "status": "warning", "assessment": ["kind": "no-payload-repair"],
+            "warnings": [["reason": "doctor-advisory", "message": "Review the stored secret"]],
+            "sync": ["errors": [], "warnings": []],
+            "npm": ["outcomes": [["pluginId": "codex", "status": "updated"]]],
+            "integrityDrifts": [],
+            "doctorLint": ["exitCode": 0, "termination": "exit", "outputLimitExceeded": false,
+                           "doctorLintFindings": []],
+        ]
+        var result: [String: Any] = [
+            "status": "warning", "mode": "finalize", "restart": false,
+            "phaseTimings": [
+                ["phase": "preflight", "outcome": "completed"],
+                ["phase": "targetConfigValidation", "outcome": "completed"],
+                ["phase": "configSnapshot", "outcome": "completed"],
+                ["phase": "doctor", "outcome": "completed"],
+                ["phase": "plugins", "outcome": "completed"],
+                ["phase": "targetConfigConvergence", "outcome": "completed"],
+                ["phase": "completionCache", "outcome": "completed"],
+            ],
+            "postUpdate": ["doctor": ["status": "warning", "warnings": ["Secret is stored in plaintext"]],
+                           "plugins": plugins],
+        ]
+        #expect(OpenClawUpdateResult.isStructurallyAdvisoryFinalization(result, exitCode: 0))
+        #expect(!OpenClawUpdateResult.isStructurallyAdvisoryFinalization(result, exitCode: 1))
+
+        var riskyPlugins = plugins
+        riskyPlugins["npm"] = ["outcomes": [["pluginId": "codex", "status": "error",
+                                             "code": "PLUGIN_CAPABILITY_CONSENT_REQUIRED"]]]
+        result["postUpdate"] = ["doctor": ["status": "warning", "warnings": ["Secret is stored in plaintext"]],
+                                "plugins": riskyPlugins]
+        #expect(!OpenClawUpdateResult.isStructurallyAdvisoryFinalization(result, exitCode: 0))
+        result["postUpdate"] = ["doctor": ["status": "warning", "warnings": ["Secret is stored in plaintext"]],
+                                "plugins": plugins]
+        result["phaseTimings"] = [["phase": "preflight", "outcome": "completed"],
+                                  ["phase": "targetConfigValidation", "outcome": "completed"],
+                                  ["phase": "configSnapshot", "outcome": "completed"],
+                                  ["phase": "doctor", "outcome": "completed"],
+                                  ["phase": "plugins", "outcome": "failed"],
+                                  ["phase": "targetConfigConvergence", "outcome": "completed"],
+                                  ["phase": "completionCache", "outcome": "completed"]]
+        #expect(!OpenClawUpdateResult.isStructurallyAdvisoryFinalization(result, exitCode: 0))
+    }
+
     @Test func nativeUnsafeRecoveryCarriesMigrationGuidanceWithoutOverridingConsent() {
         let result: [String: Any] = ["recovery": [
             "serviceRestartSafe": false, "reason": "state-migration-started",

@@ -103,6 +103,18 @@ final class RoutedChatPolicyTests: XCTestCase {
         XCTAssertTrue(excerpt.text.hasPrefix("BEGIN"))
         XCTAssertTrue(excerpt.text.hasSuffix("END"))
         XCTAssertLessThan(excerpt.text.count, input.count)
+        XCTAssertLessThanOrEqual(excerpt.text.utf8.count, RoutedChatPolicy.currentPromptByteLimit)
+    }
+
+    func testMultilingualRoutingStateFitsConservativeLocalBudget() {
+        let current = RoutedChatPolicy.excerpt(String(repeating: "Analyse ce code Swift et les risques 你好😀", count: 80))
+        let prior = RoutedChatPolicy.priorContext(String(repeating: "Previous request בעברית😀", count: 30))
+        XCTAssertTrue(current.excerpted)
+        XCTAssertNotNil(prior)
+        XCTAssertLessThanOrEqual(current.text.utf8.count, RoutedChatPolicy.currentPromptByteLimit)
+        XCTAssertLessThanOrEqual(prior!.utf8.count, RoutedChatPolicy.priorPromptByteLimit)
+        let state = "Previous request: \(prior!)\nCurrent request: \(current.text)"
+        XCTAssertLessThanOrEqual(state.utf8.count, 320)
     }
 
     func testRouterBridgeResourcesAreBundled() {
@@ -125,5 +137,21 @@ final class RoutedChatPolicyTests: XCTestCase {
         XCTAssertFalse(RoutedChatService.supportsChatModel("lmstudio/google/gemma-4-e2b"))
         XCTAssertFalse(RoutedChatService.supportsChatModel("ollama/llama3:latest"))
         XCTAssertFalse(RoutedChatService.supportsChatModel("openrouter/auto"))
+    }
+
+    func testMissingRouterMethodShowsSetupInsteadOfRawGatewayError() {
+        XCTAssertTrue(RoutedChatService.isMissingRouterMethod("Error: unknown method: localclaw.router.classify"))
+        XCTAssertTrue(RoutedChatService.isMissingRouterMethod("{\"error\":\"Unknown Method: localclaw.router.classify\"}"))
+        XCTAssertFalse(RoutedChatService.isMissingRouterMethod("unknown method: unrelated.method"))
+        XCTAssertFalse(RoutedChatService.isMissingRouterMethod("gateway connection refused"))
+        XCTAssertEqual(RoutedChatError.routerSetupRequired.errorDescription,
+                       "Set up local router to download the decision model and enable routing on this Mac.")
+    }
+
+    func testReloadRetriesOnlyExplicitNoReplacementRetainedWork() {
+        let temporary = "Plugin onnx still has active retained work; retry after the work finishes. Gateway generation 8: replacement not applied."
+        XCTAssertTrue(RoutedChatService.canRetryPluginReload(temporary))
+        XCTAssertFalse(RoutedChatService.canRetryPluginReload("Plugin operation failed during prepare: replacement not applied."))
+        XCTAssertFalse(RoutedChatService.canRetryPluginReload("Plugin onnx still has active retained work; replacement may have applied."))
     }
 }

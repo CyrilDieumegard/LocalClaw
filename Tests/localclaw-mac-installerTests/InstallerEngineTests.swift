@@ -302,13 +302,15 @@ struct InstallerEngineTests {
 
     @Test func nodeVersionSupportMatchesOpenClawRequirement() {
         #expect(!InstallerEngine.isNodeVersionSupported("v22.22.2"))
-        #expect(InstallerEngine.isNodeVersionSupported("v22.22.3"))
+        #expect(!InstallerEngine.isNodeVersionSupported("v22.22.3"))
         #expect(!InstallerEngine.isNodeVersionSupported("v23.11.0"))
         #expect(!InstallerEngine.isNodeVersionSupported("v24.14.0"))
-        #expect(InstallerEngine.isNodeVersionSupported("v24.15.0"))
+        #expect(!InstallerEngine.isNodeVersionSupported("v24.15.0"))
+        #expect(InstallerEngine.isNodeVersionSupported("v24.16.0"))
         #expect(!InstallerEngine.isNodeVersionSupported("v25.8.0"))
-        #expect(InstallerEngine.isNodeVersionSupported("v25.9.0"))
-        #expect(InstallerEngine.isNodeVersionSupported("v26.0.0"))
+        #expect(!InstallerEngine.isNodeVersionSupported("v25.9.0"))
+        #expect(!InstallerEngine.isNodeVersionSupported("v26.0.0"))
+        #expect(InstallerEngine.isNodeVersionSupported("v26.1.0"))
         #expect(!InstallerEngine.isNodeVersionSupported("Not installed"))
     }
 
@@ -674,6 +676,56 @@ struct InstallerEngineTests {
         #expect(first != second)
         #expect(first.contains("-turn-turn-a"))
         #expect(second.contains("-turn-turn-b"))
+    }
+
+    @Test func newDeveloperRuntimeSessionIDsStayShortAcrossModelsAndTurns() throws {
+        let base = InstallerViewModel.ChatSession.developerFresh()
+        #expect(base.runtimeSessionKeyVersion == 2)
+        let persisted = try JSONDecoder().decode(InstallerViewModel.ChatSession.self,
+                                                 from: JSONEncoder().encode(base))
+        #expect(persisted.runtimeSessionKeyVersion == 2)
+        let sharedPrefix = String(repeating: "provider/very-long-model-name-", count: 8)
+        let first = InstallerViewModel.runtimeSessionID(
+            base: base.id, modelID: sharedPrefix + "first", useDeveloperSession: true,
+            freshTurnID: "A1B2C3D4", keyVersion: 2)
+        let repeatFirst = InstallerViewModel.runtimeSessionID(
+            base: base.id, modelID: sharedPrefix + "first", useDeveloperSession: true,
+            freshTurnID: "A1B2C3D4", keyVersion: 2)
+        let otherModel = InstallerViewModel.runtimeSessionID(
+            base: base.id, modelID: sharedPrefix + "second", useDeveloperSession: true,
+            freshTurnID: "A1B2C3D4", keyVersion: 2)
+        let otherTurn = InstallerViewModel.runtimeSessionID(
+            base: base.id, modelID: sharedPrefix + "first", useDeveloperSession: true,
+            freshTurnID: "E5F6A7B8", keyVersion: 2)
+
+        #expect(first == repeatFirst)
+        #expect(first != otherModel)
+        #expect(first != otherTurn)
+        for id in [first, otherModel, otherTurn] {
+            #expect(id.hasPrefix("lcd2-"))
+            #expect(id.utf8.count == 37)
+            let archiveKey = String("agent_main_explicit_\(id)".prefix(120))
+            let archiveName = "\(archiveKey).\(id).trajectory-path.json.imported-1788341929703.99"
+            #expect(archiveName.utf8.count < 255)
+        }
+    }
+
+    @Test func existingChatSessionsDecodeWithoutChangingTheirRuntimeKeys() throws {
+        let created = InstallerViewModel.ChatSession.developerFresh()
+        let encoded = try JSONEncoder().encode(created)
+        var record = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        record.removeValue(forKey: "runtimeSessionKeyVersion")
+        let legacy = try JSONDecoder().decode(InstallerViewModel.ChatSession.self,
+                                              from: JSONSerialization.data(withJSONObject: record))
+
+        #expect(legacy.id == created.id)
+        #expect(legacy.runtimeSessionKeyVersion == nil)
+        let historical = InstallerViewModel.runtimeSessionID(
+            base: legacy.id, modelID: "openrouter/moonshotai/kimi-k3", useDeveloperSession: true)
+        let restored = InstallerViewModel.runtimeSessionID(
+            base: legacy.id, modelID: "openrouter/moonshotai/kimi-k3", useDeveloperSession: true,
+            keyVersion: legacy.runtimeSessionKeyVersion ?? 1)
+        #expect(restored == historical)
     }
 
     @Test func regularChatRuntimeSessionIDCanUseFreshTurnScope() {

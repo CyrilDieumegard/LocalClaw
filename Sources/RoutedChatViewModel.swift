@@ -198,7 +198,7 @@ final class RoutedChatViewModel: ObservableObject {
             throw RoutedChatError.invalidModelMapping
         }
         let excerpt = RoutedChatPolicy.excerpt(prompt)
-        let prior = turns.last.map { String($0.prompt.prefix(300)) }
+        let prior = turns.last.flatMap { RoutedChatPolicy.priorContext($0.prompt) }
         let service = self.service
         let decision = try await Task.detached(priority: .userInitiated) {
             try service.classify(prompt: excerpt.text, prior: prior)

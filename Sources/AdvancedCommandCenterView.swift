@@ -365,7 +365,7 @@ final class CommandCenterViewModel: ObservableObject {
         let nodeSupported = InstallerEngine.isNodeVersionSupported(nodeClean)
         items.append(HealthCheckItem(
             title: "Node.js",
-            detail: nodeClean.isEmpty ? "Node.js not found" : "\(nodeClean) · requires 22.22.3+ on Node 22",
+            detail: nodeClean.isEmpty ? "Node.js not found" : "\(nodeClean) · requires \(InstallerEngine.nodeRequirementDescription)",
             state: nodeSupported ? .ok : .warning,
             repairHint: nodeSupported ? nil : "Use Updates to upgrade dependencies."
         ))

@@ -57,6 +57,11 @@ struct RoutedSelection: Codable, Sendable {
 
 enum RoutedChatPolicy {
     static let minimumMargin = 0.12
+    // GLiNER2.5 Small accepts at most 512 tokens including the bridge rubric.
+    // Its current rubric uses about 124 tokens. Bound the UTF-8 state to 320
+    // bytes so multilingual text and the previous-turn context retain room.
+    static let currentPromptByteLimit = 224
+    static let priorPromptByteLimit = 56
 
     // Conservative local checks protect against observed high-score mistakes
     // in the beta classifier. They can only move work away from the cheap slot.
@@ -77,8 +82,42 @@ enum RoutedChatPolicy {
 
     static func excerpt(_ text: String) -> (text: String, excerpted: Bool) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count > 1_400 else { return (trimmed, false) }
-        return (String(trimmed.prefix(680)) + "\n[Middle omitted for local routing]\n" + String(trimmed.suffix(680)), true)
+        guard trimmed.utf8.count > currentPromptByteLimit else { return (trimmed, false) }
+        let separator = "\n…\n"
+        let contentBudget = currentPromptByteLimit - separator.utf8.count
+        let beginning = utf8Prefix(trimmed, limit: contentBudget / 2)
+        let ending = utf8Suffix(trimmed, limit: contentBudget - beginning.utf8.count)
+        return (beginning + separator + ending, true)
+    }
+
+    static func priorContext(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return utf8Prefix(trimmed, limit: priorPromptByteLimit)
+    }
+
+    private static func utf8Prefix(_ text: String, limit: Int) -> String {
+        var result = ""
+        var bytes = 0
+        for scalar in text.unicodeScalars {
+            let size = String(scalar).utf8.count
+            guard bytes + size <= limit else { break }
+            result.unicodeScalars.append(scalar)
+            bytes += size
+        }
+        return result
+    }
+
+    private static func utf8Suffix(_ text: String, limit: Int) -> String {
+        var reversed: [Unicode.Scalar] = []
+        var bytes = 0
+        for scalar in text.unicodeScalars.reversed() {
+            let size = String(scalar).utf8.count
+            guard bytes + size <= limit else { break }
+            reversed.append(scalar)
+            bytes += size
+        }
+        return String(String.UnicodeScalarView(reversed.reversed()))
     }
 
     static func select(
@@ -158,10 +197,12 @@ enum RoutedChatPolicy {
 
 enum RoutedChatError: LocalizedError {
     case requiresOpenClawUpdate
+    case routerSetupRequired
     case invalidModelMapping
     case routerUnavailable(String)
     case gatewayNotLocal
     case noAgent
+    case commandTimedOut
     case commandFailed(String)
     case unexpectedReply
     case modelMismatch(expected: String, actual: String)
@@ -170,6 +211,8 @@ enum RoutedChatError: LocalizedError {
         switch self {
         case .requiresOpenClawUpdate:
             "Update OpenClaw to 2026.9.6 or newer in Updates before setting up the local router."
+        case .routerSetupRequired:
+            "Set up local router to download the decision model and enable routing on this Mac."
         case .invalidModelMapping:
             "Choose available models for all three routes, with different models for Simple and Analysis."
         case .routerUnavailable(let reason):
@@ -178,6 +221,8 @@ enum RoutedChatError: LocalizedError {
             "The selected OpenClaw Gateway is not local to this Mac. Local routing is unavailable for this setup."
         case .noAgent:
             "LocalClaw could not identify the chat agent. No message was sent."
+        case .commandTimedOut:
+            "The local router command timed out. Check its status before retrying."
         case .commandFailed(let message):
             message
         case .unexpectedReply:
