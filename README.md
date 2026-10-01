@@ -72,15 +72,18 @@ updater. They can use the integrated button for subsequent releases.
 
 ## OpenClaw compatibility
 
-LocalClaw 1.0.207 is checked against the real OpenClaw 2026.9.2 npm package.
+LocalClaw 1.0.210 is checked against the real OpenClaw 2026.9.7 npm package.
 The audit and its validation boundaries are recorded in
-[`OPENCLAW_2026_9_2_AUDIT.md`](OPENCLAW_2026_9_2_AUDIT.md).
+[`OPENCLAW_2026_9_7_AUDIT.md`](OPENCLAW_2026_9_7_AUDIT.md).
 LocalClaw recognizes 2026.7.1 and
 2026.8.1 as existing-user migration sources and never treats an older runtime
 as the successful end state of an automatic update.
 Update LocalClaw first, then use Updates to upgrade OpenClaw. The one-time
 pre-8.1 to 8.1 migration and exceptional schema/configuration recovery create a
 verified state backup under `~/Library/Application Support/LocalClaw/runtime-backups/`.
+The 2026.9.6 and 2026.9.7 schema transitions also require a full verified
+backup before the candidate can migrate databases. Failure to create that
+backup leaves the installed core and Gateway untouched.
 Routine same-schema OpenClaw 2.0 updates, including 2026.9.2, do not duplicate
 that full archive; they use LocalClaw's small config snapshot and OpenClaw's
 native update safeguards. The normal portable backup excludes project workspaces.

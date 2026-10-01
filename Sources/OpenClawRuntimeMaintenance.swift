@@ -622,9 +622,11 @@ final class OpenClawRuntimeMaintenance {
             return true
         }
         // Full state snapshots belong to actual schema transitions, not every
-        // patch release. 2026.9.6 advances session/state storage beyond 9.1;
-        // its package rollback alone cannot restore a migrated database.
-        let boundaries = ["2026.8.1", "2026.9.6"]
+        // patch release. Both 2026.9.6 and 2026.9.7 advance state/agent
+        // storage; package rollback alone cannot restore migrated databases.
+        // The target's new safeguards cannot replace a backup taken by the
+        // currently installed updater before the candidate migrates state.
+        let boundaries = ["2026.8.1", "2026.9.6", "2026.9.7"]
         return boundaries.contains { boundary in
             current.compare(boundary, options: .numeric) == .orderedAscending &&
                 target.compare(boundary, options: .numeric) != .orderedAscending

@@ -146,8 +146,16 @@ struct OpenClawRuntimeMaintenanceTests {
             current: "2026.9.1", target: "2026.9.6", requiresOfflineBackup: false,
             repairingConfiguration: false, pendingLegacyApprovals: false, schemaMismatch: false
         ))
-        #expect(!OpenClawRuntimeMaintenance.requiresFullStateBackup(
+        #expect(OpenClawRuntimeMaintenance.requiresFullStateBackup(
             current: "2026.9.6", target: "2026.9.7", requiresOfflineBackup: false,
+            repairingConfiguration: false, pendingLegacyApprovals: false, schemaMismatch: false
+        ))
+        #expect(OpenClawRuntimeMaintenance.requiresFullStateBackup(
+            current: "2026.9.6", target: "2026.9.8", requiresOfflineBackup: false,
+            repairingConfiguration: false, pendingLegacyApprovals: false, schemaMismatch: false
+        ))
+        #expect(!OpenClawRuntimeMaintenance.requiresFullStateBackup(
+            current: "2026.9.7", target: "2026.9.7", requiresOfflineBackup: false,
             repairingConfiguration: false, pendingLegacyApprovals: false, schemaMismatch: false
         ))
         #expect(OpenClawRuntimeMaintenance.requiresFullStateBackup(
@@ -961,6 +969,35 @@ struct OpenClawRuntimeMaintenanceTests {
         let start = try #require(fixture.commands.firstIndex { $0.contains("gateway start --json") })
         #expect(stop < update && update < start)
         #expect(fixture.commands[update].contains("OPENCLAW_SERVICE_REPAIR_POLICY=external"))
+    }
+
+    @Test func nineSevenMigrationCreatesVerifiedBackupBeforeReplacingCore() throws {
+        let fixture = try Fixture(schemaMismatch: false,
+                                  installedVersion: "2026.9.6", targetVersion: "2026.9.7")
+        defer { fixture.cleanUp() }
+        let result = fixture.maintenance().update()
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(result.message.contains("Recovery backup:"))
+        #expect(try fixture.archives().count == 1)
+        let backup = try #require(fixture.commands.firstIndex { $0.contains("backup create") })
+        let update = try #require(fixture.commands.firstIndex {
+            $0.contains("update --tag '2026.9.7' --yes --json --no-restart")
+        })
+        #expect(backup < update)
+        #expect(fixture.commands[backup].contains("--verify"))
+        #expect((try OpenClawRuntimeInstallation.managed(home: fixture.home))?.version == "2026.9.7")
+    }
+
+    @Test func nineSevenMigrationCannotReplaceCoreWhenBackupFails() throws {
+        let fixture = try Fixture(schemaMismatch: false, failure: .backup,
+                                  installedVersion: "2026.9.6", targetVersion: "2026.9.7")
+        defer { fixture.cleanUp() }
+        let result = fixture.maintenance().update()
+        #expect(result.state == .fail)
+        #expect(result.message.contains("State backup failed"))
+        #expect(!fixture.commands.contains { $0.contains("--yes --json --no-restart") })
+        #expect(!fixture.commands.contains { $0.contains("gateway stop --force") })
+        #expect((try OpenClawRuntimeInstallation.managed(home: fixture.home))?.version == "2026.9.6")
     }
 
     @Test func unexpectedManagedHandoffNeverRestartsGatewayOrStartsSecondUpdate() throws {

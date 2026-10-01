@@ -150,6 +150,15 @@ try {
     assert.ok(!activity.stdout.includes("PRIVATE_"));
     assert.equal(activity.stdout.trim().split("\n").length, 2, "Activity should not replay unchanged events");
     console.log("PASS SQLite Developer activity, incremental reads, private payloads excluded");
+    // Legacy import must start without modern recovery snapshots from the
+    // preceding fixture, which can restore its already initialized config.
+    const legacyHome = join(root, "legacy-home");
+    const legacyState = join(legacyHome, ".openclaw");
+    mkdirSync(legacyState, { recursive: true });
+    environment.HOME = legacyHome;
+    environment.OPENCLAW_HOME = legacyHome;
+    environment.OPENCLAW_STATE_DIR = legacyState;
+    environment.OPENCLAW_CONFIG_PATH = join(legacyState, "openclaw.json");
     writeFileSync(environment.OPENCLAW_CONFIG_PATH, JSON.stringify({
       gateway: { mode: "remote", remote: {url: "ws://127.0.0.1:19879"} },
       agents: {
