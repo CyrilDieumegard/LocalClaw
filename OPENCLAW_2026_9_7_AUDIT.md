@@ -253,3 +253,19 @@ warning, exigence `config.plaintext_secrets`, et que les messages de plugins
 correspondent exactement a l'avertissement canonique. Les autres phases doivent
 rester completed ; tous les controles de permissions, migrations et sante
 restent requis. La fixture de reprise reproduit les deux champs du recu reel.
+
+Le gate du build **391** a passe les 377 tests Swift Testing et les 15 tests
+XCTest, les probes natives et les controles Apple. CI du code `88ebd812`
+verte, PR 6 fusionnee. Submission Apple :
+`dea005fc-d771-4d31-ae0c-950bbc58c68c`, **Accepted**.
+SHA final apres stapling :
+`79741e382bf2d930146b6957037b09da1e7eabd792b9dbb0ec347f56a25478ab`.
+
+La recuperation active est verifiee : recu reel accepte par le predicate de
+production du build 391, migrations de plugins terminees, Doctor final sans
+finding, configuration valide, redemarrage natif du Gateway selectionne, deux
+RPC reussies sur le meme boot **2026.9.7**, Telegram actif sans erreur.
+Les marqueurs de refus et le checkpoint ont ensuite ete archives de facon
+recuperable ; la sauvegarde complete reste intacte. Aucune nouvelle permission
+WhatsApp n'a ete accordee. Les preuves finales restent dans
+`dist/release-1.0.210-391/RELEASE.md`.
