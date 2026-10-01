@@ -192,3 +192,25 @@ la levée de ce blocage Apple.
 
 Preuves : `/private/tmp/localclaw-1-0-210-release-gate.log` et
 `/private/tmp/localclaw-1-0-210-notary-history.log`.
+
+## Blocage leve et artefact certifie
+
+Apres l'autorisation explicite « valide pour moi », la session Apple a ete
+ouverte et l'Apple Developer Program License Agreement du **18 aout 2026**
+(`XG8DNV4HYY`) accepte le **1 octobre 2026** pour l'equipe `923MBLC4X4`.
+La page des accords confirme cette date ; une capture est conservee localement.
+
+La procedure complete a ensuite passe : **377 tests Swift Testing + 15 XCTest**,
+probes OpenClaw 9.7, compilation et signature, notarisation Apple **Accepted**,
+stapling, Gatekeeper et verification positive de la signature de mise a jour.
+Submission Apple : `f2defb27-8713-4c70-8f43-2f16ba9800b3`.
+
+Artefact prepare : **LocalClaw 1.0.210 / build 389**.
+SHA-256 du DMG final apres stapling :
+`ff4599a26cc2d4fd14418092932eeaa1fe43263f84dd8715413bbaf399018aaf`.
+Le manifeste de handoff correspond a ces octets. Les controles du publisher
+confirment la release publique anterieure 1.0.208 / 365 et l'absence d'un
+artefact public preexistant a l'URL immutable 1.0.210 / 389.
+
+La publication client et la migration active seront verifiees separement dans
+le releve local `dist/release-1.0.210-389/RELEASE.md`.
