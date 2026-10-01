@@ -2465,14 +2465,8 @@ Created job
         #expect(swiftPM.contains(URL(fileURLWithPath: "/tmp/.build/arm64-apple-macosx/debug/localclaw-mac-installer_localclaw-mac-installer.bundle/goal-controller.mjs")))
     }
 
-    @Test func goalControllerResourceIsPresentInTheTestBuild() {
-        let packageRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let script = packageRoot
-            .appendingPathComponent(".build/debug/localclaw-mac-installer_localclaw-mac-installer.bundle", isDirectory: true)
-            .appendingPathComponent("goal-controller.mjs")
+    @Test func goalControllerResourceIsPresentInTheTestBuild() throws {
+        let script = try #require(GoalControllerResourceLocator.locate())
 
         #expect(FileManager.default.fileExists(atPath: script.path))
     }
