@@ -2054,6 +2054,11 @@ struct OpenClawRuntimeMaintenanceTests {
                                            "doctorLintFindings": []],
                         ]
                         if failure == .advisoryLintWarning {
+                            result["phaseTimings"] = (result["phaseTimings"] as! [[String: String]]).map { phase in
+                                phase["phase"] == "targetConfigConvergence" ? phase.merging(["outcome": "warning"]) { _, new in new } : phase
+                            }
+                            plugins["warnings"] = [["reason": "doctor-advisory",
+                                "message": "WARNING: openclaw.json contains plaintext secret-bearing config fields."]]
                             plugins["doctorLint"] = ["exitCode": 0, "termination": "exit", "outputLimitExceeded": false,
                                 "doctorLintFindings": [["severity": "warning", "checkId": "core/doctor/security",
                                                         "requirement": "config.plaintext_secrets"]]]

@@ -76,7 +76,6 @@ enum OpenClawUpdateResult {
               result["verification"] == nil,
               emptyOrAbsent(result["failureFacts"]),
               let phases = result["phaseTimings"] as? [[String: Any]], !phases.isEmpty,
-              phases.allSatisfy({ $0["outcome"] as? String == "completed" }),
               Set(["preflight", "targetConfigValidation", "configSnapshot", "doctor",
                    "plugins", "targetConfigConvergence", "completionCache"]).isSubset(
                 of: Set(phases.compactMap { $0["phase"] as? String })
@@ -109,7 +108,13 @@ enum OpenClawUpdateResult {
               lint["termination"] as? String == "exit",
               lint["outputLimitExceeded"] as? Bool != true,
               hasOnlyPlaintextSecretAdvisories(lint["doctorLintFindings"]),
-              emptyOrAbsent(lint["failureFacts"]) else { return false }
+              emptyOrAbsent(lint["failureFacts"]),
+              phases.allSatisfy({ phase in
+                  phase["outcome"] as? String == "completed" ||
+                      (phase["phase"] as? String == "targetConfigConvergence" &&
+                       phase["outcome"] as? String == "warning" &&
+                       isPlaintextSecretConvergenceAdvisory(lint: lint, plugins: plugins))
+              }) else { return false }
 
         if doctorStatus == "warning" {
             guard let warnings = doctor["warnings"] as? [String], !warnings.isEmpty else { return false }
@@ -135,6 +140,20 @@ enum OpenClawUpdateResult {
             $0["severity"] as? String == "warning" &&
             $0["checkId"] as? String == "core/doctor/security" &&
             $0["requirement"] as? String == "config.plaintext_secrets"
+        }
+    }
+
+    private static func isPlaintextSecretConvergenceAdvisory(lint: [String: Any], plugins: [String: Any]) -> Bool {
+        // 9.7 propagates the same lint advisory to the convergence phase.
+        // Require matching, nonempty native findings and warning messages;
+        // a generic warning phase must never authorize Gateway activation.
+        guard let findings = lint["doctorLintFindings"] as? [[String: Any]], !findings.isEmpty,
+              hasOnlyPlaintextSecretAdvisories(findings),
+              plugins["status"] as? String == "warning",
+              let warnings = plugins["warnings"] as? [[String: Any]], !warnings.isEmpty else { return false }
+        return warnings.allSatisfy {
+            $0["reason"] as? String == "doctor-advisory" &&
+            $0["message"] as? String == "WARNING: openclaw.json contains plaintext secret-bearing config fields."
         }
     }
 
