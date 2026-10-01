@@ -72,6 +72,26 @@ struct OpenClawUpdateResultTests {
         #expect(OpenClawUpdateResult.isStructurallyAdvisoryFinalization(result, exitCode: 0))
         #expect(!OpenClawUpdateResult.isStructurallyAdvisoryFinalization(result, exitCode: 1))
 
+        var lint = plugins["doctorLint"] as! [String: Any]
+        let plaintext: [String: Any] = ["severity": "warning", "checkId": "core/doctor/security",
+                                        "requirement": "config.plaintext_secrets"]
+        var advisoryPlugins = plugins
+        lint["doctorLintFindings"] = [plaintext]
+        advisoryPlugins["doctorLint"] = lint
+        result["postUpdate"] = ["doctor": ["status": "warning", "warnings": ["Secret is stored in plaintext"]],
+                                "plugins": advisoryPlugins]
+        #expect(OpenClawUpdateResult.isStructurallyAdvisoryFinalization(result, exitCode: 0))
+        for changedFinding in [plaintext.merging(["severity": "error"]) { _, new in new },
+                               plaintext.merging(["requirement": "plugin.capability_consent"]) { _, new in new },
+                               plaintext.merging(["checkId": "plugin/security"]) { _, new in new }] {
+            lint["doctorLintFindings"] = [changedFinding]
+            advisoryPlugins["doctorLint"] = lint
+            result["postUpdate"] = ["doctor": ["status": "warning", "warnings": ["Secret is stored in plaintext"]],
+                                    "plugins": advisoryPlugins]
+            #expect(!OpenClawUpdateResult.isStructurallyAdvisoryFinalization(result, exitCode: 0))
+        }
+        #expect(!OpenClawUpdateResult.hasOnlyPlaintextSecretAdvisories("malformed"))
+
         var riskyPlugins = plugins
         riskyPlugins["npm"] = ["outcomes": [["pluginId": "codex", "status": "error",
                                              "code": "PLUGIN_CAPABILITY_CONSENT_REQUIRED"]]]

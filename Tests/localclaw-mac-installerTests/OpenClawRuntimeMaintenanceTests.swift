@@ -1179,9 +1179,11 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect((try OpenClawRuntimeInstallation.managed(home: fixture.home))?.version == "2026.9.1")
     }
 
-    @Test func advisoryRepairChecksDoctorMigrationsAndTwoRPCsBeforeActivation() throws {
-        let fixture = try Fixture(schemaMismatch: false, failure: .advisoryWarning,
-                                  installedVersion: "2026.9.6", targetVersion: "2026.9.6")
+    @Test(arguments: [Failure.advisoryWarning, .advisoryLintWarning])
+    func advisoryRepairChecksDoctorMigrationsAndTwoRPCsBeforeActivation(failure: Failure) throws {
+        let version = failure == .advisoryLintWarning ? "2026.9.7" : "2026.9.6"
+        let fixture = try Fixture(schemaMismatch: false, failure: failure,
+                                  installedVersion: version, targetVersion: version)
         defer { fixture.cleanUp() }
 
         let result = fixture.maintenance().repairCurrentVersion()
@@ -1711,7 +1713,7 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(OpenClawUpdateCheckpoint.load(home: fixture.home, runtime: second) != nil)
     }
 
-    enum Failure: String, Sendable { case backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, startSchemaMismatch, pluginWarning, configRemains, registryUnavailable, registryNoSpace, invalidRegistryVersion, newerRegistry, approvalsMigration, unverifiedApprovalsMigration, consent, malformedResult, wrongRepairMode, wrongResultRoot, nonzeroSuccess, restart, agentOwner, unsafeRecovery, safeRollback, detachedHandoff, advisoryWarning, advisoryRisky, advisoryPending, advisoryPendingStuck, advisoryFinalizedUpgrade, incompleteUpgradeReceipt, wrongUpgradeMode, failedUpgradeStep }
+    enum Failure: String, Sendable { case backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, startSchemaMismatch, pluginWarning, configRemains, registryUnavailable, registryNoSpace, invalidRegistryVersion, newerRegistry, approvalsMigration, unverifiedApprovalsMigration, consent, malformedResult, wrongRepairMode, wrongResultRoot, nonzeroSuccess, restart, agentOwner, unsafeRecovery, safeRollback, detachedHandoff, advisoryWarning, advisoryLintWarning, advisoryRisky, advisoryPending, advisoryPendingStuck, advisoryFinalizedUpgrade, incompleteUpgradeReceipt, wrongUpgradeMode, failedUpgradeStep }
 
     private final class Fixture {
         let home: URL
@@ -2030,7 +2032,7 @@ struct OpenClawRuntimeMaintenanceTests {
                         result.removeValue(forKey: "steps")
                         result["restart"] = false
                     }
-                    if let failure, [Failure.advisoryWarning, .advisoryRisky, .advisoryPending, .advisoryPendingStuck,
+                    if let failure, [Failure.advisoryWarning, .advisoryLintWarning, .advisoryRisky, .advisoryPending, .advisoryPendingStuck,
                                      .advisoryFinalizedUpgrade].contains(failure) {
                         result["status"] = "warning"
                         result["phaseTimings"] = [
@@ -2051,6 +2053,11 @@ struct OpenClawRuntimeMaintenanceTests {
                             "doctorLint": ["exitCode": 0, "termination": "exit", "outputLimitExceeded": false,
                                            "doctorLintFindings": []],
                         ]
+                        if failure == .advisoryLintWarning {
+                            plugins["doctorLint"] = ["exitCode": 0, "termination": "exit", "outputLimitExceeded": false,
+                                "doctorLintFindings": [["severity": "warning", "checkId": "core/doctor/security",
+                                                        "requirement": "config.plaintext_secrets"]]]
+                        }
                         if failure == .advisoryRisky {
                             plugins["assessment"] = ["kind": "unsafe", "reason": "capability-consent-required"]
                             plugins["npm"] = ["outcomes": [["pluginId": "codex", "status": "error",
