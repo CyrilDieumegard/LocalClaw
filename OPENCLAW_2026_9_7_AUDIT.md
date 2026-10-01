@@ -231,3 +231,14 @@ les findings inconnus et les permissions manquantes restent bloquants.
 La verification active a aussi signale le consentement du plugin WhatsApp
 2026.5.12 ; cette permission fait l'objet d'une confirmation distincte.
 Le build final sera 390 pour inclure cette correction, avant publication client.
+
+Le build **390**, code `662838b`, a passe le gate complet : 377 tests Swift
+Testing, 15 tests XCTest, probes OpenClaw, controles empaquetes, signature,
+notarisation, stapling et Gatekeeper. La CI GitHub du code a aussi passe.
+Submission Apple : `6a26162e-3f87-488c-8e9b-f2c4ec837d72`, **Accepted**.
+SHA-256 final :
+`9b8662204d7cbf1fe24d772e4334dbf3e77a310d3b50e9a765823a3c0a32a68c`.
+Le publisher a prepare le site avec ce manifeste et ces octets exacts.
+Le resultat public et l'installation seront releves dans
+`dist/release-1.0.210-390/RELEASE.md`. La permission WhatsApp n'est pas acceptee
+sans confirmation explicite pour cette capacite.
