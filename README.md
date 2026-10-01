@@ -42,8 +42,20 @@ swift test
 From 1.0.207, **Updates > App update > Update** downloads the release, checks its
 SHA-256, Apple signature, signing team, bundle identity, exact version/build and
 Gatekeeper assessment, then installs and relaunches LocalClaw automatically.
-**Update all** finishes dependencies and OpenClaw first, then installs the app
-update last. A failed prerequisite stops the operation and reports its cause.
+**Update all** changes only components reported as needing an update: an
+incompatible Node runtime, a newer OpenClaw release, and/or the LocalClaw app.
+Homebrew and LM Studio upgrades remain optional maintenance. The app replacement
+runs last. A failed prerequisite stops the operation and reports its cause.
+
+**Quick Repair** first checks the existing Gateway. A healthy Gateway stays on
+its installed version without a full state backup or core reinstall. Ordinary
+configuration/startup failures use native repair of that version; a confirmed
+state-schema mismatch may require a runtime upgrade. A pending unsafe update
+still requires recovery before Gateway activation.
+
+Subprocess diagnostics drain on a dedicated thread to avoid pipe backpressure
+when worker queues are busy. Timed chat/developer commands use a monotonic
+process deadline, including when a child inherits the output pipe.
 
 The updater runs from `/Applications/LocalClaw.app` or
 `~/Applications/LocalClaw.app` when the account can write to that Applications
@@ -60,15 +72,18 @@ updater. They can use the integrated button for subsequent releases.
 
 ## OpenClaw compatibility
 
-LocalClaw 1.0.207 is checked against the real OpenClaw 2026.9.2 npm package.
+LocalClaw 1.0.210 is checked against the real OpenClaw 2026.9.7 npm package.
 The audit and its validation boundaries are recorded in
-[`OPENCLAW_2026_9_2_AUDIT.md`](OPENCLAW_2026_9_2_AUDIT.md).
+[`OPENCLAW_2026_9_7_AUDIT.md`](OPENCLAW_2026_9_7_AUDIT.md).
 LocalClaw recognizes 2026.7.1 and
 2026.8.1 as existing-user migration sources and never treats an older runtime
 as the successful end state of an automatic update.
 Update LocalClaw first, then use Updates to upgrade OpenClaw. The one-time
 pre-8.1 to 8.1 migration and exceptional schema/configuration recovery create a
 verified state backup under `~/Library/Application Support/LocalClaw/runtime-backups/`.
+The 2026.9.6 and 2026.9.7 schema transitions also require a full verified
+backup before the candidate can migrate databases. Failure to create that
+backup leaves the installed core and Gateway untouched.
 Routine same-schema OpenClaw 2.0 updates, including 2026.9.2, do not duplicate
 that full archive; they use LocalClaw's small config snapshot and OpenClaw's
 native update safeguards. The normal portable backup excludes project workspaces.
@@ -248,13 +263,17 @@ node scripts/test-openclaw-update-owner.mjs /path/to/new/node_modules/openclaw -
 
 The legacy migration fixture starts from 2026.8.1 because the restricted
 execution-approvals adapter intentionally supports only that release. All
-successful current end-state and turn checks target OpenClaw 2026.8.2,
+successful current end-state and turn checks target OpenClaw 2026.9.6,
 use a deterministic localhost model and temporary HOME, and create a real file
 through OpenClaw's write tool. They do not use customer accounts or paid models.
 The migration check may resolve official plugins from the network. These checks
 do not replace manual validation of provider logins, external channels, or billing.
 The update-owner check is a dry-run of the real updater with a test-only OS
-account fixture. It checks install targeting, not a live customer migration.
+account fixture. OpenClaw 2026.9.6 binds a staged updater to its own package
+and proposes rebinding a different Gateway to it. LocalClaw rejects that
+cross-installation plan before changing a package or service; an older core
+with invalid configuration needs supervised package-manager recovery. This
+check does not prove a live customer migration.
 The legacy-config turn check runs the real Doctor with both native service
 mutation gates disabled, validates the migrated config, then starts only a
 temporary Gateway and verifies a tool turn. It preserves and checks the fixture's

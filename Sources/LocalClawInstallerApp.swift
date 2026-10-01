@@ -7,7 +7,7 @@ import WebKit
 
 @MainActor
 final class InstallerViewModel: ObservableObject {
-    enum Screen { case license, onboarding, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, agents, cronJobs, kanban, healthCenter, usageCenter, chat, goals, models, skills, developer }
+    enum Screen { case license, onboarding, home, options, install, ready, updates, controlCenter, commandCenter, uninstallCenter, channelSetup, agents, cronJobs, kanban, healthCenter, usageCenter, chat, routedChat, goals, models, skills, developer }
     enum InstallMode: String {
         case llmOnly = "Install Local LLM only"
         case openClawOnly = "Install OpenClaw only"
@@ -114,6 +114,9 @@ final class InstallerViewModel: ObservableObject {
         var projectID: String?
         var messages: [ChatMessage]
         var updatedAt: Date
+        // Missing on saved discussions created before compact runtime IDs.
+        // Keep their original OpenClaw session keys so their context remains reachable.
+        var runtimeSessionKeyVersion: Int? = nil
 
         static func fresh(title: String = "New discussion") -> ChatSession {
             ChatSession(
@@ -122,7 +125,8 @@ final class InstallerViewModel: ObservableObject {
                 subtitle: "OpenClaw assistant",
                 projectID: nil,
                 messages: [ChatMessage(role: "assistant", text: "Hi, I’m OpenClaw inside LocalClaw. Ask me anything about your setup.")],
-                updatedAt: Date()
+                updatedAt: Date(),
+                runtimeSessionKeyVersion: 2
             )
         }
 
@@ -133,7 +137,8 @@ final class InstallerViewModel: ObservableObject {
                 subtitle: "AI Developer",
                 projectID: nil,
                 messages: [],
-                updatedAt: Date()
+                updatedAt: Date(),
+                runtimeSessionKeyVersion: 2
             )
         }
     }
@@ -1082,6 +1087,7 @@ final class InstallerViewModel: ObservableObject {
     @Published var downloadProgress: Double = 0
     @Published var currentDownloadFile: String = ""
     @Published var isRunning = false
+    private var versionRefreshGeneration = 0
 
     @Published var chatInput = ""
     @Published var chatImagePath = ""
@@ -3433,7 +3439,15 @@ final class InstallerViewModel: ObservableObject {
 
         Task.detached {
             let engine = InstallerEngine()
-            let (code, output) = engine.shell("openclaw --no-color skills list --json 2>&1")
+            guard let agentID = engine.resolvedChatAgentID() else {
+                await MainActor.run {
+                    self.skillsIsLoading = false
+                    self.skillsStatus = "Unable to load skills"
+                    self.skillsLog = "Select a valid OpenClaw system agent for this profile before listing skills."
+                }
+                return
+            }
+            let (code, output) = engine.shell(Self.skillsListCommand(agentID: agentID))
 
             await MainActor.run {
                 self.skillsIsLoading = false
@@ -3496,11 +3510,17 @@ final class InstallerViewModel: ObservableObject {
         installingSkillName = slug
         skillsStatus = "Installing \(slug)..."
         skillsLog = "Running openclaw skills install \(slug)"
-        let safeSlug = shellSingleQuote(slug)
-
         Task.detached {
             let engine = InstallerEngine()
-            let (code, output) = engine.shell("openclaw --no-color skills install \(safeSlug) 2>&1")
+            guard let agentID = engine.resolvedChatAgentID() else {
+                await MainActor.run {
+                    self.installingSkillName = ""
+                    self.skillsStatus = "Install failed for \(slug)"
+                    self.skillsLog = "Select a valid OpenClaw system agent for this profile before installing skills."
+                }
+                return
+            }
+            let (code, output) = engine.shell(Self.skillsInstallCommand(slug: slug, agentID: agentID))
 
             await MainActor.run {
                 self.installingSkillName = ""
@@ -4002,29 +4022,37 @@ final class InstallerViewModel: ObservableObject {
     }
 
     func refreshVersions() {
-        let info = engine.openClawVersionInfo()
-        openclawInstalledVersion = info.installed
-        openclawLatestVersion = info.latest
-        selectedChatModel = OpenClawCompatibility.modelID(selectedChatModel, version: info.installed)
-        currentModel = OpenClawCompatibility.modelID(currentModel, version: info.installed)
-
-        if info.installed == "Not installed" {
-            openclawUpdateStatus = "Not installed"
-        } else if info.latest == "Unknown" {
-            openclawUpdateStatus = "Unknown"
-        } else {
-            openclawUpdateStatus = info.updateAvailable ? "Needs update" : "Up to date"
-        }
-
-        brewVersion = engine.installedVersion(for: "brew")
-        nodeVersion = engine.installedVersion(for: "node")
-        lmStudioVersion = engine.installedLMStudioVersion()
-
-        brewUpToDate = brewVersion != "Not installed"
-        nodeUpToDate = InstallerEngine.isNodeVersionSupported(nodeVersion)
-        lmStudioUpToDate = lmStudioVersion != "Not installed"
-
+        versionRefreshGeneration += 1
+        let generation = versionRefreshGeneration
+        let engine = self.engine
+        openclawUpdateStatus = "Checking..."
         refreshInstallerManifest()
+        Task.detached(priority: .utility) {
+            let info = engine.openClawVersionInfo()
+            let brew = engine.installedVersion(for: "brew")
+            let node = engine.installedVersion(for: "node")
+            let lmStudio = engine.installedLMStudioVersion()
+            await MainActor.run {
+                guard generation == self.versionRefreshGeneration else { return }
+                self.openclawInstalledVersion = info.installed
+                self.openclawLatestVersion = info.latest
+                self.selectedChatModel = OpenClawCompatibility.modelID(self.selectedChatModel, version: info.installed)
+                self.currentModel = OpenClawCompatibility.modelID(self.currentModel, version: info.installed)
+                if info.installed == "Not installed" {
+                    self.openclawUpdateStatus = "Not installed"
+                } else if info.latest == "Unknown" {
+                    self.openclawUpdateStatus = "Unknown"
+                } else {
+                    self.openclawUpdateStatus = info.updateAvailable ? "Needs update" : "Up to date"
+                }
+                self.brewVersion = brew
+                self.nodeVersion = node
+                self.lmStudioVersion = lmStudio
+                self.brewUpToDate = brew != "Not installed"
+                self.nodeUpToDate = InstallerEngine.isNodeVersionSupported(node)
+                self.lmStudioUpToDate = lmStudio != "Not installed"
+            }
+        }
     }
 
     private func compareVersion(_ lhs: String, _ rhs: String) -> Int {
@@ -4086,6 +4114,14 @@ final class InstallerViewModel: ObservableObject {
 
     nonisolated static func shellSingleQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+    }
+
+    nonisolated static func skillsListCommand(agentID: String) -> String {
+        "openclaw --no-color skills list --json --agent \(shellSingleQuote(agentID)) 2>&1"
+    }
+
+    nonisolated static func skillsInstallCommand(slug: String, agentID: String) -> String {
+        "openclaw --no-color skills install \(shellSingleQuote(slug)) --agent \(shellSingleQuote(agentID)) 2>&1"
     }
 
     private func shellSingleQuote(_ value: String) -> String {
@@ -4249,26 +4285,45 @@ final class InstallerViewModel: ObservableObject {
         }
     }
 
+    var hasAvailableUpdates: Bool {
+        installerUpdateStatus == "Update available" || openclawUpdateStatus == "Needs update" ||
+            (nodeVersion != "Checking..." && !nodeUpToDate)
+    }
+
+    var isCheckingUpdates: Bool {
+        installerUpdateStatus == "Checking..." || openclawUpdateStatus == "Checking..." || nodeVersion == "Checking..."
+    }
+
     func updateAll() {
         if modelSwitchIsBlocked { return }
+        if isCheckingUpdates { return }
         let appRelease = installerUpdateStatus == "Update available" ? pendingInstallerRelease : nil
-        guard createRecoveryPoint(reason: "Before full update") != nil else {
-            append("Update stopped: a configuration recovery point could not be created. \(recoveryStatus)")
+        let updateNode = nodeVersion != "Checking..." && !nodeUpToDate
+        let updateOpenClaw = openclawUpdateStatus == "Needs update"
+        guard updateNode || updateOpenClaw || appRelease != nil else {
+            append("No verified update is pending. Click CHECK to refresh available versions.")
             return
         }
+        if updateNode || updateOpenClaw {
+            guard createRecoveryPoint(reason: "Before runtime update") != nil else {
+                append("Update stopped: a configuration recovery point could not be created. \(recoveryStatus)")
+                return
+            }
+        }
         isRunning = true
-        append("Updating dependencies and OpenClaw. If an app update is available, LocalClaw will install it and relaunch last.")
+        append("Updating only components marked as needing an update. Optional Homebrew and LM Studio maintenance is in Dependencies.")
         let engine = self.engine
         Task.detached {
             await OpenClawGoalBridge.shared.invalidateRuntime()
-            let operations: [(String, @Sendable () -> StepResult)] = [
-                ("Homebrew", { engine.updateHomebrew() }),
-                ("LM Studio", { engine.upgradeLMStudioIfInstalled() }),
-                ("Node", { engine.upgradeNodeIfInstalled() }),
-                ("OpenClaw", { engine.updateOpenClawIfInstalled { message in
+            var operations: [(String, @Sendable () -> StepResult)] = []
+            if updateNode {
+                operations.append(("Node", { engine.upgradeNodeIfInstalled() }))
+            }
+            if updateOpenClaw {
+                operations.append(("OpenClaw", { engine.updateOpenClawIfInstalled { message in
                     Task { @MainActor in self.append(message) }
-                } })
-            ]
+                } }))
+            }
             for (name, operation) in operations {
                 let result = await self.runStep(name: name, action: operation)
                 if result.state == .fail {
@@ -4291,12 +4346,12 @@ final class InstallerViewModel: ObservableObject {
                 // The initial manifest request may have completed while runtime
                 // updates were running. Include that app release in this click.
                 if let appRelease = appRelease ?? (self.installerUpdateStatus == "Update available" ? self.pendingInstallerRelease : nil) {
-                    self.append("Dependencies and OpenClaw finished. Installing the LocalClaw app update...")
+                    self.append("Runtime updates finished. Installing the LocalClaw app update...")
                     self.startInstallerUpdate(release: appRelease)
                 } else {
                     let appCheckWasCurrent = self.installerUpdateStatus == "Up to date"
                     self.refreshVersions()
-                    self.append(appCheckWasCurrent ? "Update finished" : "Dependencies and OpenClaw finished. The app release check is not complete; use CHECK to retry.")
+                    self.append(appCheckWasCurrent ? "Update finished" : "Runtime updates finished. The app release check is not complete; use CHECK to retry.")
                 }
             }
         }
@@ -6655,7 +6710,7 @@ final class InstallerViewModel: ObservableObject {
         let engine = self.engine
         Task.detached {
             await OpenClawGoalBridge.shared.invalidateRuntime()
-            let repair = engine.finalizeOpenClawRuntime()
+            let repair = engine.quickRepairOpenClawGateway()
             await OpenClawGoalBridge.shared.invalidateRuntime()
             await MainActor.run {
                 self.isRunning = false
@@ -8757,6 +8812,7 @@ final class InstallerViewModel: ObservableObject {
         }
         let developerWorkdir = developerProjectPath
         let useFreshDeveloperContext = useDeveloperSession && developerFreshContextEnabled
+        let runtimeSessionKeyVersion = chatSessions.first(where: { $0.id == sessionID })?.runtimeSessionKeyVersion ?? 1
         let isSimpleDeveloperEdit = useDeveloperSession && text.utf8.count < 4_096 && Self.isSimpleDeveloperEdit(text)
         let agentThinking = Self.agentThinkingLevel(
             for: modelOverride,
@@ -8850,7 +8906,8 @@ final class InstallerViewModel: ObservableObject {
                 base: sessionID,
                 modelID: modelOverride,
                 useDeveloperSession: useDeveloperSession,
-                freshTurnID: runtimeTurnID
+                freshTurnID: runtimeTurnID,
+                keyVersion: runtimeSessionKeyVersion
             )
             let startedAt = Date()
             await MainActor.run {
@@ -9621,10 +9678,20 @@ final class InstallerViewModel: ObservableObject {
         return trimmed
     }
 
-    nonisolated static func runtimeSessionID(base: String, modelID: String, useDeveloperSession: Bool, freshTurnID: String? = nil) -> String {
+    nonisolated static func runtimeSessionID(base: String, modelID: String, useDeveloperSession: Bool,
+                                             freshTurnID: String? = nil, keyVersion: Int = 1) -> String {
         if !useDeveloperSession {
             guard let freshTurnID, !freshTurnID.isEmpty else { return base }
             return "\(base)-turn-\(freshTurnID)"
+        }
+        if keyVersion >= 2 {
+            // OpenClaw archives a session by combining its key and transcript
+            // filename in one filesystem component. Hash the full model and
+            // optional turn scope so that component stays well below NAME_MAX.
+            let material = ["localclaw-developer-session-v2", base, modelID, freshTurnID ?? ""]
+                .joined(separator: "\u{0}")
+            let digest = SHA256.hash(data: Data(material.utf8))
+            return "lcd2-" + digest.prefix(16).map { String(format: "%02x", $0) }.joined()
         }
         let cleanModel = modelID
             .lowercased()
@@ -10622,44 +10689,14 @@ final class InstallerViewModel: ObservableObject {
             return (1, "Failed command: \(command)\n\(error.localizedDescription)")
         }
 
-        let timeoutLock = NSLock()
-        var timedOut = false
-        let timer: DispatchSourceTimer?
-        if let timeoutSeconds, timeoutSeconds > 0 {
-            let source = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-            source.schedule(deadline: .now() + .seconds(timeoutSeconds))
-            source.setEventHandler {
-                timeoutLock.lock()
-                timedOut = true
-                timeoutLock.unlock()
-                if process.isRunning {
-                    process.terminate()
-                    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
-                        if process.isRunning {
-                            _ = try? Process.run(URL(fileURLWithPath: "/bin/kill"), arguments: ["-9", "\(process.processIdentifier)"])
-                        }
-                    }
-                }
-            }
-            source.resume()
-            timer = source
-        } else {
-            timer = nil
-        }
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        timer?.cancel()
-        let output = String(data: data, encoding: .utf8) ?? ""
-        timeoutLock.lock()
-        let didTimeout = timedOut
-        timeoutLock.unlock()
+        let result = BoundedProcessRunner.collect(process, pipe: pipe, timeoutSeconds: timeoutSeconds)
+        let output = String(data: result.output, encoding: .utf8) ?? ""
         let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        if didTimeout {
+        if result.timedOut {
             let suffix = "LocalClaw stopped this developer request after \(timeoutSeconds ?? 0)s because it exceeded the time budget. OpenClaw itself may still be running; check Gateway status before restarting."
             return (124, trimmed.isEmpty ? suffix : "\(trimmed)\n\n\(suffix)")
         }
-        return (process.terminationStatus, trimmed)
+        return (result.exitCode, trimmed)
     }
 
     nonisolated static func writePromptParts(_ parts: [String], toPath path: String) throws {
@@ -11019,7 +11056,7 @@ final class InstallerViewModel: ObservableObject {
         return nil
     }
 
-    nonisolated private static func extractAgentReply(from raw: String) -> String {
+    nonisolated static func extractAgentReply(from raw: String) -> String {
         let clean = stripANSI(raw)
         guard let data = clean.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -11074,7 +11111,7 @@ final class InstallerViewModel: ObservableObject {
         return parts.joined(separator: " • ")
     }
 
-    nonisolated private static func extractAgentUsage(from raw: String) -> (input: Int?, output: Int?, total: Int?) {
+    nonisolated static func extractAgentUsage(from raw: String) -> (input: Int?, output: Int?, total: Int?) {
         let clean = stripANSI(raw)
 
         func regexNumber(_ pattern: String) -> Int? {
@@ -11120,7 +11157,7 @@ final class InstallerViewModel: ObservableObject {
         return (input, output, total)
     }
 
-    nonisolated private static func extractAgentRuntimeModel(from raw: String) -> String? {
+    nonisolated static func extractAgentRuntimeModel(from raw: String) -> String? {
         let clean = stripANSI(raw)
         guard let data = clean.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -11409,13 +11446,13 @@ final class InstallerViewModel: ObservableObject {
         
         echo ""
         echo "[3/6] Installing Node.js..."
-        if command -v node &>/dev/null && node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); const ok = (major === 22 && (minor > 22 || (minor === 22 && patch >= 3))) || (major === 24 && minor >= 15) || (major === 25 && minor >= 9) || major >= 26; process.exit(ok ? 0 : 1)' &>/dev/null; then
+        if command -v node &>/dev/null && node -e 'const [major, minor] = process.versions.node.split(".").map(Number); const ok = (major === 24 && minor >= 16) || (major === 26 && minor >= 1) || major >= 27; process.exit(ok ? 0 : 1)' &>/dev/null; then
             echo "  ✓ Node $(node --version) ready"
         else
             echo "  → Installing/upgrading a supported Node.js version..."
             brew upgrade node || brew install node
-            if ! command -v node &>/dev/null || ! node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); const ok = (major === 22 && (minor > 22 || (minor === 22 && patch >= 3))) || (major === 24 && minor >= 15) || (major === 25 && minor >= 9) || major >= 26; process.exit(ok ? 0 : 1)' &>/dev/null; then
-                echo "  ✗ OpenClaw requires Node 22.22.3+, 24.15+, 25.9+, or 26+"
+            if ! command -v node &>/dev/null || ! node -e 'const [major, minor] = process.versions.node.split(".").map(Number); const ok = (major === 24 && minor >= 16) || (major === 26 && minor >= 1) || major >= 27; process.exit(ok ? 0 : 1)' &>/dev/null; then
+                echo "  ✗ OpenClaw requires Node 24.16.x or 26.1+"
                 exit 1
             fi
         fi
@@ -11628,14 +11665,14 @@ final class InstallerViewModel: ObservableObject {
         lines.append("")
         lines.append("echo \"\"")
         lines.append("echo \"[4/7] Installing Node.js...\"")
-        lines.append("if command -v node &>/dev/null && node -e 'const [major, minor, patch] = process.versions.node.split(\".\").map(Number); const ok = (major === 22 && (minor > 22 || (minor === 22 && patch >= 3))) || (major === 24 && minor >= 15) || (major === 25 && minor >= 9) || major >= 26; process.exit(ok ? 0 : 1)' &>/dev/null; then")
+        lines.append("if command -v node &>/dev/null && node -e 'const [major, minor] = process.versions.node.split(\".\").map(Number); const ok = (major === 24 && minor >= 16) || (major === 26 && minor >= 1) || major >= 27; process.exit(ok ? 0 : 1)' &>/dev/null; then")
         lines.append("    echo \"  ✓ Node $(node --version) ready\"")
         lines.append("    echo \"node:OK\" >> /tmp/localclaw_status")
         lines.append("else")
         lines.append("    echo \"  → Installing/upgrading a supported Node.js version...\"")
         lines.append("    brew upgrade node || brew install node")
-        lines.append("    if ! command -v node &>/dev/null || ! node -e 'const [major, minor, patch] = process.versions.node.split(\".\").map(Number); const ok = (major === 22 && (minor > 22 || (minor === 22 && patch >= 3))) || (major === 24 && minor >= 15) || (major === 25 && minor >= 9) || major >= 26; process.exit(ok ? 0 : 1)' &>/dev/null; then")
-        lines.append("        echo \"  ✗ OpenClaw requires Node 22.22.3+, 24.15+, 25.9+, or 26+\"")
+        lines.append("    if ! command -v node &>/dev/null || ! node -e 'const [major, minor] = process.versions.node.split(\".\").map(Number); const ok = (major === 24 && minor >= 16) || (major === 26 && minor >= 1) || major >= 27; process.exit(ok ? 0 : 1)' &>/dev/null; then")
+        lines.append("        echo \"  ✗ OpenClaw requires Node 24.16.x or 26.1+\"")
         lines.append("        echo \"node:FAIL\" >> /tmp/localclaw_status")
         lines.append("        exit 1")
         lines.append("    fi")
@@ -12821,6 +12858,7 @@ struct ProgressSteps: View {
         case .healthCenter: return 0
         case .usageCenter: return 0
         case .chat: return 0
+        case .routedChat: return 0
         case .goals: return 0
         case .models: return 0
         case .skills: return 0
@@ -12944,6 +12982,7 @@ struct ContentView: View {
                             case .healthCenter: healthCenter
                             case .usageCenter: usageCenter
                             case .chat: openClawChat
+                            case .routedChat: RoutedChatView()
                             case .goals: GoalCenterView(vm: vm, goal: goalCenter)
                             case .models: modelsCenter
                             case .skills: skillsCenter
@@ -13217,6 +13256,7 @@ struct ContentView: View {
 
                     sidebarSectionLabel("Work")
                     sidebarButton("OpenClaw Chat", icon: "message.badge.waveform", isActive: vm.screen == .chat) { vm.screen = .chat }
+                    sidebarButton("Routed Chat · BETA", icon: "point.3.connected.trianglepath.dotted", isActive: vm.screen == .routedChat) { vm.screen = .routedChat }
                     sidebarButton("Goals", icon: "target", isActive: vm.screen == .goals) { vm.screen = .goals }
                     sidebarButton("Developer", icon: "curlybraces.square", isActive: vm.screen == .developer) { vm.screen = .developer }
 
@@ -17285,21 +17325,21 @@ struct ContentView: View {
                 updateGroupsPanel
 
                 VStack(spacing: 8) {
-                    versionRow("OpenClaw", vm.openclawInstalledVersion, vm.openclawLatestVersion, isUpToDate: vm.openclawUpdateStatus == "Up to date")
-                    versionRow("Homebrew", vm.brewVersion, "latest via brew update", isUpToDate: vm.brewUpToDate)
-                    versionRow("Node", vm.nodeVersion, "22.22.3+, 24.15+, 25.9+, or 26+", isUpToDate: vm.nodeUpToDate)
-                    versionRow("LM Studio", vm.lmStudioVersion, "latest via brew cask", isUpToDate: vm.lmStudioUpToDate)
-                    versionRow("LocalClaw", "\(vm.installerCurrentVersion) (build \(vm.installerBuildNumber))", vm.installerLatestBuild.isEmpty ? vm.installerLatestVersion : "\(vm.installerLatestVersion) (build \(vm.installerLatestBuild))", isUpToDate: vm.installerUpdateStatus == "Up to date")
+                    versionRow("OpenClaw", vm.openclawInstalledVersion, vm.openclawLatestVersion, isUpToDate: vm.openclawUpdateStatus == "Up to date", installedLabel: vm.openclawUpdateStatus)
+                    versionRow("Homebrew", vm.brewVersion, "Optional maintenance", isUpToDate: vm.brewUpToDate, installedLabel: "Installed")
+                    versionRow("Node", vm.nodeVersion, InstallerEngine.nodeRequirementDescription, isUpToDate: vm.nodeUpToDate, installedLabel: vm.nodeUpToDate ? "Compatible" : nil)
+                    versionRow("LM Studio", vm.lmStudioVersion, "Optional Homebrew cask update", isUpToDate: vm.lmStudioUpToDate, installedLabel: "Installed")
+                    versionRow("LocalClaw", "\(vm.installerCurrentVersion) (build \(vm.installerBuildNumber))", vm.installerLatestBuild.isEmpty ? vm.installerLatestVersion : "\(vm.installerLatestVersion) (build \(vm.installerLatestBuild))", isUpToDate: vm.installerUpdateStatus == "Up to date", installedLabel: vm.installerUpdateStatus)
                 }
 
                 updateChangePlanPanel
 
                 HStack(spacing: 10) {
-                    Button(vm.isRunning ? "UPDATING..." : "UPDATE ALL") { vm.updateAll() }
+                    Button(vm.isRunning ? "UPDATING..." : "UPDATE AVAILABLE") { vm.updateAll() }
                         .buttonStyle(CTAButton(primary: true))
-                        .disabled(vm.modelSwitchIsBlocked)
+                        .disabled(vm.modelSwitchIsBlocked || vm.isCheckingUpdates || !vm.hasAvailableUpdates)
                     Button("CHECK") { vm.refreshVersions() }.buttonStyle(CTAButton(primary: false))
-                        .disabled(vm.modelSwitchIsBlocked)
+                        .disabled(vm.modelSwitchIsBlocked || vm.isCheckingUpdates)
                     Button("BACK") { vm.screen = .home }.buttonStyle(CTAButton(primary: false))
                 }
 
@@ -17312,7 +17352,7 @@ struct ContentView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         VStack(alignment: .leading, spacing: 0) {
-                            Text(vm.logs.isEmpty ? "No update run yet. Click CHECK or UPDATE ALL." : vm.logs)
+                            Text(vm.logs.isEmpty ? "No update run yet. Click CHECK or UPDATE AVAILABLE." : vm.logs)
                                 .font(.system(size: 12, design: .monospaced))
                                 .foregroundStyle(UI.text)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -17384,11 +17424,12 @@ struct ContentView: View {
                 primary: vm.openclawUpdateStatus == "Needs update"
             ) { vm.updateOpenClawRuntime() }
             updateGroupCard(
-                title: "Dependencies",
-                detail: "Homebrew, Node, LM Studio.",
+                title: "Optional maintenance",
+                detail: "Manual Homebrew, Node and LM Studio updates; this may take time.",
                 status: updateDependenciesStatus,
                 icon: "shippingbox.fill",
-                primary: false
+                primary: false,
+                actionLabel: "Maintain"
             ) { vm.updateDependenciesOnly() }
         }
     }
@@ -17426,11 +17467,11 @@ struct ContentView: View {
                 )
             }
 
-            if missingDependencyNames.isEmpty == false {
+            if !vm.nodeUpToDate && vm.nodeVersion != "Checking..." {
                 compactUpdatePlanRow(
-                    title: "Dependencies",
-                    detail: missingDependencyNames.joined(separator: ", "),
-                    status: "Needs install",
+                    title: "Node",
+                    detail: "OpenClaw needs a compatible Node runtime",
+                    status: "Will update",
                     tint: Color(NSColor.systemOrange)
                 )
             }
@@ -17482,23 +17523,22 @@ struct ContentView: View {
         return "\(installed)/3 installed"
     }
 
-    private var missingDependencyNames: [String] {
-        [
-            vm.brewVersion == "Not installed" ? "Homebrew" : nil,
-            vm.nodeVersion == "Not installed" ? "Node" : nil,
-            vm.lmStudioVersion == "Not installed" ? "LM Studio" : nil
-        ].compactMap { $0 }
-    }
-
     private var updateSummaryStatus: String {
-        if vm.installerUpdateStatus == "Update available" || vm.openclawUpdateStatus == "Needs update" || missingDependencyNames.isEmpty == false {
+        if vm.isRunning { return "Updating..." }
+        if vm.isCheckingUpdates { return "Checking..." }
+        if vm.hasAvailableUpdates {
             return "Changes pending"
+        }
+        if vm.openclawUpdateStatus == "Unknown" || vm.installerUpdateStatus.hasPrefix("Manifest ") ||
+            vm.installerUpdateStatus == "Update failed" || vm.installerUpdateStatus == "Update blocked" {
+            return "Status unverified"
         }
         return "No changes"
     }
 
     private var updateSummaryTint: Color {
-        updateSummaryStatus == "No changes" ? Color(NSColor.systemGreen) : UI.accent
+        updateSummaryStatus == "No changes" ? Color(NSColor.systemGreen) :
+            (["Updating...", "Checking...", "Status unverified"].contains(updateSummaryStatus) ? UI.muted : UI.accent)
     }
 
     private func updateSafetyRow(_ title: String, ok: Bool, detail: String) -> some View {
@@ -17520,7 +17560,7 @@ struct ContentView: View {
         .background(RoundedRectangle(cornerRadius: 9).fill(UI.card))
     }
 
-    private func updateGroupCard(title: String, detail: String, status: String, icon: String, primary: Bool, action: @escaping () -> Void) -> some View {
+    private func updateGroupCard(title: String, detail: String, status: String, icon: String, primary: Bool, actionLabel: String? = nil, action: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
                 Image(systemName: icon)
@@ -17540,9 +17580,9 @@ struct ContentView: View {
                 .foregroundStyle(UI.muted)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
-            Button(primary ? "Update" : "Run") { action() }
+            Button(actionLabel ?? (primary ? "Update" : "Run")) { action() }
                 .buttonStyle(CTAButton(primary: primary))
-                .disabled(vm.modelSwitchIsBlocked || status == "Up to date")
+                .disabled(vm.modelSwitchIsBlocked || vm.isCheckingUpdates || status == "Up to date")
         }
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
@@ -20364,6 +20404,7 @@ struct ContentView: View {
                 modelsHeader
                 modelsSummaryRow
                 modelsConfigAndEstimator
+                decisionModelsGuide
                 modelsHealthAndRecommendations
                 modelsInventoryPanel
             }
@@ -20412,6 +20453,87 @@ struct ContentView: View {
             configuredModelsCard
             currentModelCard
         }
+    }
+
+    var decisionModelsGuide: some View {
+        let supported = (InstallerEngine.compareVersion(vm.openclawInstalledVersion, "2026.9.6") ?? -1) >= 0
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Decision models").font(AppFont.bodySemi(16)).foregroundStyle(UI.text)
+                Text("OpenClaw 2026.9.6+")
+                    .font(AppFont.bodySemi(10))
+                    .foregroundStyle(UI.accent)
+                Spacer()
+                Link("How it works", destination: URL(string: "https://docs.openclaw.ai/concepts/decision-models")!)
+                    .font(AppFont.bodySemi(11))
+            }
+
+            Text("A Decision model evaluates supplied evidence against a rubric and returns a choice, score, or yes/no probability. For example, it can classify a support request as billing or technical.")
+                .font(AppFont.body(12))
+                .foregroundStyle(UI.muted)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Can a Decision model choose the chat model for each prompt?")
+                    .font(AppFont.bodySemi(13))
+                    .foregroundStyle(UI.text)
+                Text("OpenClaw does not do this automatically. LocalClaw's separate Routed Chat beta calls a small ONNX Decision model on this Mac, applies a conservative local routing policy, and requests the chosen chat model for each turn. Your normal Fast, Deep, Local, and Cloud modes remain direct user choices.")
+                    .font(AppFont.body(11))
+                    .foregroundStyle(UI.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Try Routed Chat · BETA") { vm.screen = .routedChat }
+                    .buttonStyle(CTAButton(primary: false))
+            }
+            .padding(11)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
+
+            HStack(alignment: .top, spacing: 10) {
+                decisionSetupStep("1", title: "Update OpenClaw", detail: supported ? "Installed: \(vm.openclawInstalledVersion). This version supports Decision plugins." : "Installed: \(vm.openclawInstalledVersion). Version 2026.9.6 or newer is required.") {
+                    Button("Open Updates") { vm.screen = .updates }
+                        .buttonStyle(CTAButton(primary: false))
+                }
+                decisionSetupStep("2", title: "Choose where it runs", detail: "ONNX runs on this Mac. Jev uses TypeSafe's hosted, billed API. Kev needs a local server.") {
+                    HStack(spacing: 8) {
+                        Link("ONNX guide", destination: URL(string: "https://docs.openclaw.ai/plugins/onnx")!)
+                        Link("TypeSafe / Kev guide", destination: URL(string: "https://docs.openclaw.ai/plugins/typesafe")!)
+                    }
+                    .font(AppFont.bodySemi(11))
+                }
+                decisionSetupStep("3", title: "Enable and select", detail: "For general OpenClaw use, follow the provider guide and its separate Decision picker. Routed Chat's Set up button prepares its own local role without changing your default choice.") {
+                    Button("Open OpenClaw") { vm.openDashboard() }
+                        .buttonStyle(CTAButton(primary: false))
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(UI.cardSoft))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(UI.lineSoft, lineWidth: 1))
+    }
+
+    private func decisionSetupStep<Actions: View>(_ number: String, title: String, detail: String, @ViewBuilder actions: () -> Actions) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Text(number)
+                    .font(AppFont.bodySemi(11))
+                    .foregroundStyle(UI.accent)
+                    .frame(width: 22, height: 22)
+                    .background(Circle().fill(UI.cardSoft))
+                Text(title).font(AppFont.bodySemi(12)).foregroundStyle(UI.text)
+            }
+            Text(detail)
+                .font(AppFont.body(11))
+                .foregroundStyle(UI.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            actions()
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, minHeight: 130, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(UI.card))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UI.lineSoft, lineWidth: 1))
     }
 
     var configuredModelsCard: some View {
@@ -21557,13 +21679,15 @@ struct ContentView: View {
         .background(RoundedRectangle(cornerRadius: 8).fill(UI.cardSoft))
     }
 
-    func versionRow(_ name: String, _ installed: String, _ latest: String, isUpToDate: Bool?) -> some View {
+    func versionRow(_ name: String, _ installed: String, _ latest: String, isUpToDate: Bool?, installedLabel: String? = nil) -> some View {
         // Bug 8: Don't show green check for components that are not installed
         let actuallyInstalled = installed != "Not installed" && installed != "Checking..."
         let showGreen = actuallyInstalled && (isUpToDate == true)
-        let statusIcon = showGreen ? "checkmark.circle.fill" : (actuallyInstalled ? "arrow.up.circle" : "xmark.circle")
-        let statusColor: Color = showGreen ? Color(NSColor.systemGreen) : (actuallyInstalled ? Color(NSColor.systemOrange) : UI.muted.opacity(0.45))
-        let statusLabel = !actuallyInstalled ? "Not installed" : (showGreen ? "Up to date" : "Needs update")
+        let checking = installedLabel == "Checking..."
+        let statusUnverified = installedLabel == "Unknown" || installedLabel?.hasPrefix("Manifest ") == true
+        let statusIcon = checking ? "arrow.clockwise" : (statusUnverified ? "questionmark.circle" : (showGreen ? "checkmark.circle.fill" : (actuallyInstalled ? "arrow.up.circle" : "xmark.circle")))
+        let statusColor: Color = checking || statusUnverified ? UI.muted : (showGreen ? Color(NSColor.systemGreen) : (actuallyInstalled ? Color(NSColor.systemOrange) : UI.muted.opacity(0.45)))
+        let statusLabel = checking ? "Checking..." : (!actuallyInstalled ? "Not installed" : (installedLabel ?? (showGreen ? "Up to date" : "Needs update")))
 
         return HStack(alignment: .firstTextBaseline) {
             Text(name)

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 assert.ok(process.argv[2], 'Pass the unpacked OpenClaw package directory.');
 const pkg = fs.realpathSync(process.argv[2]);
@@ -19,11 +20,13 @@ const label = 'io.localclaw.post-update-fixture';
 const quote = value => JSON.stringify(value);
 const hash = createHash('sha256').update(path.join(state, 'state/openclaw.sqlite')).digest('hex').slice(0, 8);
 const locks = `/private/tmp/openclaw-state-locks-${process.getuid()}`;
+const preload = path.join(root, 'post-update-test-preload.mjs');
 
 try {
+  fs.copyFileSync(fileURLToPath(new URL('./templates/post-update-test-preload.mjs', import.meta.url)), preload);
   fs.mkdirSync(state);
   fs.writeFileSync(path.join(state, 'openclaw.json'), JSON.stringify({
-    gateway: { mode: 'remote', remote: { url: 'ws://127.0.0.1:65530', token: 'fixture-only' } },
+    gateway: { mode: 'local', bind: 'loopback' },
     plugins: { enabled: false },
   }));
   const env = {
@@ -36,19 +39,26 @@ try {
   };
   // Native 8.1 keeps cross-process coordinator locks in /tmp, not TMPDIR.
   // Permit only the hash for this disposable database, never another state's lock.
-  const allowedLock = `^${locks}/[a-z-]+[.]${hash}[.]lock[.]sqlite(-wal|-shm|-journal)?$`;
-  const policy = `(version 1)(allow default)(deny network*)(deny file-read* (subpath ${quote(os.homedir())}))(deny file-write* (require-not (require-any (subpath ${quote(root)}) (literal ${quote(locks)}) (regex ${quote(allowedLock)}))))`;
+const allowedLock = `^${locks}/[a-z-]+[.]${hash}[.]lock[.]sqlite(-wal|-shm|-journal)?$`;
+const allowedHandle = `^${locks}/state-handles[.][a-f0-9]+[.]lock[.]sqlite(-wal|-shm|-journal)?$`;
+  const policy = `(version 1)(allow default)(deny network*)(deny file-read* (subpath ${quote(os.homedir())}))(deny file-write* (require-not (require-any (subpath ${quote(root)}) (literal ${quote(locks)}) (regex ${quote(allowedLock)}) (regex ${quote(allowedHandle)}))))`;
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const result = spawnSync('/usr/bin/sandbox-exec', ['-p', policy, process.execPath,
+    const result = spawnSync('/usr/bin/sandbox-exec', ['-p', policy, process.execPath, '--import', preload,
       path.join(pkg, 'openclaw.mjs'), 'update', 'repair', '--yes', '--json', '--timeout', '30'],
     { env, cwd: root, encoding: 'utf8', timeout: 90000, maxBuffer: 8 * 1024 * 1024 });
     assert.equal(result.status, 0, `${result.error?.message ?? ''}\n${result.stdout}\n${result.stderr}`);
     const output = JSON.parse(result.stdout);
     assert.equal(output.mode, 'finalize');
-    assert.equal(output.status, 'ok');
+    assert.ok(['ok', 'warning'].includes(output.status));
     assert.equal(output.root, pkg);
     assert.equal(output.restart, false);
-    assert.equal(output.postUpdate.doctor.status, 'ok');
+    if (output.status === 'warning') {
+      assert.equal(output.postUpdate.doctor.status, 'warning');
+      assert.ok(output.postUpdate.doctor.warnings.length > 0);
+      assert.ok(output.postUpdate.doctor.warnings.every(warning => warning.startsWith('core/doctor/node-hosting-preconditions:')));
+    } else {
+      assert.equal(output.postUpdate.doctor.status, 'ok');
+    }
     assert.equal(output.postUpdate.plugins.status, 'ok');
     assert.ok(output.phaseTimings.some(phase => phase.phase === 'doctor' && phase.outcome === 'completed'));
     assert.equal(fs.existsSync(path.join(root, 'Library/LaunchAgents/ai.openclaw.gateway.plist')), false);

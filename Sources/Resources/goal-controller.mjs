@@ -70,7 +70,7 @@ export async function loadController() {
   const names = ["getSessionGoal", "createSessionGoal", "updateSessionGoalStatus",
     "updateSessionGoalObjective", "clearSessionGoal"];
   const goalModuleName = readdirSync(dist).filter(
-    (name) => /^sessions-[\w-]+\.js$/.test(name),
+    (name) => /^sessions-[\w-]+\.(?:js|mjs)$/.test(name),
   ).find((name) => {
     const source = readFileSync(join(dist, name), "utf8");
     return names.every((name) => source.includes(`function ${name}(`));
@@ -78,7 +78,7 @@ export async function loadController() {
   if (!goalModuleName) throw new Error("OpenClaw Goal controller could not be located.");
 
   const accessorModuleName = readdirSync(dist).filter(
-    (name) => /^session-accessor-[\w-]+\.js$/.test(name),
+    (name) => /^session-accessor-[\w-]+\.(?:js|mjs)$/.test(name),
   ).find((name) => {
     const source = readFileSync(join(dist, name), "utf8");
     return source.includes("async function mutateSessionGoal(") &&

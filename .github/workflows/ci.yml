@@ -10,6 +10,8 @@ jobs:
   swift:
     name: Swift build and tests
     runs-on: macos-15
+    env:
+      NSUnbufferedIO: "YES"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,5 +25,14 @@ jobs:
       - name: Build release
         run: swift build -c release
 
-      - name: Run tests
-        run: swift test
+      - name: Test Gateway recovery
+        timeout-minutes: 10
+        run: swift test --filter GatewayConnectionRecoveryTests
+
+      - name: Test OpenClaw maintenance
+        timeout-minutes: 10
+        run: swift test --filter OpenClawRuntimeMaintenanceTests --skip GatewayConnectionRecoveryTests
+
+      - name: Test remaining app paths
+        timeout-minutes: 10
+        run: swift test --no-parallel --skip OpenClawRuntimeMaintenanceTests

@@ -67,6 +67,22 @@ struct OpenClawCompatibilityTests {
         ]]) == "main")
     }
 
+    @Test func skillsCommandsTargetTheSelectedAgentInAMultiAgentProfile() throws {
+        let config: [String: Any] = ["agents": [
+            "ownership": "explicit",
+            "entries": ["main": [:], "router": [:]],
+            "defaults": ["systemAgent": ["agentId": "main"]],
+        ]]
+        let agentID = try #require(OpenClawCompatibility.chatAgentID(in: config))
+
+        #expect(InstallerViewModel.skillsListCommand(agentID: agentID) ==
+            "openclaw --no-color skills list --json --agent 'main' 2>&1")
+        #expect(InstallerViewModel.skillsInstallCommand(slug: "@owner/weather", agentID: agentID) ==
+            "openclaw --no-color skills install '@owner/weather' --agent 'main' 2>&1")
+        #expect(InstallerViewModel.skillsInstallCommand(slug: "weather'; exit 7; '", agentID: agentID).contains(
+            "'weather'\"'\"'; exit 7; '\"'\"''"))
+    }
+
     @Test func statusSummaryLabelsAreNotProviderIdentifiers() {
         let status: [String: Any] = ["auth": [
             "providersWithOAuth": ["openai (1)", "legacy", "not a provider"],
