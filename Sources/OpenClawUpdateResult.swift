@@ -108,7 +108,7 @@ enum OpenClawUpdateResult {
               lint["exitCode"] as? Int == 0,
               lint["termination"] as? String == "exit",
               lint["outputLimitExceeded"] as? Bool != true,
-              emptyOrAbsent(lint["doctorLintFindings"]),
+              hasOnlyPlaintextSecretAdvisories(lint["doctorLintFindings"]),
               emptyOrAbsent(lint["failureFacts"]) else { return false }
 
         if doctorStatus == "warning" {
@@ -123,6 +123,19 @@ enum OpenClawUpdateResult {
 
     private static func emptyOrAbsent(_ value: Any?) -> Bool {
         value == nil || (value as? [Any])?.isEmpty == true
+    }
+
+    // 9.7 includes this warning in the receipt even when lint was requested
+    // with --severity-min error. Keep the advisory visible, and still require
+    // the independent plugin/migration and Gateway health checks before start.
+    static func hasOnlyPlaintextSecretAdvisories(_ value: Any?) -> Bool {
+        guard let value else { return true }
+        guard let findings = value as? [[String: Any]] else { return false }
+        return findings.allSatisfy {
+            $0["severity"] as? String == "warning" &&
+            $0["checkId"] as? String == "core/doctor/security" &&
+            $0["requirement"] as? String == "config.plaintext_secrets"
+        }
     }
 
     static func pluginFailure(in result: [String: Any]) -> String? {

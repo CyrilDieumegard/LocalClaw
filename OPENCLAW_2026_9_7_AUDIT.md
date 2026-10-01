@@ -214,3 +214,20 @@ artefact public preexistant a l'URL immutable 1.0.210 / 389.
 
 La publication client et la migration active seront verifiees separement dans
 le releve local `dist/release-1.0.210-389/RELEASE.md`.
+
+## Verification active : avertissement lint de 9.7
+
+Le build 389 a ete installe par le vrai updater, puis a sauvegarde et remplace
+le moteur actif 9.6 par 9.7. La finalisation a revele une incompatibilite
+supplementaire : le recu `update repair` contient maintenant un finding
+`core/doctor/security`, severite `warning`, exigence `config.plaintext_secrets`,
+malgre le filtre natif `--severity-min error` et une sortie 0. Le parseur
+LocalClaw exigeait un tableau vide et bloquait la reprise.
+
+Le correctif accepte uniquement cette combinaison exacte dans le lint du recu.
+Il conserve les controles des phases, des permissions, des migrations, du
+Doctor final independant et de deux probes RPC avant validation. Les erreurs,
+les findings inconnus et les permissions manquantes restent bloquants.
+La verification active a aussi signale le consentement du plugin WhatsApp
+2026.5.12 ; cette permission fait l'objet d'une confirmation distincte.
+Le build final sera 390 pour inclure cette correction, avant publication client.
