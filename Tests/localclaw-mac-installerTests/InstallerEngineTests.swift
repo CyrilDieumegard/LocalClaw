@@ -4,6 +4,7 @@ import Testing
 @testable import localclaw_mac_installer
 
 struct InstallerEngineTests {
+    private final class ResourceAnchor {}
     @Test func selectedChatModelSupportsStringDefaultsAndAgentOverrides() {
         let defaults: [String: Any] = ["agents": ["defaults": ["model": "  openai/gpt-5.6-sol  "]]]
         #expect(InstallerEngine.configuredChatModel(in: defaults) == "openai/gpt-5.6-sol")
@@ -2466,7 +2467,12 @@ Created job
     }
 
     @Test func goalControllerResourceIsPresentInTheTestBuild() throws {
-        let script = try #require(GoalControllerResourceLocator.locate())
+        let bundle = Bundle(for: ResourceAnchor.self)
+        let script = try #require(GoalControllerResourceLocator.candidateURLs(
+            bundleURL: bundle.bundleURL,
+            resourceURL: bundle.resourceURL,
+            executableURL: bundle.executableURL
+        ).first { FileManager.default.fileExists(atPath: $0.path) })
 
         #expect(FileManager.default.fileExists(atPath: script.path))
     }
