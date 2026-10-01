@@ -162,3 +162,33 @@ propriétaire accepte uniquement le nouveau refus précis d'une installation
 temporaire non identifiée, ou le plan de rebind antérieurement vérifié.
 Les résultats de publication et de migration active seront consignés dans
 le relevé de release après vérification.
+
+## Validation de release et blocage Apple
+
+La correction de sauvegarde et les fixtures sont poussées sur
+`codex/local-router-beta`. Le commit de code final testé est `ad07319`.
+Le test de présence des ressources utilise maintenant le bundle de tests réel,
+y compris avec `--scratch-path /private/tmp/localclaw-release-swift`.
+
+La validation du 1 octobre a passé les **377 tests Swift Testing et les
+15 tests XCTest**, les probes OpenClaw 9.7, les huit migrations legacy,
+le chat via Gateway temporaire, deux finalisations natives isolées et le
+contrôle de propriétaire. Le binaire de production 1.0.210 / 389 a été
+compilé et signé Developer ID. Les six contrôles des ressources empaquetées
+et les quatre contrôles du parseur empaqueté ont passé.
+
+La soumission à Apple a ensuite été refusée avec HTTP **403** :
+`A required agreement is missing or has expired.` La consultation de
+l'historique de notarisation reçoit le même refus, indépendamment du DMG.
+Il faut vérifier les accords du compte développeur de l'équipe `923MBLC4X4`.
+Aucune acceptation d'accord n'a été effectuée par l'agent.
+
+Cette tentative n'a donc pas produit de DMG notarise certifié pour publication.
+Le site préparé vise 1.0.210 / 389, mais son nouveau manifeste et sa somme
+SHA-256 ne seront créés qu'après notarisation et stapling réussis.
+L'application installée reste **1.0.209 / 388**, et le moteur actif reste
+**OpenClaw 2026.9.6**. La publication client et la migration active attendent
+la levée de ce blocage Apple.
+
+Preuves : `/private/tmp/localclaw-1-0-210-release-gate.log` et
+`/private/tmp/localclaw-1-0-210-notary-history.log`.
