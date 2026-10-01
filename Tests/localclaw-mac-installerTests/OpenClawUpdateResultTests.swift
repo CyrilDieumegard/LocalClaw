@@ -92,6 +92,22 @@ struct OpenClawUpdateResultTests {
         }
         #expect(!OpenClawUpdateResult.hasOnlyPlaintextSecretAdvisories("malformed"))
 
+        result["phaseTimings"] = (result["phaseTimings"] as! [[String: String]]).map { phase in
+            phase["phase"] == "targetConfigConvergence" ? phase.merging(["outcome": "warning"]) { _, new in new } : phase
+        }
+        lint["doctorLintFindings"] = [plaintext]
+        advisoryPlugins["doctorLint"] = lint
+        let convergenceMessage = "WARNING: openclaw.json contains plaintext secret-bearing config fields."
+        advisoryPlugins["warnings"] = [["reason": "doctor-advisory", "message": convergenceMessage]]
+        result["postUpdate"] = ["doctor": ["status": "warning", "warnings": [convergenceMessage]], "plugins": advisoryPlugins]
+        #expect(OpenClawUpdateResult.isStructurallyAdvisoryFinalization(result, exitCode: 0))
+        for warnings in [[], [["reason": "doctor-advisory", "message": "Plugin approval required"]],
+                         [["reason": "capability-consent", "message": convergenceMessage]]] {
+            advisoryPlugins["warnings"] = warnings
+            result["postUpdate"] = ["doctor": ["status": "warning", "warnings": [convergenceMessage]], "plugins": advisoryPlugins]
+            #expect(!OpenClawUpdateResult.isStructurallyAdvisoryFinalization(result, exitCode: 0))
+        }
+
         var riskyPlugins = plugins
         riskyPlugins["npm"] = ["outcomes": [["pluginId": "codex", "status": "error",
                                              "code": "PLUGIN_CAPABILITY_CONSENT_REQUIRED"]]]

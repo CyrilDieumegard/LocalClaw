@@ -242,3 +242,14 @@ Le publisher a prepare le site avec ce manifeste et ces octets exacts.
 Le resultat public et l'installation seront releves dans
 `dist/release-1.0.210-390/RELEASE.md`. La permission WhatsApp n'est pas acceptee
 sans confirmation explicite pour cette capacite.
+
+## Recu de convergence 9.7 : build 391
+
+La verification native suivante confirme aussi que 9.7 propage le meme warning
+lint a l'outcome de `targetConfigConvergence`. Le build 390 reste trop strict
+sur cette phase. Le build 391 autorise uniquement cette phase warning lorsque
+les findings non vides correspondent tous a `core/doctor/security`, severite
+warning, exigence `config.plaintext_secrets`, et que les messages de plugins
+correspondent exactement a l'avertissement canonique. Les autres phases doivent
+rester completed ; tous les controles de permissions, migrations et sante
+restent requis. La fixture de reprise reproduit les deux champs du recu reel.
