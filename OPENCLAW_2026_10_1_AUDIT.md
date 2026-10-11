@@ -132,7 +132,7 @@ premier échec ni relancer les contrôles JavaScript déjà passés.
 Artefact local : `dist/release-392/localclaw-1.0.211-392.dmg`.
 Preuves conservées : `dist/release-392/validation/`.
 
-**Statut : candidat prêt, non publié et non installé.** Aucun manifeste public
+**Statut à la fin des validations isolées : candidat prêt, non publié et non installé.** Aucun manifeste public
 n'a été modifié. L'installation active reste LocalClaw 1.0.210 (391) avec
 OpenClaw 2026.9.7. Les comptes et canaux externes ainsi que le remplacement réel
 via le bouton d'auto-update de l'app active n'ont pas été exercés par cette
