@@ -1000,6 +1000,37 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect((try OpenClawRuntimeInstallation.managed(home: fixture.home))?.version == "2026.9.6")
     }
 
+    @Test(arguments: ["2026.9.7", "2026.9.8"])
+    func octoberMigrationBacksUpBeforeStoppingOrReplacingCore(current: String) throws {
+        let fixture = try Fixture(schemaMismatch: false,
+                                  installedVersion: current, targetVersion: "2026.10.1")
+        defer { fixture.cleanUp() }
+        let result = fixture.maintenance().update()
+        #expect(result.state == .ok, Comment(rawValue: result.message))
+        #expect(try fixture.archives().count == 1)
+        let backup = try #require(fixture.commands.firstIndex { $0.contains("backup create") })
+        let stop = try #require(fixture.commands.firstIndex { $0.contains("gateway stop --force") })
+        let update = try #require(fixture.commands.firstIndex {
+            $0.contains("update --tag '2026.10.1' --yes --json --no-restart")
+        })
+        #expect(backup < stop && stop < update)
+        #expect(fixture.commands[backup].contains("--verify"))
+        #expect((try OpenClawRuntimeInstallation.managed(home: fixture.home))?.version == "2026.10.1")
+    }
+
+    @Test(arguments: ["2026.9.7", "2026.9.8"])
+    func octoberMigrationBackupFailurePreservesCoreAndGateway(current: String) throws {
+        let fixture = try Fixture(schemaMismatch: false, failure: .backup,
+                                  installedVersion: current, targetVersion: "2026.10.1")
+        defer { fixture.cleanUp() }
+        let result = fixture.maintenance().update()
+        #expect(result.state == .fail)
+        #expect(result.message.contains("State backup failed"))
+        #expect(!fixture.commands.contains { $0.contains("--yes --json --no-restart") })
+        #expect(!fixture.commands.contains { $0.contains("gateway stop --force") })
+        #expect((try OpenClawRuntimeInstallation.managed(home: fixture.home))?.version == current)
+    }
+
     @Test func unexpectedManagedHandoffNeverRestartsGatewayOrStartsSecondUpdate() throws {
         let fixture = try Fixture(schemaMismatch: false, failure: .detachedHandoff,
                                   installedVersion: "2026.9.1", targetVersion: "2026.9.6")
@@ -1267,6 +1298,28 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(!fixture.commands.contains { $0.contains("gateway start --json") })
         let runtime = try #require(try OpenClawRuntimeInstallation.managed(home: fixture.home))
         #expect(OpenClawActivationBlock.isPresent(home: fixture.home, runtime: runtime))
+    }
+
+    @Test(arguments: [Failure.advisoryPackageUpgrade, .advisoryPackagePendingStuck])
+    func nativeOctoberPackageAdvisoryRequiresAllActivationChecks(failure: Failure) throws {
+        let fixture = try Fixture(schemaMismatch: false, failure: failure,
+                                  installedVersion: "2026.9.7", targetVersion: "2026.10.1")
+        defer { fixture.cleanUp() }
+        let result = fixture.maintenance().update()
+        #expect(fixture.commands.filter { $0.contains("--yes --json --no-restart") }.count == 1)
+        #expect(fixture.commands.contains { $0.contains("SELECT COUNT(*) FROM migration_runs") })
+        if failure == .advisoryPackagePendingStuck {
+            #expect(result.state == .fail)
+            #expect(!fixture.commands.contains { $0.contains("gateway start --json") })
+            let runtime = try #require(try OpenClawRuntimeInstallation.managed(home: fixture.home))
+            #expect(OpenClawActivationBlock.isPresent(home: fixture.home, runtime: runtime))
+        } else {
+            #expect(result.state == .ok, Comment(rawValue: result.message))
+            #expect(result.message.contains("advisory Doctor warnings"))
+            #expect(fixture.commands.contains { $0.contains("doctor --post-upgrade --json") })
+            #expect(fixture.commands.contains { $0.contains("gateway start --json") })
+            #expect(fixture.commands.filter { $0.contains("gateway status --json") && !$0.contains("--no-probe") }.count >= 2)
+        }
     }
 
     @Test func nativeConsentWarningCanResumeSameVersionRepairAfterReview() throws {
@@ -1713,7 +1766,7 @@ struct OpenClawRuntimeMaintenanceTests {
         #expect(OpenClawUpdateCheckpoint.load(home: fixture.home, runtime: second) != nil)
     }
 
-    enum Failure: String, Sendable { case backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, startSchemaMismatch, pluginWarning, configRemains, registryUnavailable, registryNoSpace, invalidRegistryVersion, newerRegistry, approvalsMigration, unverifiedApprovalsMigration, consent, malformedResult, wrongRepairMode, wrongResultRoot, nonzeroSuccess, restart, agentOwner, unsafeRecovery, safeRollback, detachedHandoff, advisoryWarning, advisoryLintWarning, advisoryRisky, advisoryPending, advisoryPendingStuck, advisoryFinalizedUpgrade, incompleteUpgradeReceipt, wrongUpgradeMode, failedUpgradeStep }
+    enum Failure: String, Sendable { case advisoryPackageUpgrade, advisoryPackagePendingStuck, backup, nativeBackupSchema, corruptArchive, activeWriter, wrongTarget, downgrade, staging, update, wrongVersion, unhealthy, schemaRemains, startSchemaMismatch, pluginWarning, configRemains, registryUnavailable, registryNoSpace, invalidRegistryVersion, newerRegistry, approvalsMigration, unverifiedApprovalsMigration, consent, malformedResult, wrongRepairMode, wrongResultRoot, nonzeroSuccess, restart, agentOwner, unsafeRecovery, safeRollback, detachedHandoff, advisoryWarning, advisoryLintWarning, advisoryRisky, advisoryPending, advisoryPendingStuck, advisoryFinalizedUpgrade, incompleteUpgradeReceipt, wrongUpgradeMode, failedUpgradeStep }
 
     private final class Fixture {
         let home: URL
@@ -1744,7 +1797,7 @@ struct OpenClawRuntimeMaintenanceTests {
             self.schemaMismatch = schemaMismatch
             self.invalidConfig = invalidConfig
             self.failure = failure
-            pendingPluginMigrations = failure == .advisoryPending || failure == .advisoryPendingStuck ? 1 : 0
+            pendingPluginMigrations = failure == .advisoryPending || failure == .advisoryPendingStuck || failure == .advisoryPackagePendingStuck ? 1 : 0
             self.installedVersion = installedVersion
             self.targetVersion = targetVersion
             gatewayVersion = installedVersion
@@ -1953,7 +2006,7 @@ struct OpenClawRuntimeMaintenanceTests {
                 if command.contains("npm --version") { return (0, "12.0.0") }
                 if command.contains("/usr/bin/sqlite3 -readonly") { return (0, String(pendingPluginMigrations)) }
                 if command.contains("doctor --fix --non-interactive") {
-                    if failure != .advisoryPendingStuck { pendingPluginMigrations = 0 }
+                    if failure != .advisoryPendingStuck && failure != .advisoryPackagePendingStuck { pendingPluginMigrations = 0 }
                     return (0, "Doctor complete")
                 }
                 if command.contains("doctor --post-upgrade --json") {
@@ -2072,6 +2125,10 @@ struct OpenClawRuntimeMaintenanceTests {
                             "doctor": ["status": "warning", "warnings": ["Secret is stored in plaintext"]],
                             "plugins": plugins,
                         ]
+                    }
+                    if failure == .advisoryPackageUpgrade || failure == .advisoryPackagePendingStuck {
+                        result = try octoberPackageUpdateReceipt()
+                        result["root"] = package.path
                     }
                     if failure == .pluginWarning { result["postUpdate"] = ["plugins": ["status": "warning"]] }
                     if failure == .incompleteUpgradeReceipt { result.removeValue(forKey: "postUpdate") }

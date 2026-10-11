@@ -72,16 +72,17 @@ updater. They can use the integrated button for subsequent releases.
 
 ## OpenClaw compatibility
 
-LocalClaw 1.0.210 is checked against the real OpenClaw 2026.9.7 npm package.
+LocalClaw 1.0.211 is checked against the real OpenClaw 2026.10.1 npm package,
+with backward compatibility checks against 2026.9.7.
 The audit and its validation boundaries are recorded in
-[`OPENCLAW_2026_9_7_AUDIT.md`](OPENCLAW_2026_9_7_AUDIT.md).
+[`OPENCLAW_2026_10_1_AUDIT.md`](OPENCLAW_2026_10_1_AUDIT.md).
 LocalClaw recognizes 2026.7.1 and
 2026.8.1 as existing-user migration sources and never treats an older runtime
 as the successful end state of an automatic update.
 Update LocalClaw first, then use Updates to upgrade OpenClaw. The one-time
 pre-8.1 to 8.1 migration and exceptional schema/configuration recovery create a
 verified state backup under `~/Library/Application Support/LocalClaw/runtime-backups/`.
-The 2026.9.6 and 2026.9.7 schema transitions also require a full verified
+The 2026.9.6, 2026.9.7 and 2026.10.1 schema transitions also require a full verified
 backup before the candidate can migrate databases. Failure to create that
 backup leaves the installed core and Gateway untouched.
 Routine same-schema OpenClaw 2.0 updates, including 2026.9.2, do not duplicate
@@ -263,7 +264,7 @@ node scripts/test-openclaw-update-owner.mjs /path/to/new/node_modules/openclaw -
 
 The legacy migration fixture starts from 2026.8.1 because the restricted
 execution-approvals adapter intentionally supports only that release. All
-successful current end-state and turn checks target OpenClaw 2026.9.6,
+successful current end-state and turn checks target OpenClaw 2026.10.1,
 use a deterministic localhost model and temporary HOME, and create a real file
 through OpenClaw's write tool. They do not use customer accounts or paid models.
 The migration check may resolve official plugins from the network. These checks
@@ -278,6 +279,34 @@ The legacy-config turn check runs the real Doctor with both native service
 mutation gates disabled, validates the migrated config, then starts only a
 temporary Gateway and verifies a tool turn. It preserves and checks the fixture's
 backup, model selection, credentials, tool policy, and existing project file.
+
+The 10.1 Goal adapter uses the selected package's native mutation and read-only
+receipt APIs after their module split, retaining native revision and replay
+checks. A completed npm update can include the exact `config.plaintext_secrets`
+advisory with an affirmative recovery receipt for the installed candidate;
+LocalClaw keeps the advisory visible and requires the same
+pending-migration, final Doctor, configuration and two Gateway checks used for
+advisory repairs. Unknown warnings and permission requests still block activation.
+
+To test a complete native 9.7 -> 10.1 package update, prepare a disposable global
+prefix, then run the opt-in migration test (network access required):
+
+```bash
+fixture=$(mktemp -d /private/tmp/localclaw-full-migration-XXXXXX)
+mkdir -p "$fixture/home"
+HOME="$fixture/home" npm install -g --prefix "$fixture/prefix" \
+  --cache "$fixture/npm-cache" --ignore-scripts --legacy-peer-deps \
+  --no-audit --no-fund openclaw@2026.9.7
+node scripts/test-openclaw-full-migration.mjs "$fixture" 2026.10.1
+```
+
+The test uses native backup verification and npm update, then verifies schema
+19 -> 20, SQLite integrity, retained Goal/credentials/workspace, final Doctor,
+no pending plugin migration, two Gateway health checks and a localhost chat.
+It keeps the evidence and disposable state under `"$fixture"`; it never replaces
+the host runtime or its LaunchAgent. The npm fixture skips dependency lifecycle
+scripts; the test explicitly runs OpenClaw's official postinstall. This does not
+certify every optional native plugin or a fresh customer install.
 
 ## Build a local DMG
 
@@ -299,6 +328,7 @@ Public releases must use Developer ID signing, notarization, and stapling:
 
 ```bash
 OPENCLAW_PACKAGE_ROOT=<verified-openclaw-2-package> \
+  OPENCLAW_LEGACY_PACKAGE_ROOT=<verified-openclaw-2026.8.1-package> \
   RELEASE_NOTARIZE=1 LOCALCLAW_BUILD_NUMBER=<monotonic-build> bash scripts/release-check.sh
 bash scripts/publish-notarized-dmg.sh
 ```

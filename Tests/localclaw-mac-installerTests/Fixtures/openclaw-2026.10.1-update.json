@@ -1,0 +1,130 @@
+{
+  "status": "ok",
+  "mode": "npm",
+  "root": "/fixture/openclaw",
+  "before": {
+    "version": "2026.9.7",
+    "buildId": "2026.9.7-release-c074824a27c9-2026-09-29T23-33-45.013Z"
+  },
+  "after": {
+    "version": "2026.10.1",
+    "buildId": "2026.10.1-release-e178c39e9aae-2026-10-10T17-54-10.792Z"
+  },
+  "recovery": {
+    "serviceRestartSafe": true,
+    "version": "2026.10.1"
+  },
+  "steps": [
+    {
+      "name": "database snapshot",
+      "exitCode": 0
+    },
+    {
+      "name": "package-install",
+      "exitCode": 0,
+      "termination": "exit",
+      "signal": null,
+      "killed": false
+    },
+    {
+      "name": "candidate-state-snapshot",
+      "exitCode": 0
+    },
+    {
+      "name": "candidate-doctor",
+      "exitCode": 0
+    },
+    {
+      "name": "candidate-doctor-lint",
+      "exitCode": 0,
+      "termination": "exit",
+      "signal": null,
+      "killed": false
+    },
+    {
+      "name": "candidate-config",
+      "exitCode": 0
+    },
+    {
+      "name": "candidate-plugins",
+      "exitCode": 0
+    },
+    {
+      "name": "candidate-recovery",
+      "exitCode": 0
+    },
+    {
+      "name": "candidate-gateway-startup",
+      "exitCode": 0
+    },
+    {
+      "name": "package-swap",
+      "exitCode": 0
+    },
+    {
+      "name": "openclaw doctor",
+      "exitCode": 0,
+      "termination": "exit",
+      "signal": null,
+      "killed": false
+    },
+    {
+      "name": "finalize:plugins:0",
+      "exitCode": 0
+    },
+    {
+      "name": "managed-service-reconciliation",
+      "exitCode": 0
+    },
+    {
+      "name": "post-plugin-doctor-lint",
+      "exitCode": 0,
+      "termination": "exit",
+      "signal": null,
+      "killed": false
+    }
+  ],
+  "postUpdate": {
+    "plugins": {
+      "status": "warning",
+      "assessment": {
+        "kind": "no-payload-repair"
+      },
+      "changed": false,
+      "warnings": [
+        {
+          "reason": "doctor-advisory",
+          "message": "WARNING: openclaw.json contains plaintext secret-bearing config fields."
+        }
+      ],
+      "sync": {
+        "changed": false,
+        "switchedToBundled": [],
+        "switchedToNpm": [],
+        "warnings": [],
+        "errors": []
+      },
+      "npm": {
+        "changed": false,
+        "outcomes": []
+      },
+      "integrityDrifts": [],
+      "doctorLint": {
+        "name": "post-plugin-doctor-lint",
+        "command": "doctor --lint --json --severity-min error",
+        "exitCode": 0,
+        "doctorLintFindings": [
+          {
+            "checkId": "core/doctor/security",
+            "message": "WARNING: openclaw.json contains plaintext secret-bearing config fields.",
+            "severity": "warning",
+            "requirement": "config.plaintext_secrets"
+          }
+        ],
+        "termination": "exit",
+        "signal": null,
+        "killed": false
+      }
+    }
+  }
+}

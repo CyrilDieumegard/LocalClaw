@@ -1,7 +1,7 @@
 {
-  "latestVersion": "1.0.210",
-  "latestBuild": "391",
-  "dmgUrl": "https://raw.githubusercontent.com/CyrilDieumegard/localclaw.io/main/downloads/localclaw-1.0.210-391.dmg",
-  "notesUrl": "https://localclaw.io/changelog/localclaw-installer-v1.0.210",
-  "sha256": "79741e382bf2d930146b6957037b09da1e7eabd792b9dbb0ec347f56a25478ab"
+  "latestVersion": "1.0.211",
+  "latestBuild": "392",
+  "dmgUrl": "https://raw.githubusercontent.com/CyrilDieumegard/localclaw.io/main/downloads/localclaw-1.0.211-392.dmg",
+  "notesUrl": "https://localclaw.io/changelog/localclaw-installer-v1.0.211",
+  "sha256": "407b5f05d06d0fffb9b4fc9e2e8c29e45505ad26893c78c065a1650cdc5ddcca"
 }

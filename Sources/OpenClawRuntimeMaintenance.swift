@@ -622,11 +622,11 @@ final class OpenClawRuntimeMaintenance {
             return true
         }
         // Full state snapshots belong to actual schema transitions, not every
-        // patch release. Both 2026.9.6 and 2026.9.7 advance state/agent
+        // patch release. 2026.9.6, 2026.9.7 and 2026.10.1 advance state/agent
         // storage; package rollback alone cannot restore migrated databases.
         // The target's new safeguards cannot replace a backup taken by the
         // currently installed updater before the candidate migrates state.
-        let boundaries = ["2026.8.1", "2026.9.6", "2026.9.7"]
+        let boundaries = ["2026.8.1", "2026.9.6", "2026.9.7", "2026.10.1"]
         return boundaries.contains { boundary in
             current.compare(boundary, options: .numeric) == .orderedAscending &&
                 target.compare(boundary, options: .numeric) != .orderedAscending
@@ -1294,6 +1294,10 @@ final class OpenClawRuntimeMaintenance {
             throw MaintenanceError(refusal + "\n" + output, allowsServiceRecovery: false)
         }
         let advisoryFinalization = OpenClawUpdateResult.isStructurallyAdvisoryFinalization(result, exitCode: update.0)
+        let advisoryPackageUpgrade = update.0 == 0 && !repairOnly &&
+            OpenClawUpdateResult.isStructurallyCompletedPackageUpgrade(result, allowPlaintextAdvisory: true) &&
+            OpenClawUpdateResult.pluginFailure(in: result) != nil
+        let advisoryCompletion = advisoryFinalization || advisoryPackageUpgrade
         let resumablePluginConsent = Self.isStructurallyResumablePluginConsent(result, exitCode: update.0)
         if result["status"] as? String != "ok" && !advisoryFinalization && !resumablePluginConsent {
             if result["status"] as? String == "error",
@@ -1331,7 +1335,7 @@ final class OpenClawRuntimeMaintenance {
             throw unverifiedNativeUpdate(runtime, guidance,
                                          reason: OpenClawActivationBlock.pluginRepairPendingReason)
         }
-        if !advisoryFinalization, let pluginFailure = OpenClawUpdateResult.pluginFailure(in: result) {
+        if !advisoryCompletion, let pluginFailure = OpenClawUpdateResult.pluginFailure(in: result) {
             throw unverifiedNativeUpdate(runtime, pluginFailure,
                                          reason: OpenClawActivationBlock.pluginRepairPendingReason)
         }
@@ -1339,11 +1343,11 @@ final class OpenClawRuntimeMaintenance {
             throw unverifiedNativeUpdate(runtime,
                 "OpenClaw \(target) is installed, but post-update maintenance did not finish (exit \(update.0)).\n\(output)")
         }
-        if !repairOnly && !advisoryFinalization && !Self.isStructurallyCompletedPackageUpgrade(result) {
+        if !repairOnly && !advisoryCompletion && !OpenClawUpdateResult.isStructurallyCompletedPackageUpgrade(result) {
             throw unverifiedNativeUpdate(runtime,
                 "OpenClaw installed \(target), but its final package-update receipt was incomplete or unsafe. No Gateway activation was attempted.\n\(output)")
         }
-        if advisoryFinalization {
+        if advisoryCompletion {
             report("OpenClaw finished with advisory warnings. Checking plugin migrations and final Doctor before activation...")
             let database = runtime.state.appendingPathComponent("state/openclaw.sqlite")
             let sql = "SELECT COUNT(*) FROM migration_runs WHERE id LIKE 'deferred-plugin-migration:%' AND status = 'pending';"
@@ -1446,52 +1450,13 @@ final class OpenClawRuntimeMaintenance {
                 }
                 let backup = backupPath.map { "Recovery backup: \($0)" }
                     ?? "Full state backup: not required for this same-schema OpenClaw 2.0 maintenance."
-                let advisory = advisoryFinalization
+                let advisory = advisoryCompletion
                     ? " OpenClaw reported advisory Doctor warnings; final Doctor and plugin migrations were checked. Review those warnings separately."
                     : ""
                 return StepResult(state: .ok, message: "OpenClaw \(target) ready; configuration, Gateway version and two RPC checks verified.\(advisory)\n\(backup)\nNo chat request was replayed.")
             }
         }
         throw unverifiedAfterGatewayAction(runtime, "The Gateway is not running the expected version with healthy RPC.\n\(verified)")
-    }
-
-    private static func isStructurallyCompletedPackageUpgrade(_ result: [String: Any]) -> Bool {
-        guard result["status"] as? String == "ok",
-              let mode = result["mode"] as? String, ["npm", "pnpm", "bun"].contains(mode),
-              result["restart"] == nil || result["restart"] as? Bool == false,
-              result["reason"] == nil, result["recovery"] == nil,
-              emptyOrAbsentUpdateFacts(result["failureFacts"]),
-              let steps = result["steps"] as? [[String: Any]], !steps.isEmpty,
-              steps.allSatisfy({ step in
-                  (step["exitCode"] == nil || step["exitCode"] as? Int == 0) &&
-                      !["error", "failed", "blocked"].contains(step["status"] as? String ?? "") &&
-                      emptyOrAbsentUpdateFacts(step["failureFacts"])
-              }),
-              let postUpdate = result["postUpdate"] as? [String: Any],
-              let plugins = postUpdate["plugins"] as? [String: Any],
-              plugins["status"] as? String == "ok",
-              let assessment = plugins["assessment"] as? [String: Any],
-              assessment["kind"] as? String == "no-payload-repair",
-              emptyOrAbsentUpdateFacts(plugins["failureFacts"]),
-              emptyOrAbsentUpdateFacts(plugins["warnings"]),
-              emptyOrAbsentUpdateFacts(plugins["integrityDrifts"]),
-              let sync = plugins["sync"] as? [String: Any],
-              emptyOrAbsentUpdateFacts(sync["errors"]),
-              emptyOrAbsentUpdateFacts(sync["warnings"]),
-              let npm = plugins["npm"] as? [String: Any],
-              let outcomes = npm["outcomes"] as? [[String: Any]],
-              !outcomes.contains(where: { ["error", "failed", "blocked"].contains($0["status"] as? String ?? "") }),
-              let lint = plugins["doctorLint"] as? [String: Any],
-              lint["exitCode"] as? Int == 0,
-              lint["termination"] as? String == "exit",
-              lint["outputLimitExceeded"] as? Bool != true,
-              emptyOrAbsentUpdateFacts(lint["doctorLintFindings"]),
-              emptyOrAbsentUpdateFacts(lint["failureFacts"]) else { return false }
-        if let doctor = postUpdate["doctor"] as? [String: Any] {
-            guard doctor["status"] as? String == "ok",
-                  emptyOrAbsentUpdateFacts(doctor["failureFacts"]) else { return false }
-        }
-        return true
     }
 
     private static func isStructurallyResumablePluginConsent(_ result: [String: Any], exitCode: Int32) -> Bool {

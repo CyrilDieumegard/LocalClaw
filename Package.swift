@@ -18,7 +18,8 @@ let package = Package(
         ),
         .testTarget(
             name: "localclaw-mac-installerTests",
-            dependencies: ["localclaw-mac-installer"]
+            dependencies: ["localclaw-mac-installer"],
+            resources: [.copy("Fixtures")]
         )
     ]
 )
