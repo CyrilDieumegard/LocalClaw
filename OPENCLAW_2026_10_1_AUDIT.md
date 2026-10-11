@@ -101,3 +101,39 @@ Les traces détaillées de cette exécution sont dans
 `/private/tmp/localclaw-openclaw-audit-20261011/` et les répertoires
 `/private/tmp/localclaw-full-migration-*` ; ce sont des preuves locales,
 pas une preuve de publication.
+
+## Résultat final du candidat 1.0.211 (392)
+
+- Code validé : commit `df5f66a`, reporté à l'identique dans le dépôt de travail.
+- **396 tests réussis** : 381 Swift Testing dans 18 suites et 15 XCTest.
+- Deux migrations natives 9.7 → 10.1 terminées dans des installations jetables.
+  La dernière vérifie aussi le reçu avec le binaire LocalClaw corrigé, puis
+  l'absence de migrations en attente, Doctor, Gateway et chat.
+- Six contrôles de ressources et quatre contrôles du lecteur de diagnostics
+  passent dans l'application empaquetée, sans accès au HOME hôte ni au réseau.
+- Le binaire signé relit aussi le vrai reçu npm de la dernière migration :
+  aucun besoin de réparation de plugin ni de consentement inventé ; vérification
+  complémentaire requise pour l'avertissement connu, puis exécutée par le scénario.
+- Ressource Goals empaquetée identique au fichier source testé.
+- DMG **signé, notarisé par Apple et agrafé** ; signature, Gatekeeper et
+  authentification positive par le mécanisme d'auto-update validés sur
+  l'application à l'intérieur du DMG final.
+- Notarisation : `a01bc78b-6349-4c1f-962d-d327593bafbf`, statut **Accepted**.
+- Taille : **6344876 octets**.
+- SHA-256 : `407b5f05d06d0fffb9b4fc9e2e8c29e45505ad26893c78c065a1650cdc5ddcca`.
+
+La première exécution du contrôle de release s'est arrêtée pendant la compilation
+sur des erreurs Foundation avec le répertoire de build réutilisé. Une compilation
+entièrement neuve a passé tous les tests ; les étapes 4 à 8 du même script de
+release ont ensuite été reprises et ont terminé avec succès. Les logs de l'échec
+initial, du test propre et des contrôles finaux sont conservés, sans masquer ce
+premier échec ni relancer les contrôles JavaScript déjà passés.
+
+Artefact local : `dist/release-392/localclaw-1.0.211-392.dmg`.
+Preuves conservées : `dist/release-392/validation/`.
+
+**Statut : candidat prêt, non publié et non installé.** Aucun manifeste public
+n'a été modifié. L'installation active reste LocalClaw 1.0.210 (391) avec
+OpenClaw 2026.9.7. Les comptes et canaux externes ainsi que le remplacement réel
+via le bouton d'auto-update de l'app active n'ont pas été exercés par cette
+validation isolée.
