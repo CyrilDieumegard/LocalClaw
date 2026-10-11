@@ -37,7 +37,11 @@ enum LocalClawMain {
                 result["updateStatus"] = envelope["status"]
                 result["mode"] = envelope["mode"]
                 let failure = OpenClawUpdateResult.pluginFailure(in: envelope)
-                result["pluginRepairPending"] = failure != nil
+                let advisoryReceipt = failure != nil &&
+                    (OpenClawUpdateResult.isStructurallyCompletedPackageUpgrade(envelope, allowPlaintextAdvisory: true) ||
+                     OpenClawUpdateResult.isStructurallyAdvisoryFinalization(envelope, exitCode: 0))
+                result["requiresAdvisoryVerification"] = advisoryReceipt
+                result["pluginRepairPending"] = failure != nil && !advisoryReceipt
                 result["needsPluginApproval"] = failure.map(OpenClawUpdateResult.needsPluginApproval) ?? false
             } catch { result["error"] = error.localizedDescription }
             if let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]) {

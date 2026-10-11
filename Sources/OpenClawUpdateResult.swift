@@ -157,6 +157,81 @@ enum OpenClawUpdateResult {
         }
     }
 
+    // Package updates can finish with the same narrowly identified advisory as
+    // finalize-only repairs. A valid receipt still requires independent Doctor,
+    // pending-migration and Gateway checks before activation.
+    static func isStructurallyCompletedPackageUpgrade(_ result: [String: Any], allowPlaintextAdvisory: Bool = false) -> Bool {
+        let advisory: Bool
+        if allowPlaintextAdvisory,
+           let plugins = (result["postUpdate"] as? [String: Any])?["plugins"] as? [String: Any],
+           let lint = plugins["doctorLint"] as? [String: Any] {
+            advisory = isPlaintextSecretConvergenceAdvisory(lint: lint, plugins: plugins)
+        } else {
+            advisory = false
+        }
+        guard result["status"] as? String == "ok",
+              let mode = result["mode"] as? String, ["npm", "pnpm", "bun"].contains(mode),
+              absentOrNull(result["restart"]) || result["restart"] as? Bool == false,
+              absentOrNull(result["reason"]), completedPackageRecoveryIsSafe(result),
+              absentOrNull(result["verification"]),
+              emptyOrAbsent(result["failureFacts"]),
+              let steps = result["steps"] as? [[String: Any]], !steps.isEmpty,
+              steps.allSatisfy({ step in
+                  (step["exitCode"] == nil || step["exitCode"] as? Int == 0) &&
+                      (absentOrNull(step["termination"]) || step["termination"] as? String == "exit") &&
+                      absentOrNull(step["signal"]) && step["killed"] as? Bool != true &&
+                      step["outputLimitExceeded"] as? Bool != true &&
+                      !["error", "failed", "blocked"].contains(step["status"] as? String ?? "") &&
+                      emptyOrAbsent(step["failureFacts"])
+              }),
+              let postUpdate = result["postUpdate"] as? [String: Any],
+              let plugins = postUpdate["plugins"] as? [String: Any],
+              plugins["status"] as? String == "ok" || advisory,
+              absentOrNull(plugins["reason"]),
+              let assessment = plugins["assessment"] as? [String: Any],
+              assessment["kind"] as? String == "no-payload-repair",
+              emptyOrAbsent(plugins["failureFacts"]),
+              emptyOrAbsent(plugins["warnings"]) || advisory,
+              emptyOrAbsent(plugins["integrityDrifts"]),
+              let sync = plugins["sync"] as? [String: Any],
+              emptyOrAbsent(sync["errors"]),
+              emptyOrAbsent(sync["warnings"]),
+              let npm = plugins["npm"] as? [String: Any],
+              let outcomes = npm["outcomes"] as? [[String: Any]],
+              !outcomes.contains(where: {
+                  ["error", "failed", "blocked"].contains($0["status"] as? String ?? "") ||
+                      $0["code"] as? String == "PLUGIN_CAPABILITY_CONSENT_REQUIRED"
+              }),
+              let lint = plugins["doctorLint"] as? [String: Any],
+              lint["exitCode"] as? Int == 0,
+              lint["termination"] as? String == "exit",
+              absentOrNull(lint["signal"]), lint["killed"] as? Bool != true,
+              lint["outputLimitExceeded"] as? Bool != true,
+              emptyOrAbsent(lint["doctorLintFindings"]) || advisory,
+              emptyOrAbsent(lint["failureFacts"]) else { return false }
+        if let doctor = postUpdate["doctor"] as? [String: Any] {
+            guard doctor["status"] as? String == "ok",
+                  emptyOrAbsent(doctor["failureFacts"]) else { return false }
+        }
+        return true
+    }
+
+    private static func completedPackageRecoveryIsSafe(_ result: [String: Any]) -> Bool {
+        if absentOrNull(result["recovery"]) { return true }
+        // 10.1 includes an affirmative recovery receipt on a successful npm
+        // update. Only the installed candidate may be declared safe here.
+        guard let recovery = result["recovery"] as? [String: Any],
+              Set(recovery.keys) == Set(["serviceRestartSafe", "version"]),
+              recovery["serviceRestartSafe"] as? Bool == true,
+              let version = recovery["version"] as? String, !version.isEmpty,
+              version == (result["after"] as? [String: Any])?["version"] as? String else { return false }
+        return true
+    }
+
+    private static func absentOrNull(_ value: Any?) -> Bool {
+        value == nil || value is NSNull
+    }
+
     static func pluginFailure(in result: [String: Any]) -> String? {
         guard let plugins = (result["postUpdate"] as? [String: Any])?["plugins"] as? [String: Any],
               let status = plugins["status"] as? String, ["error", "warning"].contains(status) else { return nil }

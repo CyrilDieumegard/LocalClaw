@@ -46,6 +46,22 @@ function findNamedFunction(module, name) {
   );
 }
 
+async function loadNamedFunctions(dist, pattern, names) {
+  const candidates = readdirSync(dist).filter((name) => pattern.test(name)).filter((name) => {
+    const source = readFileSync(join(dist, name), "utf8");
+    return names.every((name) => source.includes(`function ${name}(`));
+  });
+  if (candidates.length !== 1) {
+    throw new Error(`OpenClaw Goal API could not be located unambiguously: ${names.join(", ")}`);
+  }
+  const module = await import(pathToFileURL(join(dist, candidates[0])).href);
+  return Object.fromEntries(names.map((name) => {
+    const fn = findNamedFunction(module, name);
+    if (!fn) throw new Error(`OpenClaw Goal API is unavailable: ${name}`);
+    return [name, fn];
+  }));
+}
+
 function goalSnapshot(goal) {
   if (!goal) return null;
   return {
@@ -84,13 +100,8 @@ export async function loadController() {
     return source.includes("async function mutateSessionGoal(") &&
       source.includes("SessionGoalOperationError = class");
   });
-  if (!accessorModuleName) {
-    throw new Error("OpenClaw's atomic Goal mutation controller could not be located.");
-  }
-
-  const [goalModule, accessorModule, storeModule] = await Promise.all([
+  const [goalModule, storeModule] = await Promise.all([
     import(pathToFileURL(join(dist, goalModuleName)).href),
-    import(pathToFileURL(join(dist, accessorModuleName)).href),
     import(pathToFileURL(join(dist, "plugin-sdk/session-store-runtime.js")).href),
   ]);
 
@@ -101,8 +112,34 @@ export async function loadController() {
     .filter(([, value]) => typeof value !== "function")
     .map(([name]) => name);
   if (missing.length) throw new Error(`OpenClaw Goal API is incomplete: ${missing.join(", ")}`);
-  const mutateSessionGoal = findNamedFunction(accessorModule, "mutateSessionGoal");
-  const lookupSessionGoalOperation = findNamedFunction(accessorModule, "lookupSessionGoalOperation");
+  let mutateSessionGoal;
+  let lookupSessionGoalOperation;
+  if (accessorModuleName) {
+    const accessorModule = await import(pathToFileURL(join(dist, accessorModuleName)).href);
+    mutateSessionGoal = findNamedFunction(accessorModule, "mutateSessionGoal");
+    lookupSessionGoalOperation = findNamedFunction(accessorModule, "lookupSessionGoalOperation");
+  } else {
+    // 10.1 splits Goal mutations and receipt reads out of session-accessor.
+    // Keep native admission, schema validation, receipt fingerprints and
+    // session-generation checks; never read/write authorization or Goal SQL ourselves.
+    const [operations, reader, scope, databaseOptions] = await Promise.all([
+      loadNamedFunctions(dist, /^goals-operations-[\w-]+\.(?:js|mjs)$/, ["mutateSessionGoal", "readSessionGoalOperationInDatabase"]),
+      loadNamedFunctions(dist, /^openclaw-agent-db-readonly-[\w-]+\.(?:js|mjs)$/, ["withOpenClawAgentDatabaseReadOnly"]),
+      loadNamedFunctions(dist, /^session-accessor\.sqlite-scope-[\w-]+\.(?:js|mjs)$/, ["resolveSqliteScope"]),
+      loadNamedFunctions(dist, /^session-accessor\.sqlite-scope-helpers-[\w-]+\.(?:js|mjs)$/, ["toDatabaseOptions"]),
+    ]);
+    mutateSessionGoal = operations.mutateSessionGoal;
+    lookupSessionGoalOperation = (options) => {
+      const target = scope.resolveSqliteScope(options);
+      const result = reader.withOpenClawAgentDatabaseReadOnly(
+        (database) => operations.readSessionGoalOperationInDatabase(database, {
+          ...options, sessionKey: target.sessionKey,
+        }),
+        databaseOptions.toDatabaseOptions(target),
+      );
+      return result.found ? result.value : undefined;
+    };
+  }
   if (typeof mutateSessionGoal !== "function" || typeof lookupSessionGoalOperation !== "function") {
     throw new Error("OpenClaw's atomic Goal mutation API is unavailable.");
   }
@@ -180,7 +217,7 @@ export async function handleRequest(controller, request) {
       requestFingerprint,
       ...operation,
     };
-    const receipt = controller.lookupSessionGoalOperation({
+    const receipt = await controller.lookupSessionGoalOperation({
       ...options,
       expectedSessionId: entry.sessionId,
       operation: durableOperation,

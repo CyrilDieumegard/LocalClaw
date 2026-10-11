@@ -36,12 +36,15 @@ try {
     OPENCLAW_STATE_DIR: state, OPENCLAW_CONFIG_PATH: path.join(state, 'openclaw.json'),
     OPENCLAW_SERVICE_REPAIR_POLICY: 'external', OPENCLAW_LAUNCHD_LABEL: label,
     OPENCLAW_NO_RESPAWN: '1', NO_COLOR: '1',
+    NODE_OPTIONS: `--import=${preload}`,
   };
   // Native 8.1 keeps cross-process coordinator locks in /tmp, not TMPDIR.
   // Permit only the hash for this disposable database, never another state's lock.
 const allowedLock = `^${locks}/[a-z-]+[.]${hash}[.]lock[.]sqlite(-wal|-shm|-journal)?$`;
 const allowedHandle = `^${locks}/state-handles[.][a-f0-9]+[.]lock[.]sqlite(-wal|-shm|-journal)?$`;
-  const policy = `(version 1)(allow default)(deny network*)(deny file-read* (subpath ${quote(os.homedir())}))(deny file-write* (require-not (require-any (subpath ${quote(root)}) (literal ${quote(locks)}) (regex ${quote(allowedLock)}) (regex ${quote(allowedHandle)}))))`;
+  // 10.1's spawn broker uses /dev/null and private Unix sockets for SQLite
+  // snapshot ownership. Allow that IPC only inside this fixture; deny TCP/IP.
+  const policy = `(version 1)(allow default)(deny network*)(allow network* (local unix-socket (subpath ${quote(root)})) (remote unix-socket (subpath ${quote(root)})))(deny file-read* (subpath ${quote(os.homedir())}))(deny file-write* (require-not (require-any (literal "/dev/null") (subpath ${quote(root)}) (literal ${quote(locks)}) (regex ${quote(allowedLock)}) (regex ${quote(allowedHandle)}))))`;
   for (let attempt = 1; attempt <= 2; attempt++) {
     const result = spawnSync('/usr/bin/sandbox-exec', ['-p', policy, process.execPath, '--import', preload,
       path.join(pkg, 'openclaw.mjs'), 'update', 'repair', '--yes', '--json', '--timeout', '30'],
@@ -65,7 +68,7 @@ const allowedHandle = `^${locks}/state-handles[.][a-f0-9]+[.]lock[.]sqlite(-wal|
     assert.deepEqual(fs.readFileSync(path.join(pkg, 'package.json')), original);
     console.log(`PASS native OpenClaw ${version} update repair ${attempt}: finalization JSON, Doctor, plugins, no core replacement or service restart.`);
   }
-  console.log('Network and host home access denied. Isolated state only; no providers or customer services used.');
+  console.log('TCP/IP and host home access denied; private fixture Unix IPC only. No providers or customer services used.');
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
   for (const family of ['state-lifecycle', 'gateway-lifecycle']) {

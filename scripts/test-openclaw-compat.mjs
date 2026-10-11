@@ -127,7 +127,7 @@ try {
     assert.ok(status.auth.providers.some((provider) => provider.provider === "lmstudio" && provider.profiles.apiKey > 0));
     assert.ok(status.auth.storePath.endsWith(".sqlite"));
     console.log("PASS API key import via stdin into SQLite credential store");
-    const sessionID = run(["--input-type=module", "-e", `
+    const sessionOutput = run(["--input-type=module", "-e", `
       const store = await import(${JSON.stringify(pathToFileURL(join(packageRoot, "dist/plugin-sdk/session-store-runtime.js")).href)});
       const transcript = await import(${JSON.stringify(pathToFileURL(join(packageRoot, "dist/plugin-sdk/session-transcript-runtime.js")).href)});
       const scope = { agentId: "writer", sessionKey: "agent:writer:explicit:localclaw-compat-goal", storePath: store.resolveStorePath(undefined, {agentId: "writer"}) };
@@ -139,10 +139,14 @@ try {
       await transcript.appendSessionTranscriptMessageByIdentity({...scope, message: {
         role: "toolResult", toolCallId: "fixture-write", content: [{type: "text", text: "PRIVATE_RESULT"}], isError: false, timestamp: Date.now()
       }});
-      console.log(entry.sessionId);
-    `]).trim();
+      console.log(JSON.stringify({fixtureSessionId: entry.sessionId}));
+    `]);
+    const sessionID = sessionOutput.split("\n").flatMap((line) => {
+      try { return [JSON.parse(line).fixtureSessionId].filter(Boolean); } catch { return []; }
+    });
+    assert.equal(sessionID.length, 1, sessionOutput);
     const activityScript = fileURLToPath(new URL("../Sources/Resources/developer-activity.mjs", import.meta.url));
-    const activity = spawnSync(process.execPath, [activityScript, "writer", sessionID], {
+    const activity = spawnSync(process.execPath, [activityScript, "writer", sessionID[0]], {
       env: environment, encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024,
     });
     assert.match(activity.stdout, /fixture-write/, activity.stderr);

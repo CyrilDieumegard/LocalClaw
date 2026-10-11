@@ -22,6 +22,43 @@ struct OpenClawUpdateResultTests {
         }
     }
 
+    @Test func nativeOctoberPackageReceiptRequiresAdvisoryVerification() throws {
+        let receipt = try octoberPackageUpdateReceipt()
+        #expect(!OpenClawUpdateResult.isStructurallyCompletedPackageUpgrade(receipt))
+        #expect(OpenClawUpdateResult.isStructurallyCompletedPackageUpgrade(receipt, allowPlaintextAdvisory: true))
+        let invalid: [([String], Any)] = [
+            (["status"], "error"), (["mode"], "unknown"), (["restart"], true),
+            (["recovery"], ["serviceRestartSafe": false]), (["reason"], "failed"),
+            (["recovery"], ["serviceRestartSafe": true, "version": "2026.9.7"]),
+            (["recovery"], ["serviceRestartSafe": true, "version": "2026.10.1", "reason": "rollback-verified"]),
+            (["verification"], ["status": "failed"]),
+            (["steps"], [["name": "package-swap", "exitCode": 1]]),
+            (["steps"], [["name": "package-swap", "exitCode": 0, "killed": true]]),
+            (["steps"], [["name": "package-swap", "exitCode": 0, "termination": "timeout"]]),
+            (["postUpdate", "plugins", "assessment"], ["kind": "unsafe"]),
+            (["postUpdate", "plugins", "warnings"], [["reason": "doctor-advisory", "message": "Plugin approval required"]]),
+            (["postUpdate", "plugins", "warnings"], []),
+            (["postUpdate", "plugins", "sync", "errors"], ["unresolved plugin"]),
+            (["postUpdate", "plugins", "integrityDrifts"], ["changed manifest"]),
+            (["postUpdate", "plugins", "npm", "outcomes"], [["status": "warning", "code": "PLUGIN_CAPABILITY_CONSENT_REQUIRED"]]),
+            (["postUpdate", "plugins", "doctorLint", "exitCode"], 1),
+            (["postUpdate", "plugins", "doctorLint", "outputLimitExceeded"], true),
+            (["postUpdate", "plugins", "doctorLint", "doctorLintFindings"], []),
+            (["postUpdate", "plugins", "doctorLint", "doctorLintFindings"], [["severity": "error", "checkId": "core/doctor/security", "requirement": "config.plaintext_secrets"]]),
+            (["postUpdate", "plugins", "doctorLint", "doctorLintFindings"], [["severity": "warning", "checkId": "core/doctor/security", "requirement": "plugin.capability_consent"]]),
+        ]
+        func replacing(_ object: [String: Any], _ keys: ArraySlice<String>, _ value: Any) -> [String: Any] {
+            var copy = object
+            let key = keys.first!
+            copy[key] = keys.count == 1 ? value : replacing(object[key] as! [String: Any], keys.dropFirst(), value)
+            return copy
+        }
+        for (keys, value) in invalid {
+            #expect(!OpenClawUpdateResult.isStructurallyCompletedPackageUpgrade(
+                replacing(receipt, keys[...], value), allowPlaintextAdvisory: true), Comment(rawValue: keys.joined(separator: ".")))
+        }
+    }
+
     @Test func doctorExamplesAndNestedSuccessDoNotReplaceFinalEnvelope() throws {
         let transcript = #"openclaw config set commands.ownerAllowFrom '["telegram:123456789"]'"# + "\n" +
             #"{"status":"ok","step":"doctor"}"# + "\n" +
@@ -278,4 +315,10 @@ struct OpenClawUpdateResultTests {
         #expect(result.1.contains(String(repeating: "x", count: 150000)))
         #expect(OpenClawUpdateResult.envelope(in: result.1)?["status"] as? String == "ok")
     }
+}
+
+// Sanitized fields actually emitted by the isolated 9.7 -> 10.1 npm upgrade.
+func octoberPackageUpdateReceipt() throws -> [String: Any] {
+    let url = try #require(Bundle.module.url(forResource: "openclaw-2026.10.1-update", withExtension: "json", subdirectory: "Fixtures"))
+    return try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
 }
